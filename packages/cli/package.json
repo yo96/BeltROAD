@@ -1,0 +1,19 @@
+{
+  "name": "@factorio-eda/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "feda": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "cli": "node dist/index.js"
+  },
+  "dependencies": {
+    "@factorio-eda/core": "*",
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0"
+  }
+}

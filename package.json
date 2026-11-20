@@ -1,0 +1,18 @@
+{
+  "name": "factorio-eda-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w packages/core && npm run build -w packages/cli && npm run build -w packages/web",
+    "test": "vitest run",
+    "dev": "npm run dev -w packages/web",
+    "cli": "npm run cli -w packages/cli --"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.5"
+  }
+}

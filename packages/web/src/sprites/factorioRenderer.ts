@@ -1,0 +1,1163 @@
+import {
+  BELT_SPECS,
+  BeltTier,
+  Dir,
+  EntityInstance,
+  FloorplanResult,
+  INSERTER_BY_ENTITY_NAME,
+  POLE_BY_ENTITY_NAME,
+  beltTierFromEntityName,
+  dirDelta,
+  getItemMeta,
+  isMachineName,
+  isSplitterName,
+  isUndergroundName,
+} from '@factorio-eda/core';
+import {
+  drawCroppedIcon,
+  getIcon,
+  getLocalEntitySprite,
+} from './factorioAssets';
+
+export interface FactorioRenderLayerOpts {
+  macros: boolean;
+  belts: boolean;
+  undergrounds: boolean;
+  powerGrid: boolean;
+  powerCoverage: boolean;
+  heatmap: boolean;
+  pinLabels: boolean;
+  altMode: boolean;
+}
+
+const BELT_CURVE_ROW: Record<string, number> = {
+  [`${Dir.EAST}->${Dir.NORTH}`]: 4,
+  [`${Dir.NORTH}->${Dir.EAST}`]: 5,
+  [`${Dir.WEST}->${Dir.NORTH}`]: 6,
+  [`${Dir.NORTH}->${Dir.WEST}`]: 7,
+  [`${Dir.SOUTH}->${Dir.EAST}`]: 8,
+  [`${Dir.EAST}->${Dir.SOUTH}`]: 9,
+  [`${Dir.SOUTH}->${Dir.WEST}`]: 10,
+  [`${Dir.WEST}->${Dir.SOUTH}`]: 11,
+};
+
+function straightBeltRow(dir: Dir): number {
+  switch (dir) {
+    case Dir.EAST:
+      return 0;
+    case Dir.WEST:
+      return 1;
+    case Dir.NORTH:
+      return 2;
+    case Dir.SOUTH:
+      return 3;
+  }
+}
+
+export interface BeltShape {
+  curved: boolean;
+  inDir: Dir; // traveling direction entering the tile
+  outDir: Dir; // traveling direction exiting the tile
+  sheetRow: number;
+}
+
+function buildIncomingMap(entities: EntityInstance[]): Map<string, Dir[]> {
+  const incoming = new Map<string, Dir[]>();
+  const addFeed = (tx: number, ty: number, dir: Dir) => {
+    const key = `${tx},${ty}`;
+    let arr = incoming.get(key);
+    if (!arr) {
+      arr = [];
+      incoming.set(key, arr);
+    }
+    arr.push(dir);
+  };
+
+  for (const e of entities) {
+    const isBelt = beltTierFromEntityName(e.name) !== null;
+    if (!isBelt) continue;
+    // Underground inputs go below ground; they don't feed adjacent surface tiles ahead
+    if (isUndergroundName(e.name) && e.type === 'input') continue;
+    const { dx, dy } = dirDelta(e.direction);
+    for (let ox = 0; ox < e.w; ox++) {
+      for (let oy = 0; oy < e.h; oy++) {
+        addFeed(e.tx + ox + dx, e.ty + oy + dy, e.direction);
+      }
+    }
+  }
+  return incoming;
+}
+
+export function classifyBeltShape(
+  e: EntityInstance,
+  incoming: Map<string, Dir[]>,
+): BeltShape {
+  const outDir = e.direction;
+  if (e.intentionalSideLoad) {
+    return { curved: false, inDir: outDir, outDir, sheetRow: straightBeltRow(outDir) };
+  }
+  const feeds = incoming.get(`${e.tx},${e.ty}`) ?? [];
+  if (feeds.includes(outDir)) {
+    return { curved: false, inDir: outDir, outDir, sheetRow: straightBeltRow(outDir) };
+  }
+  const opp = (((outDir + 8) % 16) as Dir);
+  const sideFeeds = feeds.filter((d) => d !== outDir && d !== opp);
+  const uniqueSides = Array.from(new Set(sideFeeds));
+  if (uniqueSides.length === 1) {
+    const inDir = uniqueSides[0];
+    const row = BELT_CURVE_ROW[`${inDir}->${outDir}`];
+    if (row !== undefined) {
+      return { curved: true, inDir, outDir, sheetRow: row };
+    }
+  }
+  return { curved: false, inDir: outDir, outDir, sheetRow: straightBeltRow(outDir) };
+}
+
+function tierColors(tier: BeltTier): {
+  rail: string;
+  trim: string;
+  chevron: string;
+  bed: string;
+} {
+  if (tier === 'red') {
+    return {
+      rail: '#7c2d12',
+      trim: '#dc2626',
+      chevron: '#fca5a5',
+      bed: '#2b2628',
+    };
+  }
+  if (tier === 'blue') {
+    return {
+      rail: '#1e3a5f',
+      trim: '#38bdf8',
+      chevron: '#bae6fd',
+      bed: '#232933',
+    };
+  }
+  return {
+    rail: '#713f12',
+    trim: '#eab308',
+    chevron: '#fef08a',
+    bed: '#2a2822',
+  };
+}
+
+function drawChevronArrow(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  dir: Dir,
+  size: number,
+  color: string,
+  lineWidth: number,
+): void {
+  const { dx, dy } = dirDelta(dir);
+  const px = -dy;
+  const py = dx;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lineWidth;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(cx - dx * size * 0.35 + px * size * 0.55, cy - dy * size * 0.35 + py * size * 0.55);
+  ctx.lineTo(cx + dx * size * 0.45, cy + dy * size * 0.45);
+  ctx.lineTo(cx - dx * size * 0.35 - px * size * 0.55, cy - dy * size * 0.35 - py * size * 0.55);
+  ctx.stroke();
+}
+
+function drawBeltItemBadge(
+  ctx: CanvasRenderingContext2D,
+  item: string,
+  cx: number,
+  cy: number,
+  radius: number,
+): void {
+  const img = getIcon(item);
+  if (img) {
+    drawCroppedIcon(ctx, img, cx - radius, cy - radius, radius * 2, radius * 2);
+    return;
+  }
+  const meta = getItemMeta(item);
+  ctx.fillStyle = meta.color;
+  ctx.beginPath();
+  ctx.arc(cx, cy, Math.max(1.5, radius * 0.65), 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+  ctx.lineWidth = 0.8;
+  ctx.stroke();
+}
+
+function drawSurfaceBelt(
+  ctx: CanvasRenderingContext2D,
+  e: EntityInstance,
+  shape: BeltShape,
+  ox: number,
+  oy: number,
+  s: number,
+  tier: BeltTier,
+  altMode: boolean,
+): void {
+  const ex = ox + e.tx * s;
+  const ey = oy + e.ty * s;
+  const localSheet = getLocalEntitySprite(e.name);
+
+  if (localSheet && localSheet.naturalWidth > 0 && localSheet.naturalHeight > 0) {
+    // Factorio transport-belt sheets are grid of 128x128 (direction_count=20 rows, scale=0.5)
+    const rowH = Math.round(localSheet.naturalHeight / 20);
+    const colW = rowH;
+    const rowIdx = Math.min(19, Math.max(0, shape.sheetRow));
+    ctx.drawImage(
+      localSheet,
+      0,
+      rowIdx * rowH,
+      colW,
+      rowH,
+      ex - s * 0.5,
+      ey - s * 0.5,
+      s * 2,
+      s * 2,
+    );
+  } else {
+    const c = tierColors(tier);
+    const pad = s * 0.09;
+
+    if (shape.curved) {
+      const inVec = dirDelta(shape.inDir);
+      const outVec = dirDelta(shape.outDir);
+      // Enter at center of incoming edge, exit at center of outgoing edge
+      const p0x = ex + s * (0.5 - 0.5 * inVec.dx);
+      const p0y = ey + s * (0.5 - 0.5 * inVec.dy);
+      const p2x = ex + s * (0.5 + 0.5 * outVec.dx);
+      const p2y = ey + s * (0.5 + 0.5 * outVec.dy);
+      const cx = ex + s * 0.5;
+      const cy = ey + s * 0.5;
+
+      // Outer guardrail band
+      ctx.save();
+      ctx.lineCap = 'butt';
+      ctx.strokeStyle = c.rail;
+      ctx.lineWidth = s * 0.82;
+      ctx.beginPath();
+      ctx.moveTo(p0x, p0y);
+      ctx.quadraticCurveTo(cx, cy, p2x, p2y);
+      ctx.stroke();
+
+      // Track trim
+      ctx.strokeStyle = c.trim;
+      ctx.lineWidth = s * 0.72;
+      ctx.beginPath();
+      ctx.moveTo(p0x, p0y);
+      ctx.quadraticCurveTo(cx, cy, p2x, p2y);
+      ctx.stroke();
+
+      // Dark belt rubber bed
+      ctx.strokeStyle = c.bed;
+      ctx.lineWidth = s * 0.58;
+      ctx.beginPath();
+      ctx.moveTo(p0x, p0y);
+      ctx.quadraticCurveTo(cx, cy, p2x, p2y);
+      ctx.stroke();
+
+      // Center curved rib
+      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+      ctx.lineWidth = Math.max(1, s * 0.05);
+      ctx.beginPath();
+      ctx.moveTo(p0x, p0y);
+      ctx.quadraticCurveTo(cx, cy, p2x, p2y);
+      ctx.stroke();
+      ctx.restore();
+
+      const midX = 0.25 * p0x + 0.5 * cx + 0.25 * p2x;
+      const midY = 0.25 * p0y + 0.5 * cy + 0.25 * p2y;
+      drawChevronArrow(
+        ctx,
+        midX,
+        midY,
+        shape.outDir,
+        s * 0.28,
+        c.chevron,
+        Math.max(1.2, s * 0.1),
+      );
+    } else {
+      const horiz = shape.outDir === Dir.EAST || shape.outDir === Dir.WEST;
+      const bx = horiz ? ex : ex + pad;
+      const by = horiz ? ey + pad : ey;
+      const bw = horiz ? s : s - pad * 2;
+      const bh = horiz ? s - pad * 2 : s;
+
+      // Dark rubber track
+      ctx.fillStyle = c.bed;
+      ctx.fillRect(bx, by, bw, bh);
+
+      // Steel / painted side rails
+      const railTh = Math.max(1.2, s * 0.1);
+      ctx.fillStyle = c.trim;
+      if (horiz) {
+        ctx.fillRect(bx, by, bw, railTh);
+        ctx.fillRect(bx, by + bh - railTh, bw, railTh);
+      } else {
+        ctx.fillRect(bx, by, railTh, bh);
+        ctx.fillRect(bx + bw - railTh, by, railTh, bh);
+      }
+
+      // Subtle track ribs
+      if (s >= 10) {
+        ctx.fillStyle = 'rgba(0,0,0,0.35)';
+        if (horiz) {
+          ctx.fillRect(bx + s * 0.22, by + railTh, Math.max(1, s * 0.06), bh - railTh * 2);
+          ctx.fillRect(bx + s * 0.72, by + railTh, Math.max(1, s * 0.06), bh - railTh * 2);
+        } else {
+          ctx.fillRect(bx + railTh, by + s * 0.22, bw - railTh * 2, Math.max(1, s * 0.06));
+          ctx.fillRect(bx + railTh, by + s * 0.72, bw - railTh * 2, Math.max(1, s * 0.06));
+        }
+      }
+
+      // Directional chevrons
+      const chevLen = s * 0.24;
+      const lw = Math.max(1.1, s * 0.09);
+      const cx = ex + s * 0.5;
+      const cy = ey + s * 0.5;
+      drawChevronArrow(ctx, cx, cy, shape.outDir, chevLen, c.chevron, lw);
+    }
+  }
+
+  // Real Factorio item icons flowing along belt lanes
+  if (altMode && s >= 9) {
+    const cx = ex + s * 0.5;
+    const cy = ey + s * 0.5;
+    const { dx, dy } = dirDelta(shape.outDir);
+    // Factorio left lane relative to belt forward vector
+    const leftX = dy;
+    const leftY = -dx;
+    const itemR = Math.min(s * 0.21, 9);
+
+    if (e.laneItems && e.laneItems.length === 2) {
+      drawBeltItemBadge(
+        ctx,
+        e.laneItems[0],
+        cx + leftX * s * 0.2,
+        cy + leftY * s * 0.2,
+        itemR,
+      );
+      drawBeltItemBadge(
+        ctx,
+        e.laneItems[1],
+        cx - leftX * s * 0.2,
+        cy - leftY * s * 0.2,
+        itemR,
+      );
+    } else if (e.item) {
+      if (s >= 14) {
+        drawBeltItemBadge(
+          ctx,
+          e.item,
+          cx + leftX * s * 0.19 - dx * s * 0.14,
+          cy + leftY * s * 0.19 - dy * s * 0.14,
+          itemR * 0.9,
+        );
+        drawBeltItemBadge(
+          ctx,
+          e.item,
+          cx - leftX * s * 0.19 + dx * s * 0.14,
+          cy - leftY * s * 0.19 + dy * s * 0.14,
+          itemR * 0.9,
+        );
+      } else {
+        drawBeltItemBadge(ctx, e.item, cx, cy, itemR * 1.15);
+      }
+    }
+  }
+}
+
+function drawUndergroundHood(
+  ctx: CanvasRenderingContext2D,
+  e: EntityInstance,
+  ox: number,
+  oy: number,
+  s: number,
+  tier: BeltTier,
+): void {
+  const ex = ox + e.tx * s;
+  const ey = oy + e.ty * s;
+  const c = tierColors(tier);
+  const { dx, dy } = dirDelta(e.direction);
+  const pad = s * 0.08;
+
+  // Underlying short belt bed
+  ctx.fillStyle = c.bed;
+  ctx.fillRect(ex + pad, ey + pad, s - pad * 2, s - pad * 2);
+
+  // Dark underground tunnel mouth on the open belt side
+  const isIn = e.type === 'input';
+  const hoodShift = isIn ? 1 : -1;
+  ctx.fillStyle = '#0f1216';
+  ctx.fillRect(ex + s * 0.16, ey + s * 0.16, s * 0.68, s * 0.68);
+
+  // Armored sloped metallic bunker hood
+  const hx = ex + s * 0.1 + hoodShift * dx * s * 0.14;
+  const hy = ey + s * 0.1 + hoodShift * dy * s * 0.14;
+  const hw = s * 0.8 - Math.abs(dx) * s * 0.18;
+  const hh = s * 0.8 - Math.abs(dy) * s * 0.18;
+
+  ctx.fillStyle = '#525864';
+  ctx.fillRect(hx, hy, hw, hh);
+  ctx.strokeStyle = c.trim;
+  ctx.lineWidth = Math.max(1.3, s * 0.09);
+  ctx.strokeRect(hx, hy, hw, hh);
+
+  // Yellow/red/blue caution hazard stripe + directional arrow
+  drawChevronArrow(
+    ctx,
+    ex + s * 0.5,
+    ey + s * 0.5,
+    e.direction,
+    s * 0.28,
+    isIn ? c.chevron : '#f8fafc',
+    Math.max(1.3, s * 0.11),
+  );
+}
+
+function drawSplitterEntity(
+  ctx: CanvasRenderingContext2D,
+  e: EntityInstance,
+  ox: number,
+  oy: number,
+  s: number,
+  tier: BeltTier,
+): void {
+  const ex = ox + e.tx * s;
+  const ey = oy + e.ty * s;
+  const ew = e.w * s;
+  const eh = e.h * s;
+  const c = tierColors(tier);
+  const isEW = e.direction === Dir.EAST || e.direction === Dir.WEST;
+  const pad = s * 0.07;
+
+  // Belt bed underneath
+  ctx.fillStyle = c.bed;
+  ctx.fillRect(ex + pad, ey + pad, ew - pad * 2, eh - pad * 2);
+  ctx.strokeStyle = c.rail;
+  ctx.lineWidth = Math.max(1, s * 0.08);
+  ctx.strokeRect(ex + pad, ey + pad, ew - pad * 2, eh - pad * 2);
+
+  // Central mechanical bridge housing spanning both lanes
+  ctx.fillStyle = '#47505c';
+  if (isEW) {
+    ctx.fillRect(ex + ew * 0.2, ey + pad * 0.5, ew * 0.6, eh - pad);
+    ctx.strokeStyle = c.trim;
+    ctx.lineWidth = Math.max(1.4, s * 0.09);
+    ctx.strokeRect(ex + ew * 0.2, ey + pad * 0.5, ew * 0.6, eh - pad);
+  } else {
+    ctx.fillRect(ex + pad * 0.5, ey + eh * 0.2, ew - pad, eh * 0.6);
+    ctx.strokeStyle = c.trim;
+    ctx.lineWidth = Math.max(1.4, s * 0.09);
+    ctx.strokeRect(ex + pad * 0.5, ey + eh * 0.2, ew - pad, eh * 0.6);
+  }
+
+  // Dual lane directional chevrons
+  for (const frac of [0.25, 0.75]) {
+    const cx = isEW ? ex + ew * 0.5 : ex + ew * frac;
+    const cy = isEW ? ey + eh * frac : ey + eh * 0.5;
+    drawChevronArrow(
+      ctx,
+      cx,
+      cy,
+      e.direction,
+      s * 0.26,
+      c.chevron,
+      Math.max(1.2, s * 0.1),
+    );
+  }
+}
+
+function drawMachineEntity(
+  ctx: CanvasRenderingContext2D,
+  e: EntityInstance,
+  ox: number,
+  oy: number,
+  s: number,
+  altMode: boolean,
+  heatmapColor: string | null,
+): void {
+  const ex = ox + e.tx * s;
+  const ey = oy + e.ty * s;
+  const ew = e.w * s;
+  const eh = e.h * s;
+  const cx = ex + ew / 2;
+  const cy = ey + eh / 2;
+
+  // Ground shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.38)';
+  ctx.fillRect(ex + s * 0.14, ey + s * 0.18, ew - s * 0.08, eh - s * 0.08);
+
+  const localSprite = getLocalEntitySprite(e.name);
+  if (localSprite && localSprite.naturalWidth > 0 && localSprite.naturalHeight > 0) {
+    // Local Factorio 2.0 "-base.png" or single furnace image vs legacy 8x4 sheet
+    const isGridSheet =
+      e.name.startsWith('assembling-machine-') && localSprite.naturalWidth > 700;
+    const sw = isGridSheet ? Math.round(localSprite.naturalWidth / 8) : localSprite.naturalWidth;
+    const sh = isGridSheet ? Math.round(localSprite.naturalHeight / 4) : localSprite.naturalHeight;
+    ctx.drawImage(
+      localSprite,
+      0,
+      0,
+      sw,
+      sh,
+      ex - s * 0.15,
+      ey - s * 0.2,
+      ew + s * 0.3,
+      eh + s * 0.35,
+    );
+  } else {
+    const isFurnace = e.name === 'electric-furnace';
+    const margin = Math.max(1.5, s * 0.08);
+    const bx = ex + margin;
+    const by = ey + margin;
+    const bw = ew - margin * 2;
+    const bh = eh - margin * 2;
+
+    if (isFurnace) {
+      // Heavy steel Electric Furnace chassis + glowing thermal coils
+      ctx.fillStyle = '#3f454f';
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.strokeStyle = '#737d8c';
+      ctx.lineWidth = Math.max(1.4, s * 0.08);
+      ctx.strokeRect(bx, by, bw, bh);
+
+      // Inner dark insulation deck
+      ctx.fillStyle = '#242931';
+      ctx.fillRect(bx + bw * 0.14, by + bh * 0.14, bw * 0.72, bh * 0.72);
+
+      // Glowing orange furnace core
+      const glow = ctx.createRadialGradient(cx, cy, bw * 0.04, cx, cy, bw * 0.3);
+      glow.addColorStop(0, '#fde047');
+      glow.addColorStop(0.45, '#f97316');
+      glow.addColorStop(1, 'rgba(234,88,12,0.12)');
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(cx, cy, bw * 0.28, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Vertical radiator pipes along sides
+      if (s >= 10) {
+        ctx.fillStyle = '#64748b';
+        ctx.fillRect(bx + bw * 0.06, by + bh * 0.2, bw * 0.07, bh * 0.6);
+        ctx.fillRect(bx + bw * 0.87, by + bh * 0.2, bw * 0.07, bh * 0.6);
+      }
+    } else {
+      // Factorio Assembling Machine tier body colors
+      const tier = e.name.endsWith('1') ? 1 : e.name.endsWith('3') ? 3 : 2;
+      const shell = tier === 1 ? '#6e6a61' : tier === 2 ? '#34638c' : '#858e38';
+      const trim = tier === 1 ? '#a8a29e' : tier === 2 ? '#60a5fa' : '#d9e048';
+      const inner = tier === 1 ? '#2e2d2a' : tier === 2 ? '#1e3045' : '#2f341b';
+
+      ctx.fillStyle = shell;
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.strokeStyle = trim;
+      ctx.lineWidth = Math.max(1.4, s * 0.08);
+      ctx.strokeRect(bx, by, bw, bh);
+
+      // Corner structural bolts
+      const boltR = Math.max(1.2, bw * 0.06);
+      ctx.fillStyle = '#94a3b8';
+      for (const [oxf, oyf] of [
+        [0.1, 0.1],
+        [0.9, 0.1],
+        [0.1, 0.9],
+        [0.9, 0.9],
+      ]) {
+        ctx.fillRect(bx + bw * oxf - boltR / 2, by + bh * oyf - boltR / 2, boltR, boltR);
+      }
+
+      // Inner dark mechanical housing + rotary gear
+      ctx.fillStyle = inner;
+      ctx.beginPath();
+      ctx.arc(cx, cy, bw * 0.34, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = trim;
+      ctx.lineWidth = Math.max(1.2, s * 0.07);
+      ctx.stroke();
+
+      // Mechanical press teeth
+      if (s >= 10) {
+        ctx.strokeStyle = 'rgba(226, 232, 240, 0.35)';
+        ctx.lineWidth = Math.max(1.5, s * 0.09);
+        for (let k = 0; k < 4; k++) {
+          const ang = (k * Math.PI) / 4;
+          ctx.beginPath();
+          ctx.moveTo(cx + Math.cos(ang) * bw * 0.29, cy + Math.sin(ang) * bh * 0.29);
+          ctx.lineTo(cx - Math.cos(ang) * bw * 0.29, cy - Math.sin(ang) * bh * 0.29);
+          ctx.stroke();
+        }
+      }
+    }
+
+    // Green Factorio status light top-left
+    if (s >= 9) {
+      ctx.fillStyle = '#4ade80';
+      ctx.beginPath();
+      ctx.arc(bx + bw * 0.16, by + bh * 0.16, Math.max(1.8, s * 0.09), 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  if (heatmapColor) {
+    ctx.fillStyle = heatmapColor;
+    ctx.fillRect(ex + 1, ey + 1, ew - 2, eh - 2);
+  }
+
+  // Factorio Alt-Mode recipe badge centered on machine
+  if (altMode && e.item && s >= 7) {
+    const iconSize = Math.min(ew * 0.56, Math.max(14, s * 1.45));
+    const badgeR = iconSize * 0.56;
+    ctx.fillStyle = 'rgba(15, 20, 26, 0.72)';
+    ctx.beginPath();
+    ctx.arc(cx, cy, badgeR, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    const img = getIcon(e.item);
+    if (img) {
+      drawCroppedIcon(ctx, img, cx - iconSize / 2, cy - iconSize / 2, iconSize, iconSize);
+    } else {
+      const meta = getItemMeta(e.item);
+      ctx.fillStyle = meta.color;
+      ctx.beginPath();
+      ctx.arc(cx, cy, iconSize * 0.35, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // Installed modules at bottom edge
+  if (altMode && e.items && e.items.length > 0 && s >= 9) {
+    const slotSize = Math.max(5, Math.min(12, s * 0.42));
+    const totalW = e.items.length * (slotSize + 2) - 2;
+    const startX = cx - totalW / 2;
+    const modY = ey + eh - slotSize - Math.max(2, s * 0.12);
+
+    e.items.forEach((mod, idx) => {
+      const mx = startX + idx * (slotSize + 2);
+      ctx.fillStyle = 'rgba(10, 14, 20, 0.85)';
+      ctx.fillRect(mx - 1, modY - 1, slotSize + 2, slotSize + 2);
+      const img = getIcon(mod);
+      if (img && s >= 12) {
+        drawCroppedIcon(ctx, img, mx, modY, slotSize, slotSize);
+      } else {
+        ctx.fillStyle = mod.startsWith('speed')
+          ? '#38bdf8'
+          : mod.startsWith('productivity')
+            ? '#ef4444'
+            : '#22c55e';
+        ctx.fillRect(mx, modY, slotSize, slotSize);
+      }
+    });
+  }
+}
+
+function drawInserterEntity(
+  ctx: CanvasRenderingContext2D,
+  e: EntityInstance,
+  ox: number,
+  oy: number,
+  s: number,
+): void {
+  const ins = INSERTER_BY_ENTITY_NAME[e.name];
+  if (!ins) return;
+  const cx = ox + (e.tx + 0.5) * s;
+  const cy = oy + (e.ty + 0.5) * s;
+  const { dx, dy } = dirDelta(e.direction);
+
+  // Dark metallic mounting plate
+  const pad = s * 0.24;
+  ctx.fillStyle = '#2d333b';
+  ctx.fillRect(cx - pad, cy - pad, pad * 2, pad * 2);
+  ctx.strokeStyle = '#64748b';
+  ctx.lineWidth = Math.max(0.8, s * 0.05);
+  ctx.strokeRect(cx - pad, cy - pad, pad * 2, pad * 2);
+
+  // Extended mechanical arm reaching from pickup (+d) across base to drop (-d)
+  const armLen = ins.reach === 2 ? s * 0.52 : s * 0.44;
+  const pX = cx + dx * armLen;
+  const pY = cy + dy * armLen;
+  const dX = cx - dx * armLen;
+  const dY = cy - dy * armLen;
+
+  // Arm shadow
+  ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+  ctx.lineWidth = Math.max(2.0, s * 0.17);
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(pX + 1.5, pY + 1.5);
+  ctx.lineTo(dX + 1.5, dY + 1.5);
+  ctx.stroke();
+
+  // Painted Factorio inserter arm
+  ctx.strokeStyle = ins.color;
+  ctx.lineWidth = Math.max(1.6, s * 0.14);
+  ctx.beginPath();
+  ctx.moveTo(pX, pY);
+  ctx.lineTo(dX, dY);
+  ctx.stroke();
+
+  // Central pivot turret collar
+  ctx.fillStyle = '#475569';
+  ctx.beginPath();
+  ctx.arc(cx, cy, Math.max(1.8, s * 0.14), 0, Math.PI * 2);
+  ctx.fill();
+
+  // Pickup claw (open U-fork facing +d) & drop head indicator on -d
+  ctx.fillStyle = '#e2e8f0';
+  ctx.beginPath();
+  ctx.arc(pX, pY, Math.max(1.5, s * 0.09), 0, Math.PI * 2);
+  ctx.fill();
+
+  // Bright drop pincer triangle on drop side (-d)
+  const px = -dy;
+  const py = dx;
+  ctx.fillStyle = ins.color;
+  ctx.beginPath();
+  ctx.moveTo(dX - dx * s * 0.1, dY - dy * s * 0.1);
+  ctx.lineTo(dX + px * s * 0.11 + dx * s * 0.08, dY + py * s * 0.11 + dy * s * 0.08);
+  ctx.lineTo(dX - px * s * 0.11 + dx * s * 0.08, dY - py * s * 0.11 + dy * s * 0.08);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawPoleEntity(
+  ctx: CanvasRenderingContext2D,
+  e: EntityInstance,
+  ox: number,
+  oy: number,
+  s: number,
+): void {
+  const ex = ox + e.tx * s;
+  const ey = oy + e.ty * s;
+  const ew = e.w * s;
+  const eh = e.h * s;
+  const cx = ex + ew / 2;
+  const cy = ey + eh / 2;
+
+  const localPole = getLocalEntitySprite(e.name);
+  if (localPole && localPole.naturalWidth > 0 && localPole.naturalHeight > 0) {
+    // Factorio pole sprites have 4 directions across sheet width
+    const fw = Math.round(localPole.naturalWidth / 4);
+    const fh = localPole.naturalHeight;
+    const aspect = fw / Math.max(1, fh);
+    const drawW = e.name === 'substation' ? ew * 1.15 : ew * 1.1;
+    const drawH = drawW / Math.max(0.2, aspect);
+    ctx.drawImage(
+      localPole,
+      0,
+      0,
+      fw,
+      fh,
+      cx - drawW * 0.48,
+      ey + eh - drawH * 0.92,
+      drawW,
+      drawH,
+    );
+    return;
+  }
+
+  // Diagonal ground shadow extending SE
+  ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+  ctx.lineWidth = Math.max(2, s * 0.16);
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.lineTo(cx + ew * 0.65, cy + eh * 0.4);
+  ctx.stroke();
+
+  if (e.name === 'substation') {
+    // 2x2 Industrial Transformer Substation
+    const m = s * 0.12;
+    ctx.fillStyle = '#334155';
+    ctx.fillRect(ex + m, ey + m, ew - m * 2, eh - m * 2);
+    ctx.strokeStyle = '#60a5fa';
+    ctx.lineWidth = Math.max(1.5, s * 0.08);
+    ctx.strokeRect(ex + m, ey + m, ew - m * 2, eh - m * 2);
+
+    // Transformer coils + copper top terminals
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(ex + ew * 0.22, ey + eh * 0.25, ew * 0.56, eh * 0.5);
+    ctx.fillStyle = '#38bdf8';
+    ctx.beginPath();
+    ctx.arc(cx, cy - eh * 0.12, Math.max(2.5, s * 0.22), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#d97706';
+    for (const bx of [cx - ew * 0.22, cx + ew * 0.22]) {
+      ctx.beginPath();
+      ctx.arc(bx, cy + eh * 0.14, Math.max(2, s * 0.14), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    return;
+  }
+
+  if (e.name === 'small-electric-pole') {
+    // Wooden base + dark timber top + crossarm insulators
+    ctx.fillStyle = '#78350f';
+    ctx.beginPath();
+    ctx.arc(cx, cy, Math.max(2.5, s * 0.24), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#92400e';
+    ctx.lineWidth = Math.max(1.5, s * 0.11);
+    ctx.beginPath();
+    ctx.moveTo(cx - s * 0.34, cy - s * 0.12);
+    ctx.lineTo(cx + s * 0.34, cy - s * 0.12);
+    ctx.stroke();
+    ctx.fillStyle = '#38bdf8';
+    ctx.beginPath();
+    ctx.arc(cx - s * 0.28, cy - s * 0.12, Math.max(1.2, s * 0.08), 0, Math.PI * 2);
+    ctx.arc(cx + s * 0.28, cy - s * 0.12, Math.max(1.2, s * 0.08), 0, Math.PI * 2);
+    ctx.fill();
+    return;
+  }
+
+  // Medium steel lattice pylon
+  ctx.fillStyle = '#475569';
+  ctx.strokeStyle = '#94a3b8';
+  ctx.lineWidth = 1.3;
+  ctx.fillRect(cx - s * 0.24, cy - s * 0.24, s * 0.48, s * 0.48);
+  ctx.strokeRect(cx - s * 0.24, cy - s * 0.24, s * 0.48, s * 0.48);
+
+  // Steel crossarm & turquoise ceramic insulators
+  ctx.strokeStyle = '#cbd5e1';
+  ctx.lineWidth = Math.max(1.5, s * 0.09);
+  ctx.beginPath();
+  ctx.moveTo(cx - s * 0.36, cy - s * 0.12);
+  ctx.lineTo(cx + s * 0.36, cy - s * 0.12);
+  ctx.stroke();
+  ctx.fillStyle = '#38bdf8';
+  ctx.beginPath();
+  ctx.arc(cx - s * 0.3, cy - s * 0.12, Math.max(1.5, s * 0.09), 0, Math.PI * 2);
+  ctx.arc(cx + s * 0.3, cy - s * 0.12, Math.max(1.5, s * 0.09), 0, Math.PI * 2);
+  ctx.fill();
+}
+
+export function renderFactorioScene(
+  ctx: CanvasRenderingContext2D,
+  canvasW: number,
+  canvasH: number,
+  floorplan: FloorplanResult,
+  entities: EntityInstance[],
+  ox: number,
+  oy: number,
+  s: number,
+  layers: FactorioRenderLayerOpts,
+  selectedMacroId: string | null,
+  selectedPinId: string | null,
+  netUtilMap: Map<string, number>,
+  macroUtilMap: Map<string, number>,
+  utilColorFn: (u: number) => string,
+): { ugInputs: EntityInstance[]; ugOutputs: EntityInstance[] } {
+  const W = floorplan.width;
+  const H = floorplan.height;
+
+  // Refined Concrete outer ground & die pad
+  ctx.fillStyle = '#1b1d20';
+  ctx.fillRect(0, 0, canvasW, canvasH);
+
+  ctx.fillStyle = '#34373c';
+  ctx.fillRect(ox, oy, W * s, H * s);
+
+  if (s >= 7) {
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.24)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = 0; x <= W; x++) {
+      const px = Math.round(ox + x * s) + 0.5;
+      ctx.moveTo(px, oy);
+      ctx.lineTo(px, oy + H * s);
+    }
+    for (let y = 0; y <= H; y++) {
+      const py = Math.round(oy + y * s) + 0.5;
+      ctx.moveTo(ox, py);
+      ctx.lineTo(ox + W * s, py);
+    }
+    ctx.stroke();
+  }
+
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.07)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let x = 0; x <= W; x += 5) {
+    const px = Math.round(ox + x * s) + 0.5;
+    ctx.moveTo(px, oy);
+    ctx.lineTo(px, oy + H * s);
+  }
+  for (let y = 0; y <= H; y += 5) {
+    const py = Math.round(oy + y * s) + 0.5;
+    ctx.moveTo(ox, py);
+    ctx.lineTo(ox + W * s, py);
+  }
+  ctx.stroke();
+
+  if (s >= 9) {
+    ctx.fillStyle = 'rgba(203, 213, 225, 0.55)';
+    ctx.font = '10px JetBrains Mono, monospace';
+    ctx.textAlign = 'center';
+    for (let x = 0; x <= W; x += 5) {
+      ctx.fillText(String(x), ox + x * s, oy - 5);
+    }
+    ctx.textAlign = 'right';
+    for (let y = 0; y <= H; y += 5) {
+      ctx.fillText(String(y), ox - 5, oy + y * s + 3);
+    }
+  }
+
+  // Refined concrete border bevel
+  ctx.strokeStyle = '#64748b';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(ox, oy, W * s, H * s);
+
+  // Power supply coverage overlay (when enabled)
+  if (layers.powerCoverage) {
+    for (const e of entities) {
+      const ps = POLE_BY_ENTITY_NAME[e.name];
+      if (!ps) continue;
+      const pcx = ox + (e.tx + ps.size / 2) * s;
+      const pcy = oy + (e.ty + ps.size / 2) * s;
+      const r = ps.supplyRadius * s;
+      ctx.fillStyle = 'rgba(56, 189, 248, 0.12)';
+      ctx.fillRect(pcx - r, pcy - r, r * 2, r * 2);
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.45)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(pcx - r, pcy - r, r * 2, r * 2);
+    }
+  }
+
+  // Soft macro outline overlay
+  if (layers.macros) {
+    for (const pm of floorplan.macros) {
+      const mx = ox + pm.x * s;
+      const my = oy + pm.y * s;
+      const mw = pm.macro.width * s;
+      const mh = pm.macro.height * s;
+      const isSel = selectedMacroId === pm.id;
+      const isBal = pm.macro.kind === 'balancer-macro';
+
+      ctx.fillStyle = isSel ? 'rgba(245, 158, 11, 0.1)' : 'rgba(255, 255, 255, 0.03)';
+      ctx.fillRect(mx, my, mw, mh);
+
+      ctx.save();
+      ctx.setLineDash(isSel ? [] : [4, 4]);
+      ctx.strokeStyle = isSel
+        ? '#f59e0b'
+        : isBal
+          ? 'rgba(251, 191, 36, 0.45)'
+          : 'rgba(148, 163, 184, 0.35)';
+      ctx.lineWidth = isSel ? 2.2 : 1;
+      ctx.strokeRect(mx, my, mw, mh);
+      ctx.restore();
+
+      if (s >= 8) {
+        const tag = `${pm.locked ? '🔒 ' : ''}${pm.macro.label} (${pm.macro.sublabel})`;
+        ctx.font = `600 ${Math.max(9, Math.min(11, s * 0.5))}px Inter, sans-serif`;
+        const tw = ctx.measureText(tag).width;
+        ctx.fillStyle = 'rgba(20, 23, 28, 0.72)';
+        ctx.fillRect(mx + 2, my - 15, tw + 8, 13);
+        ctx.fillStyle = isBal ? '#fde68a' : '#e2e8f0';
+        ctx.textAlign = 'left';
+        ctx.fillText(tag, mx + 6, my - 5);
+      }
+    }
+  }
+
+  // Classify entity draw order (belts -> machines -> inserters -> port markers -> poles & wires)
+  const belts: EntityInstance[] = [];
+  const ugs: EntityInstance[] = [];
+  const splitters: EntityInstance[] = [];
+  const machines: EntityInstance[] = [];
+  const inserters: EntityInstance[] = [];
+  const poles: EntityInstance[] = [];
+  const markers: EntityInstance[] = [];
+  const ugInputs: EntityInstance[] = [];
+  const ugOutputs: EntityInstance[] = [];
+
+  for (const e of entities) {
+    if (e.role === 'port-marker') {
+      markers.push(e);
+    } else if (isMachineName(e.name)) {
+      machines.push(e);
+    } else if (isSplitterName(e.name)) {
+      splitters.push(e);
+    } else if (isUndergroundName(e.name)) {
+      ugs.push(e);
+      if (e.type === 'input') ugInputs.push(e);
+      else ugOutputs.push(e);
+    } else if (beltTierFromEntityName(e.name)) {
+      belts.push(e);
+    } else if (e.name in INSERTER_BY_ENTITY_NAME) {
+      inserters.push(e);
+    } else if (e.name in POLE_BY_ENTITY_NAME) {
+      poles.push(e);
+    }
+  }
+
+  const incomingMap = buildIncomingMap(entities);
+
+  // Layer 1: Surface belts
+  if (layers.belts) {
+    for (const b of belts) {
+      const tier = beltTierFromEntityName(b.name)!;
+      const shape = classifyBeltShape(b, incomingMap);
+      drawSurfaceBelt(ctx, b, shape, ox, oy, s, tier, layers.altMode);
+      if (layers.heatmap && b.netId && netUtilMap.has(b.netId)) {
+        ctx.fillStyle = utilColorFn(netUtilMap.get(b.netId)!);
+        ctx.fillRect(ox + b.tx * s, oy + b.ty * s, s, s);
+      }
+    }
+  }
+
+  // Layer 2: Splitters & Underground Belt Hoods
+  if (layers.belts) {
+    for (const sp of splitters) {
+      const tier = beltTierFromEntityName(sp.name) ?? 'yellow';
+      drawSplitterEntity(ctx, sp, ox, oy, s, tier);
+    }
+  }
+  if (layers.undergrounds) {
+    for (const ug of ugs) {
+      const tier = beltTierFromEntityName(ug.name) ?? 'yellow';
+      drawUndergroundHood(ctx, ug, ox, oy, s, tier);
+    }
+  }
+
+  // Layer 3: Assembling Machines & Electric Furnaces
+  for (const m of machines) {
+    const hColor =
+      layers.heatmap && m.macroId && macroUtilMap.has(m.macroId)
+        ? utilColorFn(macroUtilMap.get(m.macroId)!)
+        : null;
+    drawMachineEntity(ctx, m, ox, oy, s, layers.altMode, hColor);
+  }
+
+  // Layer 4: Inserters
+  for (const ins of inserters) {
+    drawInserterEntity(ctx, ins, ox, oy, s);
+  }
+
+  // Layer 5: Port markers (Display Panels / Constant Combinators)
+  if (layers.pinLabels) {
+    for (const mk of markers) {
+      const mx = ox + mk.tx * s;
+      const my = oy + mk.ty * s;
+      ctx.fillStyle = '#334155';
+      ctx.strokeStyle = '#94a3b8';
+      ctx.lineWidth = 1.2;
+      ctx.fillRect(mx + s * 0.14, my + s * 0.14, s * 0.72, s * 0.72);
+      ctx.strokeRect(mx + s * 0.14, my + s * 0.14, s * 0.72, s * 0.72);
+      if (mk.markerIcon) {
+        const img = getIcon(mk.markerIcon);
+        if (img) {
+          drawCroppedIcon(ctx, img, mx + s * 0.22, my + s * 0.22, s * 0.56, s * 0.56);
+        }
+      }
+    }
+  }
+
+  // Layer 6: Power Poles + Sagging Copper Wires
+  const poleCenters: Array<{ ent: EntityInstance; cx: number; cy: number; wireReach: number }> = [];
+  for (const pe of poles) {
+    const ps = POLE_BY_ENTITY_NAME[pe.name];
+    if (!ps) continue;
+    const cx = ox + (pe.tx + pe.w / 2) * s;
+    const cy = oy + (pe.ty + pe.h / 2) * s;
+    poleCenters.push({ ent: pe, cx, cy, wireReach: ps.wireReach });
+    if (layers.powerGrid) {
+      drawPoleEntity(ctx, pe, ox, oy, s);
+    }
+  }
+
+  if (layers.powerGrid && poleCenters.length > 1) {
+    ctx.save();
+    for (let i = 0; i < poleCenters.length; i++) {
+      for (let j = i + 1; j < poleCenters.length; j++) {
+        const a = poleCenters[i];
+        const b = poleCenters[j];
+        const reach = Math.min(a.wireReach, b.wireReach);
+        const dx = a.ent.tx + a.ent.w / 2 - (b.ent.tx + b.ent.w / 2);
+        const dy = a.ent.ty + a.ent.h / 2 - (b.ent.ty + b.ent.h / 2);
+        if (dx * dx + dy * dy <= reach * reach + 1e-6) {
+          const mx = (a.cx + b.cx) / 2;
+          const my = (a.cy + b.cy) / 2;
+          const dist = Math.hypot(b.cx - a.cx, b.cy - a.cy);
+          const sag = Math.min(s * 0.75, dist * 0.08);
+          const ay = a.cy - s * 0.14;
+          const by = b.cy - s * 0.14;
+
+          // Wire shadow
+          ctx.strokeStyle = 'rgba(0, 0, 0, 0.26)';
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.moveTo(a.cx + 2, ay + 4);
+          ctx.quadraticCurveTo(mx + 2, my + 4 + sag, b.cx + 2, by + 4);
+          ctx.stroke();
+
+          // Warm Factorio copper wire
+          ctx.strokeStyle = 'rgba(217, 130, 62, 0.78)';
+          ctx.lineWidth = 1.15;
+          ctx.beginPath();
+          ctx.moveTo(a.cx, ay);
+          ctx.quadraticCurveTo(mx, my + sag, b.cx, by);
+          ctx.stroke();
+        }
+      }
+    }
+    ctx.restore();
+  }
+
+  // Layer 7: Perimeter I/O Badges + Real Item Icons
+  for (const pin of floorplan.pins) {
+    const px = ox + (pin.x + 0.5) * s;
+    const py = oy + (pin.y + 0.5) * s;
+    const isSel = selectedPinId === pin.id;
+    const col = pin.kind === 'input' ? '#4ade80' : '#f472b6';
+
+    ctx.fillStyle = '#181c22';
+    ctx.strokeStyle = isSel ? '#ffffff' : col;
+    ctx.lineWidth = isSel ? 2.5 : 1.8;
+    ctx.beginPath();
+    ctx.arc(px, py, Math.max(4.5, s * 0.42), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    const pinIcon = getIcon(pin.item);
+    if (pinIcon && s >= 9) {
+      const r = Math.max(4, s * 0.34);
+      drawCroppedIcon(ctx, pinIcon, px - r, py - r, r * 2, r * 2);
+    } else {
+      ctx.fillStyle = getItemMeta(pin.item).color;
+      ctx.beginPath();
+      ctx.arc(px, py, Math.max(2, s * 0.2), 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    if (layers.pinLabels && s >= 7) {
+      const meta = getItemMeta(pin.item);
+      const text = `${pin.locked ? '🔒' : ''}${meta.name} (${(pin.ratePerSec * 60).toFixed(0)}/m)`;
+      ctx.font = `600 ${Math.max(9, Math.min(11, s * 0.5))}px JetBrains Mono, monospace`;
+      ctx.fillStyle = '#f1f5f9';
+      const pad = Math.max(10, s * 0.9);
+      if (pin.edge === 'W') {
+        ctx.textAlign = 'right';
+        ctx.fillText(text, px - pad, py + 3);
+      } else if (pin.edge === 'E') {
+        ctx.textAlign = 'left';
+        ctx.fillText(text, px + pad, py + 3);
+      } else if (pin.edge === 'N') {
+        ctx.textAlign = 'center';
+        ctx.fillText(text, px, py - pad);
+      } else {
+        ctx.textAlign = 'center';
+        ctx.fillText(text, px, py + pad + 8);
+      }
+    }
+  }
+
+  void BELT_SPECS;
+  return { ugInputs, ugOutputs };
+}

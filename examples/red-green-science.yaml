@@ -1,0 +1,50 @@
+version: 1
+name: Red + Green Science (60/min)
+pdk:
+  defaultBeltTier: yellow
+  allowedBeltTiers:
+    - yellow
+    - red
+    - blue
+  downsizeLowRateBelts: false
+  defaultAssemblerTier: 2
+  allowedAssemblerTiers:
+    - 1
+    - 2
+    - 3
+  defaultInserterTier: yellow
+  allowedInserterTiers:
+    - yellow
+    - long
+    - fast
+    - bulk
+  defaultPoleTier: medium
+  modules:
+    global: []
+    byRecipe: {}
+  allowBeltWeaving: false
+  portMarkers: display-panel
+targets:
+  - item: automation-science-pack
+    ratePerMin: 60
+  - item: logistic-science-pack
+    ratePerMin: 60
+inputPreset: plates
+floorplan:
+  mode: auto
+  aspectRatio: 1.35
+  margin: 3
+  halo: 2
+pins:
+  - bus: in:iron-plate
+    edge: W
+    order: 1
+  - bus: in:copper-plate
+    edge: W
+    order: 2
+  - bus: out:automation-science-pack
+    edge: E
+    order: 1
+  - bus: out:logistic-science-pack
+    edge: E
+    order: 2

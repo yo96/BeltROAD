@@ -1,0 +1,233 @@
+import yaml from 'js-yaml';
+import {
+  DesignSpec,
+  OptimizationConfig,
+  OptimizationLevel,
+  PdkConfig,
+  PinConstraint,
+  TargetSpec,
+} from '../types.js';
+import { getCatalog } from '../data/catalog.js';
+
+export function defaultOptimizationConfig(level: OptimizationLevel = 'compact'): OptimizationConfig {
+  if (level === 'fast') {
+    return {
+      level: 'fast',
+      compactMacros: true,
+      alignPins: true,
+      compactFloorplan: false,
+      optimizeRoutes: false,
+      layeredFloorplan: true,
+      busTaps: false,
+      portSwap: true,
+      allowFlipY: true,
+    };
+  }
+  if (level === 'balanced') {
+    return {
+      level: 'balanced',
+      compactMacros: true,
+      alignPins: true,
+      compactFloorplan: true,
+      optimizeRoutes: false,
+      layeredFloorplan: true,
+      busTaps: true,
+      portSwap: true,
+      allowFlipY: true,
+    };
+  }
+  return {
+    level: 'compact',
+    compactMacros: true,
+    alignPins: true,
+    compactFloorplan: true,
+    optimizeRoutes: true,
+    layeredFloorplan: true,
+    busTaps: true,
+    portSwap: true,
+    allowFlipY: true,
+  };
+}
+
+export function defaultPdkConfig(): PdkConfig {
+  return {
+    defaultBeltTier: 'red',
+    allowedBeltTiers: ['yellow', 'red', 'blue'],
+    downsizeLowRateBelts: false,
+    defaultAssemblerTier: 2,
+    allowedAssemblerTiers: [1, 2, 3],
+    defaultInserterTier: 'fast',
+    allowedInserterTiers: ['yellow', 'long', 'fast', 'bulk'],
+    defaultPoleTier: 'medium',
+    modules: {
+      global: [],
+      byRecipe: {},
+    },
+    allowBeltWeaving: false,
+    portMarkers: 'display-panel',
+  };
+}
+
+export function normalizeSpec(raw: Partial<DesignSpec>): DesignSpec {
+  const defPdk = defaultPdkConfig();
+  const rawPdk = raw.pdk ?? ({} as Partial<PdkConfig>);
+
+  const pdk: PdkConfig = {
+    defaultBeltTier: rawPdk.defaultBeltTier ?? defPdk.defaultBeltTier,
+    allowedBeltTiers:
+      rawPdk.allowedBeltTiers && rawPdk.allowedBeltTiers.length > 0
+        ? rawPdk.allowedBeltTiers
+        : defPdk.allowedBeltTiers,
+    downsizeLowRateBelts: rawPdk.downsizeLowRateBelts ?? defPdk.downsizeLowRateBelts,
+    defaultAssemblerTier: rawPdk.defaultAssemblerTier ?? defPdk.defaultAssemblerTier,
+    allowedAssemblerTiers:
+      rawPdk.allowedAssemblerTiers && rawPdk.allowedAssemblerTiers.length > 0
+        ? rawPdk.allowedAssemblerTiers
+        : defPdk.allowedAssemblerTiers,
+    defaultInserterTier: rawPdk.defaultInserterTier ?? defPdk.defaultInserterTier,
+    allowedInserterTiers:
+      rawPdk.allowedInserterTiers && rawPdk.allowedInserterTiers.length > 0
+        ? rawPdk.allowedInserterTiers
+        : defPdk.allowedInserterTiers,
+    defaultPoleTier: rawPdk.defaultPoleTier ?? defPdk.defaultPoleTier,
+    modules: {
+      global: rawPdk.modules?.global ?? [],
+      byRecipe: rawPdk.modules?.byRecipe ?? {},
+    },
+    allowBeltWeaving: false,
+    portMarkers: rawPdk.portMarkers ?? defPdk.portMarkers,
+  };
+
+  if (!pdk.allowedBeltTiers.includes(pdk.defaultBeltTier)) {
+    pdk.allowedBeltTiers = [pdk.defaultBeltTier, ...pdk.allowedBeltTiers];
+  }
+
+  const rawFloor = raw.floorplan ?? ({} as DesignSpec['floorplan']);
+  const floorplan: DesignSpec['floorplan'] = {
+    mode: rawFloor.mode ?? 'auto',
+    width: rawFloor.width,
+    height: rawFloor.height,
+    aspectRatio: rawFloor.aspectRatio ?? 1.35,
+    margin: rawFloor.margin ?? 3,
+    halo: rawFloor.halo ?? 2,
+  };
+
+  const optDef = defaultOptimizationConfig(raw.optimization?.level ?? 'compact');
+  const optimization: OptimizationConfig = {
+    level: raw.optimization?.level ?? optDef.level,
+    compactMacros: raw.optimization?.compactMacros ?? optDef.compactMacros,
+    alignPins: raw.optimization?.alignPins ?? optDef.alignPins,
+    compactFloorplan: raw.optimization?.compactFloorplan ?? optDef.compactFloorplan,
+    optimizeRoutes: raw.optimization?.optimizeRoutes ?? optDef.optimizeRoutes,
+    layeredFloorplan: raw.optimization?.layeredFloorplan ?? optDef.layeredFloorplan,
+    busTaps: raw.optimization?.busTaps ?? optDef.busTaps,
+    portSwap: raw.optimization?.portSwap ?? optDef.portSwap,
+    allowFlipY: raw.optimization?.allowFlipY ?? optDef.allowFlipY,
+  };
+
+  const targets: TargetSpec[] = (raw.targets ?? []).map((t) => ({
+    item: String(t.item),
+    ratePerMin: Number(t.ratePerMin),
+  }));
+
+  const pins: PinConstraint[] = (raw.pins ?? []).map((p) => ({ ...p }));
+
+  return {
+    version: raw.version ?? 1,
+    name: raw.name?.trim() || 'Factorio EDA Design',
+    pdk,
+    targets,
+    inputPreset: raw.inputPreset ?? 'plates',
+    inputOverrides: { ...(raw.inputOverrides ?? {}) },
+    floorplan,
+    pins,
+    macroOverrides: { ...(raw.macroOverrides ?? {}) },
+    customBalancers: raw.customBalancers ? [...raw.customBalancers] : undefined,
+    optimization,
+  };
+}
+
+export function validateSpec(spec: DesignSpec): string[] {
+  const errors: string[] = [];
+  const catalog = getCatalog();
+
+  if (!spec.targets || spec.targets.length === 0) {
+    errors.push('Spec must include at least one target in "targets".');
+  } else {
+    for (const t of spec.targets) {
+      if (!t.item) {
+        errors.push('Every target must specify an "item".');
+      } else if (!catalog.items[t.item] && !catalog.recipesByOutput[t.item]) {
+        errors.push(`Unknown target item "${t.item}".`);
+      }
+      if (!Number.isFinite(t.ratePerMin) || t.ratePerMin <= 0) {
+        errors.push(`Target "${t.item}" ratePerMin must be > 0.`);
+      }
+    }
+  }
+
+  if (spec.floorplan.mode === 'fixed') {
+    if (!spec.floorplan.width || spec.floorplan.width < 16) {
+      errors.push('Fixed floorplan requires "width" >= 16.');
+    }
+    if (!spec.floorplan.height || spec.floorplan.height < 16) {
+      errors.push('Fixed floorplan requires "height" >= 16.');
+    }
+  }
+
+  for (const pin of spec.pins) {
+    if (!pin.id && !pin.bus) {
+      errors.push('Each pin constraint must specify "id" or "bus".');
+    }
+    if (pin.edge && !['N', 'S', 'E', 'W'].includes(pin.edge)) {
+      errors.push(`Invalid pin edge "${pin.edge}" (expected N, S, E, or W).`);
+    }
+  }
+
+  return errors;
+}
+
+export function parseSpecYaml(yamlText: string): DesignSpec {
+  const parsed = yaml.load(yamlText);
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('YAML spec must be a mapping object.');
+  }
+  const spec = normalizeSpec(parsed as Partial<DesignSpec>);
+  const errors = validateSpec(spec);
+  if (errors.length > 0) {
+    throw new Error(errors.join(' '));
+  }
+  return spec;
+}
+
+export function serializeSpecYaml(spec: DesignSpec): string {
+  // Strip undefined / empty optional fields for clean readable YAML
+  const clean: Record<string, unknown> = {
+    version: spec.version,
+    name: spec.name,
+    pdk: spec.pdk,
+    targets: spec.targets,
+    inputPreset: spec.inputPreset,
+  };
+  if (Object.keys(spec.inputOverrides).length > 0) {
+    clean.inputOverrides = spec.inputOverrides;
+  }
+  clean.floorplan = spec.floorplan;
+  if (spec.pins.length > 0) {
+    clean.pins = spec.pins;
+  }
+  if (Object.keys(spec.macroOverrides).length > 0) {
+    clean.macroOverrides = spec.macroOverrides;
+  }
+  if (spec.customBalancers && spec.customBalancers.length > 0) {
+    clean.customBalancers = spec.customBalancers;
+  }
+  if (spec.optimization) {
+    clean.optimization = spec.optimization;
+  }
+  return yaml.dump(clean, {
+    noRefs: true,
+    lineWidth: 100,
+    sortKeys: false,
+  });
+}

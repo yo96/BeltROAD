@@ -1,0 +1,48 @@
+version: 1
+name: Red Circuits (60/min)
+pdk:
+  defaultBeltTier: red
+  allowedBeltTiers:
+    - yellow
+    - red
+    - blue
+  downsizeLowRateBelts: false
+  defaultAssemblerTier: 2
+  allowedAssemblerTiers:
+    - 1
+    - 2
+    - 3
+  defaultInserterTier: fast
+  allowedInserterTiers:
+    - yellow
+    - long
+    - fast
+    - bulk
+  defaultPoleTier: medium
+  modules:
+    global: []
+    byRecipe: {}
+  allowBeltWeaving: false
+  portMarkers: display-panel
+targets:
+  - item: advanced-circuit
+    ratePerMin: 60
+inputPreset: plates
+floorplan:
+  mode: auto
+  aspectRatio: 1.35
+  margin: 3
+  halo: 2
+pins:
+  - id: in:iron-plate:0
+    edge: W
+    order: 1
+  - id: in:copper-plate:0
+    edge: W
+    order: 2
+  - id: in:plastic-bar:0
+    edge: N
+    order: 1
+  - id: out:advanced-circuit:0
+    edge: E
+    order: 1

@@ -1,0 +1,45 @@
+version: 1
+name: Green Circuits (1800/min)
+pdk:
+  defaultBeltTier: red
+  allowedBeltTiers:
+    - yellow
+    - red
+    - blue
+  downsizeLowRateBelts: false
+  defaultAssemblerTier: 2
+  allowedAssemblerTiers:
+    - 1
+    - 2
+    - 3
+  defaultInserterTier: fast
+  allowedInserterTiers:
+    - yellow
+    - long
+    - fast
+    - bulk
+  defaultPoleTier: medium
+  modules:
+    global: []
+    byRecipe: {}
+  allowBeltWeaving: false
+  portMarkers: display-panel
+targets:
+  - item: electronic-circuit
+    ratePerMin: 1800
+inputPreset: plates
+floorplan:
+  mode: auto
+  aspectRatio: 1.35
+  margin: 3
+  halo: 2
+pins:
+  - bus: in:copper-plate
+    edge: W
+    order: 1
+  - bus: in:iron-plate
+    edge: W
+    order: 2
+  - bus: out:electronic-circuit
+    edge: E
+    order: 1
