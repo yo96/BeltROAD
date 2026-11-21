@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   BELT_SPECS,
   Dir,
@@ -19,9 +19,10 @@ import {
   isSplitterName,
   isUndergroundName,
 } from '@factorio-eda/core';
-import { Maximize2, RotateCw, ZoomIn, ZoomOut } from 'lucide-react';
+import { ArrowUpDown, HelpCircle, Maximize2, RotateCw, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { subscribeAssets } from '../sprites/factorioAssets';
 import { renderFactorioScene } from '../sprites/factorioRenderer';
+import { drawSmartPinLabels } from './pinLabels';
 
 export type RenderMode = 'eda' | 'factorio';
 
@@ -40,6 +41,7 @@ export interface CanvasLayers {
 export type SelectionTarget =
   | { kind: 'pin'; pinId: string }
   | { kind: 'macro'; macroId: string }
+  | { kind: 'net'; netId: string }
   | null;
 
 interface BlueprintCanvasProps {
@@ -59,6 +61,10 @@ interface BlueprintCanvasProps {
   onMovePin: (pinId: string, edge: 'N' | 'S' | 'E' | 'W', offset: number) => void;
   onMoveMacro: (macroId: string, x: number, y: number) => void;
   onRotateMacro: (macroId: string) => void;
+  onFlipMacro: (macroId: string) => void;
+  onToggleAltMode?: () => void;
+  onUndo?: () => void;
+  onRedo?: () => void;
 }
 
 interface HoverInfo {
@@ -86,6 +92,10 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
   onMovePin,
   onMoveMacro,
   onRotateMacro,
+  onFlipMacro,
+  onToggleAltMode,
+  onUndo,
+  onRedo,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -94,11 +104,55 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
   const [size, setSize] = useState({ w: 800, h: 600 });
   const [hover, setHover] = useState<HoverInfo | null>(null);
   const [assetTick, setAssetTick] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
 
   useEffect(() => subscribeAssets(() => setAssetTick((t) => t + 1)), []);
 
+  const { highlightedNetIds, highlightedPinIds } = useMemo(() => {
+    const netIds = new Set<string>();
+    const pinIds = new Set<string>();
+    if (!selection) return { highlightedNetIds: netIds, highlightedPinIds: pinIds };
+
+    if (selection.kind === 'net') {
+      netIds.add(selection.netId);
+      const net = synthesis?.nets.find((n) => n.id === selection.netId);
+      if (net) {
+        if (net.source.nodeId.startsWith('in:') || net.source.nodeId.startsWith('out:')) {
+          pinIds.add(net.source.nodeId);
+        }
+        if (net.sink.nodeId.startsWith('in:') || net.sink.nodeId.startsWith('out:')) {
+          pinIds.add(net.sink.nodeId);
+        }
+      }
+    } else if (selection.kind === 'pin') {
+      pinIds.add(selection.pinId);
+      if (synthesis) {
+        for (const n of synthesis.nets) {
+          if (n.source.nodeId === selection.pinId || n.sink.nodeId === selection.pinId) {
+            netIds.add(n.id);
+          }
+        }
+      }
+    } else if (selection.kind === 'macro' && synthesis) {
+      for (const n of synthesis.nets) {
+        if (n.source.nodeId === selection.macroId || n.sink.nodeId === selection.macroId) {
+          netIds.add(n.id);
+        }
+      }
+    }
+    return { highlightedNetIds: netIds, highlightedPinIds: pinIds };
+  }, [selection, synthesis]);
+
   const dragRef = useRef<
-    | { mode: 'pan'; startX: number; startY: number; origCamX: number; origCamY: number }
+    | {
+        mode: 'pan';
+        startX: number;
+        startY: number;
+        origCamX: number;
+        origCamY: number;
+        movedPx: number;
+      }
     | {
         mode: 'pin';
         pin: PerimeterPin;
@@ -118,6 +172,7 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
 
   const [dragPreview, setDragPreview] = useState<{
     kind: 'pin' | 'macro';
+    macroId?: string;
     edge?: 'N' | 'S' | 'E' | 'W';
     offset?: number;
     x?: number;
@@ -129,12 +184,22 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
 
   const fitToView = useCallback(() => {
     if (!floorplan || size.w <= 0 || size.h <= 0) return;
-    const padTiles = 6;
-    const scaleX = size.w / (floorplan.width + padTiles * 2);
-    const scaleY = size.h / (floorplan.height + padTiles * 2);
-    const scale = Math.max(4, Math.min(36, Math.min(scaleX, scaleY)));
-    const x = (size.w - floorplan.width * scale) / 2;
-    const y = (size.h - floorplan.height * scale) / 2;
+    const hasW = floorplan.pins.some((p) => p.edge === 'W');
+    const hasE = floorplan.pins.some((p) => p.edge === 'E');
+    const hasN = floorplan.pins.some((p) => p.edge === 'N');
+    const hasS = floorplan.pins.some((p) => p.edge === 'S');
+    const padLeftPx = hasW ? Math.min(130, size.w * 0.21) : 34;
+    const padRightPx = hasE ? Math.min(150, size.w * 0.23) : 34;
+    const padTopPx = hasN ? 46 : 30;
+    const padBotPx = hasS ? 48 : 38;
+    const availW = Math.max(120, size.w - padLeftPx - padRightPx);
+    const availH = Math.max(120, size.h - padTopPx - padBotPx);
+    const scale = Math.max(
+      4,
+      Math.min(36, Math.min(availW / floorplan.width, availH / floorplan.height)),
+    );
+    const x = padLeftPx + (availW - floorplan.width * scale) / 2;
+    const y = padTopPx + (availH - floorplan.height * scale) / 2;
     setCam({ x, y, scale });
   }, [floorplan, size.w, size.h]);
 
@@ -173,7 +238,7 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusTile?.nonce]);
 
-  // Keyboard shortcut 'R' to rotate selected macro
+  // Keyboard shortcuts
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (
@@ -183,13 +248,34 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
       ) {
         return;
       }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) onRedo?.();
+        else onUndo?.();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        onRedo?.();
+        return;
+      }
       if ((e.key === 'r' || e.key === 'R') && selection?.kind === 'macro') {
         onRotateMacro(selection.macroId);
+      } else if ((e.key === 'f' || e.key === 'F') && selection?.kind === 'macro') {
+        onFlipMacro(selection.macroId);
+      } else if (e.key === 'a' || e.key === 'A') {
+        onToggleAltMode?.();
+      } else if (e.key === ' ' || e.key === '0') {
+        e.preventDefault();
+        fitToView();
+      } else if (e.key === 'Escape') {
+        onSelect(null);
+        setHelpOpen(false);
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [selection, onRotateMacro]);
+  }, [selection, onRotateMacro, onFlipMacro, onToggleAltMode, fitToView, onSelect, onUndo, onRedo]);
 
   const screenToTile = useCallback(
     (sx: number, sy: number) => ({
@@ -273,6 +359,7 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
         netUtilMap,
         macroUtilMap,
         utilColor,
+        highlightedPinIds,
       );
       ugInputs = res.ugInputs;
       ugOutputs = res.ugOutputs;
@@ -647,6 +734,89 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
       ctx.restore();
     }
 
+    // Net trace highlight overlay (from selected belt net, pin, or macro)
+    if (highlightedNetIds.size > 0) {
+      const isNetSel = selection?.kind === 'net';
+      const fillCol = isNetSel ? 'rgba(56, 189, 248, 0.34)' : 'rgba(245, 158, 11, 0.24)';
+      const strokeCol = isNetSel ? '#38bdf8' : '#fbbf24';
+
+      ctx.save();
+      ctx.fillStyle = fillCol;
+      ctx.strokeStyle = strokeCol;
+      ctx.lineWidth = 2;
+      for (const e of entities) {
+        if (!e.netId || !highlightedNetIds.has(e.netId)) continue;
+        const rx = ox + e.tx * s;
+        const ry = oy + e.ty * s;
+        const rw = e.w * s;
+        const rh = e.h * s;
+        ctx.fillRect(rx, ry, rw, rh);
+        ctx.strokeRect(rx + 0.5, ry + 0.5, rw - 1, rh - 1);
+      }
+
+      // Highlight matching underground tunnel spans
+      ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = '#fde047';
+      ctx.lineWidth = Math.max(2.2, s * 0.16);
+      for (const u of ugInputs) {
+        if (!u.netId || !highlightedNetIds.has(u.netId)) continue;
+        const { dx, dy } = dirDelta(u.direction);
+        const tier = beltTierFromEntityName(u.name)!;
+        const maxD = BELT_SPECS[tier].maxUgDistance;
+        for (let step = 1; step <= maxD; step++) {
+          const partner = ugOutputs.find(
+            (o) =>
+              o.tx === u.tx + dx * step &&
+              o.ty === u.ty + dy * step &&
+              o.direction === u.direction &&
+              beltTierFromEntityName(o.name) === tier,
+          );
+          if (partner) {
+            ctx.beginPath();
+            ctx.moveTo(ox + (u.tx + 0.5) * s, oy + (u.ty + 0.5) * s);
+            ctx.lineTo(ox + (partner.tx + 0.5) * s, oy + (partner.ty + 0.5) * s);
+            ctx.stroke();
+            break;
+          }
+        }
+      }
+
+      // Endpoint rings when a single net is selected
+      if (isNetSel && synthesis) {
+        const net = synthesis.nets.find((n) => n.id === selection.netId);
+        if (net) {
+          const resolveEndpoint = (ep: typeof net.source): { x: number; y: number } | null => {
+            if (ep.nodeId.startsWith('in:') || ep.nodeId.startsWith('out:')) {
+              const p = floorplan.pins.find((pin) => pin.id === ep.nodeId);
+              return p ? { x: p.x + 0.5, y: p.y + 0.5 } : null;
+            }
+            const pm = floorplan.macros.find((m) => m.id === ep.nodeId);
+            const mp = pm?.macro.pins.find((p) => p.id === ep.pinId);
+            return pm && mp ? { x: pm.x + mp.x + 0.5, y: pm.y + mp.y + 0.5 } : null;
+          };
+
+          ctx.setLineDash([]);
+          const srcPt = resolveEndpoint(net.source);
+          if (srcPt) {
+            ctx.strokeStyle = '#4ade80';
+            ctx.lineWidth = 2.6;
+            ctx.beginPath();
+            ctx.arc(ox + srcPt.x * s, oy + srcPt.y * s, Math.max(6, s * 0.55), 0, Math.PI * 2);
+            ctx.stroke();
+          }
+          const snkPt = resolveEndpoint(net.sink);
+          if (snkPt) {
+            ctx.strokeStyle = '#f472b6';
+            ctx.lineWidth = 2.6;
+            ctx.beginPath();
+            ctx.arc(ox + snkPt.x * s, oy + snkPt.y * s, Math.max(6, s * 0.55), 0, Math.PI * 2);
+            ctx.stroke();
+          }
+        }
+      }
+      ctx.restore();
+    }
+
     // Rat's-nest flylines
     if (layers.flylines && synthesis) {
       const macroById = new Map(floorplan.macros.map((m) => [m.id, m]));
@@ -700,36 +870,24 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
         const px = ox + (pin.x + 0.5) * s;
         const py = oy + (pin.y + 0.5) * s;
         const isSel = selection?.kind === 'pin' && selection.pinId === pin.id;
+        const isHl = highlightedPinIds.has(pin.id);
         const col = pin.kind === 'input' ? '#4ade80' : '#f472b6';
 
         ctx.fillStyle = col;
-        ctx.strokeStyle = isSel ? '#ffffff' : '#091a2c';
-        ctx.lineWidth = isSel ? 2.5 : 1.5;
+        ctx.strokeStyle = isSel ? '#f59e0b' : isHl ? '#ffffff' : '#091a2c';
+        ctx.lineWidth = isSel || isHl ? 2.5 : 1.5;
         ctx.beginPath();
         ctx.arc(px, py, Math.max(4, s * 0.38), 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
+      }
 
-        if (layers.pinLabels && s >= 7) {
-          const meta = getItemMeta(pin.item);
-          const text = `${pin.locked ? '🔒' : ''}${meta.name} (${(pin.ratePerSec * 60).toFixed(0)}/m)`;
-          ctx.font = `600 ${Math.max(9, Math.min(11, s * 0.52))}px JetBrains Mono, monospace`;
-          ctx.fillStyle = '#e2eef9';
-          const pad = Math.max(10, s * 0.85);
-          if (pin.edge === 'W') {
-            ctx.textAlign = 'right';
-            ctx.fillText(text, px - pad, py + 3);
-          } else if (pin.edge === 'E') {
-            ctx.textAlign = 'left';
-            ctx.fillText(text, px + pad, py + 3);
-          } else if (pin.edge === 'N') {
-            ctx.textAlign = 'center';
-            ctx.fillText(text, px, py - pad);
-          } else {
-            ctx.textAlign = 'center';
-            ctx.fillText(text, px, py + pad + 8);
-          }
-        }
+      if (layers.pinLabels) {
+        drawSmartPinLabels(ctx, floorplan, ox, oy, s, {
+          selectedPinId: selection?.kind === 'pin' ? selection.pinId : null,
+          highlightedPinIds,
+          theme: 'eda',
+        });
       }
     }
 
@@ -749,17 +907,68 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
     // Live drag ghost preview
     if (dragPreview) {
       ctx.save();
-      ctx.strokeStyle = '#f59e0b';
-      ctx.fillStyle = 'rgba(245, 158, 11, 0.22)';
-      ctx.lineWidth = 2;
       if (dragPreview.kind === 'macro' && dragPreview.x !== undefined && dragPreview.y !== undefined) {
         const gx = ox + dragPreview.x * s;
         const gy = oy + dragPreview.y * s;
         const gw = (dragPreview.w ?? 3) * s;
         const gh = (dragPreview.h ?? 3) * s;
+        const dx1 = dragPreview.x;
+        const dy1 = dragPreview.y;
+        const dx2 = dx1 + (dragPreview.w ?? 3);
+        const dy2 = dy1 + (dragPreview.h ?? 3);
+        const overlaps = floorplan.macros.some(
+          (pm) =>
+            pm.id !== dragPreview.macroId &&
+            dx1 < pm.x + pm.macro.width &&
+            dx2 > pm.x &&
+            dy1 < pm.y + pm.macro.height &&
+            dy2 > pm.y,
+        );
+
+        ctx.strokeStyle = overlaps ? '#ef4444' : '#f59e0b';
+        ctx.fillStyle = overlaps ? 'rgba(239, 68, 68, 0.28)' : 'rgba(245, 158, 11, 0.22)';
+        ctx.lineWidth = 2;
         ctx.fillRect(gx, gy, gw, gh);
         ctx.strokeRect(gx, gy, gw, gh);
+
+        const badge = `(${dx1}, ${dy1})${overlaps ? ' OVERLAP' : ''}`;
+        ctx.font = '700 11px JetBrains Mono, monospace';
+        const bw = ctx.measureText(badge).width + 10;
+        ctx.fillStyle = overlaps ? '#7f1d1d' : '#0f172a';
+        ctx.fillRect(gx, gy - 20, bw, 16);
+        ctx.strokeStyle = overlaps ? '#ef4444' : '#f59e0b';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(gx, gy - 20, bw, 16);
+        ctx.fillStyle = overlaps ? '#fecaca' : '#fde68a';
+        ctx.textAlign = 'left';
+        ctx.fillText(badge, gx + 5, gy - 8);
       } else if (dragPreview.kind === 'pin' && dragPreview.edge) {
+        // Dashed perimeter snap rails along all 4 die edges
+        ctx.setLineDash([5, 4]);
+        ctx.strokeStyle = 'rgba(56, 189, 248, 0.45)';
+        ctx.lineWidth = 1.6;
+        ctx.strokeRect(ox + 0.5 * s, oy + 0.5 * s, (W - 1) * s, (H - 1) * s);
+
+        // Bold highlight on currently snapped edge
+        ctx.setLineDash([]);
+        ctx.strokeStyle = '#f59e0b';
+        ctx.lineWidth = 2.6;
+        ctx.beginPath();
+        if (dragPreview.edge === 'W') {
+          ctx.moveTo(ox + 0.5 * s, oy + 0.5 * s);
+          ctx.lineTo(ox + 0.5 * s, oy + (H - 0.5) * s);
+        } else if (dragPreview.edge === 'E') {
+          ctx.moveTo(ox + (W - 0.5) * s, oy + 0.5 * s);
+          ctx.lineTo(ox + (W - 0.5) * s, oy + (H - 0.5) * s);
+        } else if (dragPreview.edge === 'N') {
+          ctx.moveTo(ox + 0.5 * s, oy + 0.5 * s);
+          ctx.lineTo(ox + (W - 0.5) * s, oy + 0.5 * s);
+        } else {
+          ctx.moveTo(ox + 0.5 * s, oy + (H - 0.5) * s);
+          ctx.lineTo(ox + (W - 0.5) * s, oy + (H - 0.5) * s);
+        }
+        ctx.stroke();
+
         const off = dragPreview.offset ?? 1;
         const px =
           dragPreview.edge === 'W'
@@ -773,10 +982,29 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
             : dragPreview.edge === 'S'
               ? H - 1
               : off;
+        const cx = ox + (px + 0.5) * s;
+        const cy = oy + (py + 0.5) * s;
+        ctx.fillStyle = 'rgba(245, 158, 11, 0.28)';
+        ctx.strokeStyle = '#f59e0b';
+        ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.arc(ox + (px + 0.5) * s, oy + (py + 0.5) * s, Math.max(6, s * 0.48), 0, Math.PI * 2);
+        ctx.arc(cx, cy, Math.max(6, s * 0.48), 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
+
+        const badge = `${dragPreview.edge} @ ${off}`;
+        ctx.font = '700 11px JetBrains Mono, monospace';
+        const bw = ctx.measureText(badge).width + 10;
+        const bx = cx - bw / 2;
+        const by = cy - Math.max(26, s * 0.8 + 14);
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(bx, by, bw, 16);
+        ctx.strokeStyle = '#f59e0b';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(bx, by, bw, 16);
+        ctx.fillStyle = '#fde68a';
+        ctx.textAlign = 'left';
+        ctx.fillText(badge, bx + 5, by + 12);
       }
       ctx.restore();
     }
@@ -796,6 +1024,8 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
     assetVersion,
     assetTick,
     selection,
+    highlightedNetIds,
+    highlightedPinIds,
     dragPreview,
   ]);
 
@@ -832,25 +1062,28 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
     const sy = e.clientY - rect.top;
 
     if (e.button === 1 || !floorplan) {
+      setIsDragging(true);
       dragRef.current = {
         mode: 'pan',
         startX: sx,
         startY: sy,
         origCamX: cam.x,
         origCamY: cam.y,
+        movedPx: 0,
       };
       return;
     }
 
     const { tx, ty } = screenToTile(sx, sy);
 
-    // 1. Check hit on perimeter pin (within 1.2 tile radius)
+    // 1. Check hit on perimeter pin (within 0.9 tile radius)
     const hitPin = floorplan.pins.find(
       (p) => Math.abs(p.x + 0.5 - (sx - cam.x) / cam.scale) < 0.9 &&
              Math.abs(p.y + 0.5 - (sy - cam.y) / cam.scale) < 0.9,
     );
     if (hitPin) {
       onSelect({ kind: 'pin', pinId: hitPin.id });
+      setIsDragging(true);
       dragRef.current = {
         mode: 'pin',
         pin: hitPin,
@@ -871,6 +1104,7 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
     );
     if (hitMacro) {
       onSelect({ kind: 'macro', macroId: hitMacro.id });
+      setIsDragging(true);
       dragRef.current = {
         mode: 'macro',
         macro: hitMacro,
@@ -881,6 +1115,7 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
       };
       setDragPreview({
         kind: 'macro',
+        macroId: hitMacro.id,
         x: hitMacro.x,
         y: hitMacro.y,
         w: hitMacro.macro.width,
@@ -890,13 +1125,15 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
       return;
     }
 
-    onSelect(null);
+    // Defer clear/net selection until mouseup so pan vs click can be distinguished cleanly
+    setIsDragging(true);
     dragRef.current = {
       mode: 'pan',
       startX: sx,
       startY: sy,
       origCamX: cam.x,
       origCamY: cam.y,
+      movedPx: 0,
     };
   };
 
@@ -908,6 +1145,7 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
     const drag = dragRef.current;
     if (drag) {
       if (drag.mode === 'pan') {
+        drag.movedPx = Math.max(drag.movedPx, Math.hypot(sx - drag.startX, sy - drag.startY));
         setCam((prev) => ({
           ...prev,
           x: drag.origCamX + (sx - drag.startX),
@@ -933,6 +1171,7 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
         drag.previewY = ny;
         setDragPreview({
           kind: 'macro',
+          macroId: drag.macro.id,
           x: nx,
           y: ny,
           w: drag.macro.macro.width,
@@ -956,7 +1195,7 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
     const hitPin = floorplan.pins.find((p) => p.x === tx && p.y === ty);
     if (hitPin) {
       lines.push(
-        `PIN ${hitPin.kind.toUpperCase()}: ${hitPin.item} (${(hitPin.ratePerSec * 60).toFixed(1)}/min)`,
+        `PIN ${hitPin.kind.toUpperCase()}: ${getItemMeta(hitPin.item).name} (${(hitPin.ratePerSec * 60).toFixed(1)}/min)`,
       );
     }
     const hitEnt = entities.find(
@@ -971,7 +1210,7 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
         const st = sta.nets.find((n) => n.netId === hitEnt.netId);
         if (st) {
           lines.push(
-            `Rate: ${st.ratePerSec.toFixed(2)}/s (${(st.utilization * 100).toFixed(0)}% of ${st.beltTier})`,
+            `Rate: ${st.ratePerSec.toFixed(2)}/s (${(st.utilization * 100).toFixed(0)}% of ${st.beltTier}) — click to trace`,
           );
         }
       }
@@ -979,13 +1218,41 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
     setHover({ tx, ty, screenX: sx, screenY: sy, lines });
   };
 
-  const handleMouseUp = () => {
+  const handleMouseUp = (allowClick = true) => {
     const drag = dragRef.current;
     dragRef.current = null;
     setDragPreview(null);
+    setIsDragging(false);
     if (!drag) return;
 
-    if (drag.mode === 'pin') {
+    if (drag.mode === 'pan') {
+      if (allowClick && drag.movedPx < 4 && floorplan) {
+        const { tx, ty } = screenToTile(drag.startX, drag.startY);
+        const hitEnt =
+          entities.find(
+            (en) =>
+              en.netId &&
+              (en.role === 'belt-route' || en.role === 'ug-route') &&
+              tx >= en.tx &&
+              tx < en.tx + en.w &&
+              ty >= en.ty &&
+              ty < en.ty + en.h,
+          ) ??
+          entities.find(
+            (en) =>
+              en.netId &&
+              tx >= en.tx &&
+              tx < en.tx + en.w &&
+              ty >= en.ty &&
+              ty < en.ty + en.h,
+          );
+        if (hitEnt?.netId) {
+          onSelect({ kind: 'net', netId: hitEnt.netId });
+        } else {
+          onSelect(null);
+        }
+      }
+    } else if (drag.mode === 'pin') {
       if (drag.previewEdge !== drag.pin.edge || drag.previewOffset !== drag.pin.offset) {
         onMovePin(drag.pin.id, drag.previewEdge, drag.previewOffset);
       }
@@ -997,6 +1264,7 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
   };
 
   void route;
+  const zoomPct = Math.round((cam.scale / 18) * 100);
 
   return (
     <div
@@ -1005,16 +1273,94 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
     >
       <canvas
         ref={canvasRef}
-        style={{ width: '100%', height: '100%', display: 'block', cursor: 'crosshair' }}
+        style={{
+          width: '100%',
+          height: '100%',
+          display: 'block',
+          cursor: isDragging ? 'grabbing' : 'grab',
+        }}
         onWheel={handleWheel}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
+        onMouseUp={() => handleMouseUp(true)}
         onMouseLeave={() => {
-          handleMouseUp();
+          handleMouseUp(false);
           setHover(null);
         }}
       />
+
+      {/* Bottom-left Help & Shortcuts toggle */}
+      <div
+        style={{
+          position: 'absolute',
+          bottom: 12,
+          left: 12,
+          zIndex: 15,
+        }}
+      >
+        <button
+          type="button"
+          className={`btn btn-sm ${helpOpen ? 'btn-cyan' : ''}`}
+          onClick={() => setHelpOpen((o) => !o)}
+          title="Canvas Controls & Keyboard Shortcuts"
+          aria-expanded={helpOpen}
+        >
+          <HelpCircle size={13} /> Help
+        </button>
+
+        {helpOpen && (
+          <div className="canvas-help-card">
+            <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+              <strong style={{ color: 'var(--bp-cyan)', fontSize: 12 }}>
+                Controls &amp; Shortcuts
+              </strong>
+              <button
+                type="button"
+                className="btn btn-sm"
+                style={{ padding: '2px 5px' }}
+                onClick={() => setHelpOpen(false)}
+                aria-label="Close help"
+              >
+                <X size={12} />
+              </button>
+            </div>
+            <div className="canvas-help-grid">
+              <span className="mono kbd-tag">Drag Pin/Macro</span>
+              <span>Move &amp; lock floorplan override</span>
+              <span className="mono kbd-tag">Drag Empty</span>
+              <span>Pan camera</span>
+              <span className="mono kbd-tag">Scroll</span>
+              <span>Zoom to cursor</span>
+              <span className="mono kbd-tag">Click Belt</span>
+              <span>Highlight &amp; inspect net</span>
+              <span className="mono kbd-tag">R / F</span>
+              <span>Rotate / Flip selected macro</span>
+              <span className="mono kbd-tag">A</span>
+              <span>Toggle Factorio Alt-Mode icons</span>
+              <span className="mono kbd-tag">Space / 0</span>
+              <span>Fit blueprint to view</span>
+              <span className="mono kbd-tag">Ctrl+Z / Y</span>
+              <span>Undo / Redo manual edit</span>
+              <span className="mono kbd-tag">Esc</span>
+              <span>Clear selection</span>
+            </div>
+            <div
+              style={{
+                marginTop: 8,
+                paddingTop: 7,
+                borderTop: '1px solid var(--bp-border)',
+                fontSize: 11,
+                color: 'var(--bp-text-muted)',
+                lineHeight: 1.4,
+              }}
+            >
+              Factorio Import: click <strong style={{ color: '#e2eef9' }}>Copy Blueprint</strong>,
+              then press <span className="mono kbd-tag">Ctrl+V</span> or click{' '}
+              <em>Import String</em> in Factorio 2.0.
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Floating camera controls */}
       <div
@@ -1023,7 +1369,8 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
           bottom: 12,
           right: 12,
           display: 'flex',
-          gap: 6,
+          alignItems: 'center',
+          gap: 5,
           background: 'rgba(13, 35, 58, 0.9)',
           border: '1px solid var(--bp-border)',
           borderRadius: 6,
@@ -1031,21 +1378,23 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
         }}
       >
         {selection?.kind === 'macro' && (
-          <button
-            className="btn btn-sm btn-cyan"
-            onClick={() => onRotateMacro(selection.macroId)}
-            title="Rotate selected macro 90° (R)"
-          >
-            <RotateCw size={13} /> Rotate (R)
-          </button>
+          <>
+            <button
+              className="btn btn-sm btn-cyan"
+              onClick={() => onRotateMacro(selection.macroId)}
+              title="Rotate selected macro 90° (R)"
+            >
+              <RotateCw size={13} /> Rotate (R)
+            </button>
+            <button
+              className="btn btn-sm btn-cyan"
+              onClick={() => onFlipMacro(selection.macroId)}
+              title="Mirror selected macro vertically (F)"
+            >
+              <ArrowUpDown size={13} /> Flip (F)
+            </button>
+          </>
         )}
-        <button
-          className="btn btn-sm"
-          onClick={() => setCam((c) => ({ ...c, scale: Math.min(64, c.scale * 1.25) }))}
-          title="Zoom in"
-        >
-          <ZoomIn size={13} />
-        </button>
         <button
           className="btn btn-sm"
           onClick={() => setCam((c) => ({ ...c, scale: Math.max(3, c.scale / 1.25) }))}
@@ -1053,7 +1402,26 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
         >
           <ZoomOut size={13} />
         </button>
-        <button className="btn btn-sm" onClick={fitToView} title="Fit die to view">
+        <span
+          className="mono"
+          style={{
+            fontSize: 11,
+            color: 'var(--bp-text-muted)',
+            minWidth: 38,
+            textAlign: 'center',
+          }}
+          title="Current zoom scale"
+        >
+          {zoomPct}%
+        </span>
+        <button
+          className="btn btn-sm"
+          onClick={() => setCam((c) => ({ ...c, scale: Math.min(64, c.scale * 1.25) }))}
+          title="Zoom in"
+        >
+          <ZoomIn size={13} />
+        </button>
+        <button className="btn btn-sm" onClick={fitToView} title="Fit die to view (Space)">
           <Maximize2 size={13} /> Fit
         </button>
       </div>
@@ -1063,8 +1431,8 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
         <div
           style={{
             position: 'absolute',
-            left: Math.min(size.w - 220, hover.screenX + 14),
-            top: Math.max(8, hover.screenY - 12),
+            left: Math.min(size.w - 250, hover.screenX + 14),
+            top: Math.min(size.h - 90, Math.max(8, hover.screenY - 12)),
             pointerEvents: 'none',
             background: 'rgba(9, 24, 40, 0.94)',
             border: '1px solid var(--bp-border-bright)',

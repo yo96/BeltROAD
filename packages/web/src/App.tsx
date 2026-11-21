@@ -33,20 +33,30 @@ import {
 } from '@factorio-eda/core';
 import {
   AlertTriangle,
+  ArrowUpDown,
   CheckCircle2,
+  ChevronDown,
   ClipboardCopy,
   Cpu,
+  Crosshair,
   Download,
   FileCode2,
   FolderOpen,
   GitBranch,
   Layers,
   Lock,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   Play,
   Plus,
+  Redo2,
   RotateCw,
   Share2,
+  SlidersHorizontal,
   Trash2,
+  Undo2,
   Unlock,
   Wrench,
 } from 'lucide-react';
@@ -56,6 +66,8 @@ import {
   RenderMode,
   SelectionTarget,
 } from './components/BlueprintCanvas';
+import { formatEntityLabel, ItemIcon } from './components/ItemIcon';
+import { ItemPicker } from './components/ItemPicker';
 import {
   clearLocalFactorioAssets,
   loadLocalFactorioFiles,
@@ -78,6 +90,42 @@ const MODULE_OPTIONS: { value: '' | ModuleName; label: string }[] = [
   { value: 'efficiency-module-3', label: 'Efficiency 3 (-50% pwr)' },
 ];
 
+function getInitialSpecState(): { spec: DesignSpec; presetId: string } {
+  try {
+    if (typeof window !== 'undefined' && window.location.hash.includes('spec=')) {
+      const decoded = decodeSpecFromUrlHash(window.location.hash);
+      if (decoded) return { spec: decoded, presetId: 'custom' };
+    }
+  } catch {
+    // Ignore malformed hash
+  }
+  return {
+    spec: structuredClone(BUILTIN_PRESETS[1].spec),
+    presetId: BUILTIN_PRESETS[1].id,
+  };
+}
+
+function resolveNetEndpointInfo(
+  ep: { nodeId: string; pinId: string },
+  floorplan: FloorplanResult | null,
+): { label: string; tx: number; ty: number } {
+  if (ep.nodeId.startsWith('in:') || ep.nodeId.startsWith('out:')) {
+    const pin = floorplan?.pins.find((p) => p.id === ep.nodeId);
+    return {
+      label: ep.nodeId,
+      tx: pin?.x ?? 0,
+      ty: pin?.y ?? 0,
+    };
+  }
+  const pm = floorplan?.macros.find((m) => m.id === ep.nodeId);
+  const mp = pm?.macro.pins.find((p) => p.id === ep.pinId);
+  return {
+    label: pm ? `${pm.macro.label} (${pm.id})` : ep.nodeId,
+    tx: pm && mp ? pm.x + mp.x : pm ? pm.x : 0,
+    ty: pm && mp ? pm.y + mp.y : pm ? pm.y : 0,
+  };
+}
+
 export default function App() {
   const catalog = useMemo(() => getCatalog(), []);
   const targetOptions = useMemo(
@@ -85,17 +133,26 @@ export default function App() {
     [catalog],
   );
 
-  const [spec, setSpec] = useState<DesignSpec>(() => {
-    try {
-      if (typeof window !== 'undefined' && window.location.hash.includes('spec=')) {
-        const decoded = decodeSpecFromUrlHash(window.location.hash);
-        if (decoded) return decoded;
-      }
-    } catch {
-      // Ignore malformed hash
-    }
-    return structuredClone(BUILTIN_PRESETS[1].spec);
-  });
+  const initial = useMemo(() => getInitialSpecState(), []);
+  const [spec, setSpec] = useState<DesignSpec>(initial.spec);
+  const [activePresetId, setActivePresetId] = useState<string>(initial.presetId);
+  const [lastRunSpecSig, setLastRunSpecSig] = useState<string>(() => JSON.stringify(initial.spec));
+
+  const [historyPast, setHistoryPast] = useState<DesignSpec[]>([]);
+  const [historyFuture, setHistoryFuture] = useState<DesignSpec[]>([]);
+
+  const [leftOpen, setLeftOpen] = useState<boolean>(
+    () => typeof window === 'undefined' || window.innerWidth >= 960,
+  );
+  const [rightOpen, setRightOpen] = useState<boolean>(
+    () => typeof window === 'undefined' || window.innerWidth >= 1180,
+  );
+  const [targetUnit, setTargetUnit] = useState<'perMin' | 'perSec' | 'belts'>('perMin');
+  const [stepsMenuOpen, setStepsMenuOpen] = useState(false);
+  const [layersMenuOpen, setLayersMenuOpen] = useState(false);
+
+  const stepsMenuRef = useRef<HTMLDivElement | null>(null);
+  const layersMenuRef = useRef<HTMLDivElement | null>(null);
 
   const [activeTab, setActiveTab] = useState<'layout' | 'netlist' | 'yaml'>('layout');
   const [balancerModalOpen, setBalancerModalOpen] = useState(false);
@@ -154,9 +211,15 @@ export default function App() {
     workerRef.current.postMessage(req);
   }, []);
 
+  const pushHistory = useCallback((prevSpec: DesignSpec) => {
+    setHistoryPast((past) => [...past.slice(-29), structuredClone(prevSpec)]);
+    setHistoryFuture([]);
+  }, []);
+
   const runFull = useCallback(
     (targetSpec: DesignSpec) => {
       const jobId = ++jobIdRef.current;
+      setLastRunSpecSig(JSON.stringify(targetSpec));
       postJob({ type: 'run-full', jobId, spec: targetSpec });
     },
     [postJob],
@@ -165,6 +228,7 @@ export default function App() {
   const runSynthOnly = useCallback(
     (targetSpec: DesignSpec) => {
       const jobId = ++jobIdRef.current;
+      setLastRunSpecSig(JSON.stringify(targetSpec));
       postJob({ type: 'run-synth', jobId, spec: targetSpec });
     },
     [postJob],
@@ -173,6 +237,7 @@ export default function App() {
   const runPlaceOnly = useCallback(
     (targetSpec: DesignSpec) => {
       const jobId = ++jobIdRef.current;
+      setLastRunSpecSig(JSON.stringify(targetSpec));
       postJob({ type: 'run-place', jobId, spec: targetSpec });
     },
     [postJob],
@@ -181,6 +246,7 @@ export default function App() {
   const runReroute = useCallback(
     (targetSpec: DesignSpec, curSynth: SynthesisResult, curFloorplan: FloorplanResult) => {
       const jobId = ++jobIdRef.current;
+      setLastRunSpecSig(JSON.stringify(targetSpec));
       postJob({
         type: 'run-reroute',
         jobId,
@@ -191,6 +257,53 @@ export default function App() {
     },
     [postJob],
   );
+
+  const handleUndo = useCallback(() => {
+    if (historyPast.length === 0) return;
+    const target = historyPast[historyPast.length - 1];
+    setHistoryPast((past) => past.slice(0, -1));
+    setHistoryFuture((fut) => [structuredClone(spec), ...fut.slice(0, 29)]);
+    setSpec(target);
+    setActivePresetId('custom');
+    setSelection(null);
+    runFull(target);
+  }, [historyPast, spec, runFull]);
+
+  const handleRedo = useCallback(() => {
+    if (historyFuture.length === 0) return;
+    const target = historyFuture[0];
+    setHistoryFuture((fut) => fut.slice(1));
+    setHistoryPast((past) => [...past.slice(-29), structuredClone(spec)]);
+    setSpec(target);
+    setActivePresetId('custom');
+    setSelection(null);
+    runFull(target);
+  }, [historyFuture, spec, runFull]);
+
+  useEffect(() => {
+    if (!stepsMenuOpen && !layersMenuOpen) return;
+    const onMouseDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (stepsMenuOpen && stepsMenuRef.current && !stepsMenuRef.current.contains(t)) {
+        setStepsMenuOpen(false);
+      }
+      if (layersMenuOpen && layersMenuRef.current && !layersMenuRef.current.contains(t)) {
+        setLayersMenuOpen(false);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setStepsMenuOpen(false);
+        setLayersMenuOpen(false);
+      }
+    };
+    window.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [stepsMenuOpen, layersMenuOpen]);
 
   useEffect(() => {
     const worker = new Worker(new URL('./worker/eda.worker.ts', import.meta.url), {
@@ -290,6 +403,7 @@ export default function App() {
   }, []);
 
   const updateSpec = (updater: (prev: DesignSpec) => DesignSpec, autoRun = false) => {
+    setActivePresetId('custom');
     setSpec((prev) => {
       const next = updater(prev);
       if (autoRun) runFull(next);
@@ -299,6 +413,8 @@ export default function App() {
 
   const handleMovePin = useCallback(
     (pinId: string, edge: Edge, offset: number) => {
+      pushHistory(spec);
+      setActivePresetId('custom');
       const nextSpec: DesignSpec = {
         ...spec,
         pins: [
@@ -324,11 +440,13 @@ export default function App() {
         runFull(nextSpec);
       }
     },
-    [spec, synthesis, floorplan, runReroute, runFull],
+    [spec, synthesis, floorplan, pushHistory, runReroute, runFull],
   );
 
   const handleMoveMacro = useCallback(
     (macroId: string, x: number, y: number) => {
+      pushHistory(spec);
+      setActivePresetId('custom');
       const existingOv = spec.macroOverrides[macroId] ?? {};
       const nextSpec: DesignSpec = {
         ...spec,
@@ -348,7 +466,7 @@ export default function App() {
         runReroute(nextSpec, synthesis, nextFloorplan);
       }
     },
-    [spec, synthesis, floorplan, runReroute],
+    [spec, synthesis, floorplan, pushHistory, runReroute],
   );
 
   const handleRotateMacro = useCallback(
@@ -356,6 +474,8 @@ export default function App() {
       if (!floorplan) return;
       const pm = floorplan.macros.find((m) => m.id === macroId);
       if (!pm) return;
+      pushHistory(spec);
+      setActivePresetId('custom');
       const nextRot = (((pm.macro.rotation + 1) % 4) as Rot90);
       const baseVariant =
         pm.variants.find((v) => v.rows === pm.macro.rows) ?? pm.variants[0];
@@ -390,7 +510,7 @@ export default function App() {
         runReroute(nextSpec, synthesis, nextFloorplan);
       }
     },
-    [floorplan, spec, synthesis, runReroute],
+    [floorplan, spec, synthesis, pushHistory, runReroute],
   );
 
   const handleFlipMacro = useCallback(
@@ -398,6 +518,8 @@ export default function App() {
       if (!floorplan) return;
       const pm = floorplan.macros.find((m) => m.id === macroId);
       if (!pm) return;
+      pushHistory(spec);
+      setActivePresetId('custom');
       const nextFlip = !pm.macro.flippedY;
       const baseVariant =
         pm.variants.find((v) => v.rows === pm.macro.rows) ?? pm.variants[0];
@@ -432,7 +554,7 @@ export default function App() {
         runReroute(nextSpec, synthesis, nextFloorplan);
       }
     },
-    [floorplan, spec, synthesis, runReroute],
+    [floorplan, spec, synthesis, pushHistory, runReroute],
   );
 
   const handleCopyBlueprint = async () => {
@@ -473,33 +595,84 @@ export default function App() {
     selection?.kind === 'macro'
       ? floorplan?.macros.find((m) => m.id === selection.macroId) ?? null
       : null;
+  const selectedNet =
+    selection?.kind === 'net'
+      ? synthesis?.nets.find((n) => n.id === selection.netId) ?? null
+      : null;
+  const selectedRoutedNet =
+    selection?.kind === 'net'
+      ? route?.routedNets.find((r) => r.netId === selection.netId) ?? null
+      : null;
+  const selectedStaNet =
+    selection?.kind === 'net'
+      ? sta?.nets.find((n) => n.netId === selection.netId) ?? null
+      : null;
+
+  const selectedNetBends = useMemo(() => {
+    if (!selectedRoutedNet || selectedRoutedNet.tiles.length < 2) return 0;
+    let bends = 0;
+    for (let i = 1; i < selectedRoutedNet.tiles.length; i++) {
+      if (selectedRoutedNet.tiles[i].dir !== selectedRoutedNet.tiles[i - 1].dir) {
+        bends++;
+      }
+    }
+    return bends;
+  }, [selectedRoutedNet]);
+
+  const isSpecDirty = useMemo(
+    () => !running && JSON.stringify(spec) !== lastRunSpecSig,
+    [running, spec, lastRunSpecSig],
+  );
+
+  const activeLayerCount = Object.values(layers).filter(Boolean).length;
+
+  const formatTargetInputValue = (ratePerMin: number): number => {
+    if (targetUnit === 'perSec') return Number((ratePerMin / 60).toFixed(2));
+    if (targetUnit === 'belts') return Number((ratePerMin / beltCapacity).toFixed(2));
+    return Math.round(ratePerMin * 10) / 10;
+  };
 
   return (
     <div className="studio-shell">
       {/* Top EDA Toolbar */}
       <header className="top-bar">
-        <div className="brand">
-          <Cpu size={18} color="#f59e0b" />
-          <span>Factorio EDA</span>
-          <span className="brand-badge">2.0 P&amp;R</span>
+        <div className="row" style={{ gap: 6 }}>
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={() => setLeftOpen((o) => !o)}
+            title={leftOpen ? 'Collapse Spec & PDK Panel' : 'Expand Spec & PDK Panel'}
+            aria-label="Toggle Spec & PDK Panel"
+          >
+            {leftOpen ? <PanelLeftClose size={14} /> : <PanelLeftOpen size={14} />}
+          </button>
+
+          <div className="brand">
+            <Cpu size={18} color="#f59e0b" />
+            <span>BeltROAD</span>
+            <span className="brand-badge">2.0 EDA</span>
+          </div>
         </div>
 
         <select
           className="select"
-          style={{ width: 225 }}
-          value=""
+          style={{ width: 215 }}
+          value={activePresetId}
+          aria-label="Design preset"
           onChange={(e) => {
             const p = BUILTIN_PRESETS.find((pr) => pr.id === e.target.value);
             if (p) {
+              pushHistory(spec);
               const cloned = structuredClone(p.spec);
               setSpec(cloned);
+              setActivePresetId(p.id);
               setSelection(null);
               runFull(cloned);
             }
           }}
         >
-          <option value="" disabled>
-            Load Benchmark Preset…
+          <option value="custom" disabled>
+            Custom Design
           </option>
           {BUILTIN_PRESETS.map((p) => (
             <option key={p.id} value={p.id}>
@@ -508,38 +681,93 @@ export default function App() {
           ))}
         </select>
 
-        {/* Stage Stepper */}
+        {/* Execution Controls & Undo/Redo */}
         <div className="row" style={{ gap: 4 }}>
           <button
+            type="button"
             className="btn btn-sm"
-            onClick={() => runSynthOnly(spec)}
-            disabled={running}
-            title="Run Stage 1: Synthesis"
+            onClick={handleUndo}
+            disabled={running || historyPast.length === 0}
+            title="Undo last floorplan edit (Ctrl+Z)"
+            aria-label="Undo"
           >
-            1. Synth
+            <Undo2 size={13} />
           </button>
           <button
+            type="button"
             className="btn btn-sm"
-            onClick={() => runPlaceOnly(spec)}
-            disabled={running}
-            title="Run Stages 1-2: Synth + Macro Placement"
+            onClick={handleRedo}
+            disabled={running || historyFuture.length === 0}
+            title="Redo floorplan edit (Ctrl+Y)"
+            aria-label="Redo"
           >
-            2. Place
+            <Redo2 size={13} />
           </button>
+
+          <div ref={stepsMenuRef} className="popover-anchor">
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => setStepsMenuOpen((o) => !o)}
+              disabled={running}
+              title="Run individual EDA pipeline stages"
+              aria-expanded={stepsMenuOpen}
+            >
+              Steps <ChevronDown size={12} />
+            </button>
+
+            {stepsMenuOpen && (
+              <div className="popover-menu left-align" style={{ minWidth: 215 }}>
+                <button
+                  type="button"
+                  className="popover-item"
+                  disabled={running}
+                  onClick={() => {
+                    setStepsMenuOpen(false);
+                    runSynthOnly(spec);
+                  }}
+                >
+                  1. Synthesize Only
+                </button>
+                <button
+                  type="button"
+                  className="popover-item"
+                  disabled={running}
+                  onClick={() => {
+                    setStepsMenuOpen(false);
+                    runPlaceOnly(spec);
+                  }}
+                >
+                  2. Synth + Place
+                </button>
+                <button
+                  type="button"
+                  className="popover-item"
+                  disabled={running || !synthesis || !floorplan}
+                  onClick={() => {
+                    setStepsMenuOpen(false);
+                    if (synthesis && floorplan) runReroute(spec, synthesis, floorplan);
+                  }}
+                >
+                  3. Re-Route Current Floorplan
+                </button>
+              </div>
+            )}
+          </div>
+
           <button
-            className="btn btn-sm"
-            onClick={() => synthesis && floorplan && runReroute(spec, synthesis, floorplan)}
-            disabled={running || !synthesis || !floorplan}
-            title="Run Stages 3-4: Route + PDN + Signoff preserving current Floorplan"
-          >
-            3. Re-Route
-          </button>
-          <button
-            className="btn btn-primary btn-sm"
+            type="button"
+            className={`btn btn-primary btn-sm ${isSpecDirty ? 'btn-dirty' : ''}`}
             onClick={() => runFull(spec)}
             disabled={running}
+            title={
+              isSpecDirty
+                ? 'Spec modified — click to re-run P&R'
+                : 'Synthesize, Place, Route, PDN & Verify'
+            }
           >
             <Play size={13} /> {running ? 'Running…' : 'Run Full P&R'}
+            {isSpecDirty && <span className="dirty-dot" aria-label="Changes pending" />}
           </button>
         </div>
 
@@ -552,21 +780,32 @@ export default function App() {
 
         <div style={{ marginLeft: 'auto' }} className="row">
           <button
+            type="button"
             className="btn btn-cyan btn-sm"
             disabled={!fullResult?.blueprintString}
             onClick={handleCopyBlueprint}
           >
             <ClipboardCopy size={13} /> Copy Blueprint
           </button>
-          <button className="btn btn-sm" onClick={handleShareUrl}>
+          <button type="button" className="btn btn-sm" onClick={handleShareUrl}>
             <Share2 size={13} /> Share URL
           </button>
           <button
+            type="button"
             className="btn btn-sm"
             disabled={!fullResult}
             onClick={handleExportSvg}
           >
             <Download size={13} /> Export SVG
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={() => setRightOpen((o) => !o)}
+            title={rightOpen ? 'Collapse Inspector & Signoff Panel' : 'Expand Inspector & Signoff Panel'}
+            aria-label="Toggle Inspector & Signoff Panel"
+          >
+            {rightOpen ? <PanelRightClose size={14} /> : <PanelRightOpen size={14} />}
           </button>
         </div>
       </header>
@@ -586,23 +825,60 @@ export default function App() {
       )}
 
       {/* Main 3-Column EDA Workbench */}
-      <div className="workspace-grid">
+      <div
+        className="workspace-grid"
+        style={{
+          gridTemplateColumns: [
+            leftOpen ? '305px' : null,
+            'minmax(0, 1fr)',
+            rightOpen ? '315px' : null,
+          ]
+            .filter(Boolean)
+            .join(' '),
+        }}
+      >
         {/* Left Panel: Spec & PDK */}
-        <aside className="side-panel">
+        <aside className={`side-panel ${leftOpen ? '' : 'collapsed'}`}>
           <div className="panel-section">
             <div className="section-title">
               <span>Design Targets</span>
-              <button
-                className="btn btn-sm"
-                onClick={() =>
-                  updateSpec((prev) => ({
-                    ...prev,
-                    targets: [...prev.targets, { item: 'iron-gear-wheel', ratePerMin: 60 }],
-                  }))
-                }
-              >
-                <Plus size={12} /> Add
-              </button>
+              <div className="row" style={{ gap: 5 }}>
+                <div className="unit-toggle" role="group" aria-label="Target rate unit">
+                  <button
+                    type="button"
+                    className={`unit-btn ${targetUnit === 'perMin' ? 'active' : ''}`}
+                    onClick={() => setTargetUnit('perMin')}
+                  >
+                    /min
+                  </button>
+                  <button
+                    type="button"
+                    className={`unit-btn ${targetUnit === 'perSec' ? 'active' : ''}`}
+                    onClick={() => setTargetUnit('perSec')}
+                  >
+                    /s
+                  </button>
+                  <button
+                    type="button"
+                    className={`unit-btn ${targetUnit === 'belts' ? 'active' : ''}`}
+                    onClick={() => setTargetUnit('belts')}
+                  >
+                    belts
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() =>
+                    updateSpec((prev) => ({
+                      ...prev,
+                      targets: [...prev.targets, { item: 'iron-gear-wheel', ratePerMin: 60 }],
+                    }))
+                  }
+                >
+                  <Plus size={12} /> Add
+                </button>
+              </div>
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
@@ -620,11 +896,10 @@ export default function App() {
                   }}
                 >
                   <div className="row">
-                    <select
-                      className="select"
+                    <ItemPicker
                       value={t.item}
-                      onChange={(e) => {
-                        const val = e.target.value;
+                      options={targetOptions}
+                      onChange={(val) => {
                         updateSpec((prev) => ({
                           ...prev,
                           targets: prev.targets.map((item, i) =>
@@ -632,15 +907,10 @@ export default function App() {
                           ),
                         }));
                       }}
-                    >
-                      {targetOptions.map((r) => (
-                        <option key={r.id} value={r.outputItem}>
-                          {r.name}
-                        </option>
-                      ))}
-                    </select>
+                    />
                     {spec.targets.length > 1 && (
                       <button
+                        type="button"
                         className="btn btn-sm"
                         onClick={() =>
                           updateSpec((prev) => ({
@@ -658,23 +928,38 @@ export default function App() {
                       <input
                         type="number"
                         className="input mono"
-                        min={1}
-                        step={15}
-                        value={t.ratePerMin}
+                        min={targetUnit === 'perMin' ? 1 : 0.01}
+                        step={
+                          targetUnit === 'perMin' ? 15 : targetUnit === 'perSec' ? 1 : 0.25
+                        }
+                        value={formatTargetInputValue(t.ratePerMin)}
                         onChange={(e) => {
-                          const v = Math.max(1, Number(e.target.value) || 1);
+                          const raw = Number(e.target.value);
+                          const num = Number.isFinite(raw) ? raw : 0;
+                          let nextPerMin = num;
+                          if (targetUnit === 'perSec') nextPerMin = num * 60;
+                          else if (targetUnit === 'belts') nextPerMin = num * beltCapacity;
+                          const clamped = Math.max(0.5, Math.round(nextPerMin * 100) / 100);
                           updateSpec((prev) => ({
                             ...prev,
                             targets: prev.targets.map((item, i) =>
-                              i === idx ? { ...item, ratePerMin: v } : item,
+                              i === idx ? { ...item, ratePerMin: clamped } : item,
                             ),
                           }));
                         }}
                       />
-                      <span style={{ fontSize: 11, color: 'var(--bp-text-muted)' }}>/min</span>
+                      <span style={{ fontSize: 11, color: 'var(--bp-text-muted)' }}>
+                        {targetUnit === 'perMin'
+                          ? '/min'
+                          : targetUnit === 'perSec'
+                            ? '/s'
+                            : 'belts'}
+                      </span>
                     </div>
                     <span className="mono" style={{ fontSize: 11, color: 'var(--bp-cyan)' }}>
-                      {(t.ratePerMin / beltCapacity).toFixed(2)} belts
+                      {targetUnit === 'belts'
+                        ? `${Math.round(t.ratePerMin)}/min`
+                        : `${(t.ratePerMin / beltCapacity).toFixed(2)} belts`}
                     </span>
                   </div>
                 </div>
@@ -974,12 +1259,13 @@ export default function App() {
               <button
                 className="btn btn-sm"
                 style={{ width: '100%', marginTop: 8, justifyContent: 'center' }}
-                onClick={() =>
+                onClick={() => {
+                  pushHistory(spec);
                   updateSpec(
                     (prev) => ({ ...prev, pins: [], macroOverrides: {} }),
                     true,
-                  )
-                }
+                  );
+                }}
               >
                 Reset Pin &amp; Macro Overrides
               </button>
@@ -1034,79 +1320,143 @@ export default function App() {
                   <button
                     className={`chip ${altMode ? 'on' : ''}`}
                     onClick={() => setAltMode((a) => !a)}
-                    title="Toggle Factorio Alt-Mode item & recipe icons"
+                    title="Toggle Factorio Alt-Mode item & recipe icons (A)"
                   >
                     Alt-Mode
                   </button>
                 )}
 
-                {(
-                  [
-                    ['macros', 'Macros'],
-                    ['belts', 'Belts'],
-                    ['undergrounds', 'Undergrounds'],
-                    ['powerGrid', 'Power'],
-                    ['powerCoverage', 'Supply Area'],
-                    ['flylines', 'Flylines'],
-                    ['heatmap', 'Util Heatmap'],
-                    ['pinLabels', 'Pins'],
-                    ['drc', 'DRC'],
-                  ] as const
-                ).map(([key, label]) => (
-                  <button
-                    key={key}
-                    className={`chip ${layers[key] ? 'on' : ''}`}
-                    onClick={() => setLayers((l) => ({ ...l, [key]: !l[key] }))}
-                  >
-                    {label}
-                  </button>
-                ))}
+                <input
+                  ref={spriteInputRef}
+                  type="file"
+                  multiple
+                  {...({ webkitdirectory: '', directory: '' } as React.InputHTMLAttributes<HTMLInputElement>)}
+                  style={{ display: 'none' }}
+                  onChange={async (e) => {
+                    const files = e.target.files;
+                    if (!files || files.length === 0) return;
+                    const stats = await loadLocalFactorioFiles(files);
+                    setLocalSpritesInfo(stats);
+                    setAssetVersion((v) => v + 1);
+                    showToast(
+                      `Loaded ${stats.entities} entity sheets & ${stats.icons} icons from local Factorio folder!`,
+                    );
+                    e.target.value = '';
+                  }}
+                />
 
-                {renderMode === 'factorio' && (
-                  <>
-                    <input
-                      ref={spriteInputRef}
-                      type="file"
-                      multiple
-                      {...({ webkitdirectory: '', directory: '' } as React.InputHTMLAttributes<HTMLInputElement>)}
-                      style={{ display: 'none' }}
-                      onChange={async (e) => {
-                        const files = e.target.files;
-                        if (!files || files.length === 0) return;
-                        const stats = await loadLocalFactorioFiles(files);
-                        setLocalSpritesInfo(stats);
-                        setAssetVersion((v) => v + 1);
-                        showToast(
-                          `Loaded ${stats.entities} entity sheets & ${stats.icons} icons from local Factorio folder!`,
-                        );
-                        e.target.value = '';
-                      }}
-                    />
-                    <button
-                      className="btn btn-sm"
-                      onClick={() => spriteInputRef.current?.click()}
-                      title="Optional: pick your local Factorio/data/base/graphics folder to render native game entity spritesheets 100% locally"
-                    >
-                      <FolderOpen size={12} />{' '}
-                      {localSpritesInfo
-                        ? `Local (${localSpritesInfo.entities}ent/${localSpritesInfo.icons}ico)`
-                        : 'Load Local Sprites'}
-                    </button>
-                    {localSpritesInfo && (
-                      <button
-                        className="chip"
-                        onClick={() => {
-                          clearLocalFactorioAssets();
-                          setLocalSpritesInfo(null);
-                          setAssetVersion((v) => v + 1);
-                        }}
-                        title="Revert to built-in Factorio CDN icons & vector buildings"
-                      >
-                        ×
-                      </button>
-                    )}
-                  </>
-                )}
+                <div ref={layersMenuRef} className="popover-anchor">
+                  <button
+                    type="button"
+                    className={`btn btn-sm ${layersMenuOpen ? 'btn-cyan' : ''}`}
+                    onClick={() => setLayersMenuOpen((o) => !o)}
+                    aria-expanded={layersMenuOpen}
+                  >
+                    <SlidersHorizontal size={12} /> Layers ({activeLayerCount}/9){' '}
+                    <ChevronDown size={12} />
+                  </button>
+
+                  {layersMenuOpen && (
+                    <div className="popover-menu" style={{ minWidth: 235 }}>
+                      <div className="popover-group-title">Layout</div>
+                      {(
+                        [
+                          ['macros', 'Macros & Labels'],
+                          ['belts', 'Surface Belts & Splitters'],
+                          ['undergrounds', 'Undergrounds & Spans'],
+                          ['pinLabels', 'Pins & Labels'],
+                        ] as const
+                      ).map(([key, label]) => (
+                        <label key={key} className="popover-item">
+                          <input
+                            type="checkbox"
+                            checked={layers[key]}
+                            onChange={() =>
+                              setLayers((l) => ({ ...l, [key]: !l[key] }))
+                            }
+                          />
+                          <span>{label}</span>
+                        </label>
+                      ))}
+
+                      <div className="popover-divider" />
+                      <div className="popover-group-title">Power Grid</div>
+                      {(
+                        [
+                          ['powerGrid', 'Poles & Copper Wires'],
+                          ['powerCoverage', 'Supply Area'],
+                        ] as const
+                      ).map(([key, label]) => (
+                        <label key={key} className="popover-item">
+                          <input
+                            type="checkbox"
+                            checked={layers[key]}
+                            onChange={() =>
+                              setLayers((l) => ({ ...l, [key]: !l[key] }))
+                            }
+                          />
+                          <span>{label}</span>
+                        </label>
+                      ))}
+
+                      <div className="popover-divider" />
+                      <div className="popover-group-title">Overlays</div>
+                      {(
+                        [
+                          ['heatmap', 'Util Heatmap'],
+                          ['flylines', 'Flylines'],
+                          ['drc', 'DRC Markers'],
+                        ] as const
+                      ).map(([key, label]) => (
+                        <label key={key} className="popover-item">
+                          <input
+                            type="checkbox"
+                            checked={layers[key]}
+                            onChange={() =>
+                              setLayers((l) => ({ ...l, [key]: !l[key] }))
+                            }
+                          />
+                          <span>{label}</span>
+                        </label>
+                      ))}
+
+                      {renderMode === 'factorio' && (
+                        <>
+                          <div className="popover-divider" />
+                          <div className="popover-group-title">Sprites</div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '2px 4px' }}>
+                            <button
+                              type="button"
+                              className="btn btn-sm"
+                              style={{ justifyContent: 'center' }}
+                              onClick={() => spriteInputRef.current?.click()}
+                              title="Pick your local Factorio/data/base/graphics folder"
+                            >
+                              <FolderOpen size={12} />{' '}
+                              {localSpritesInfo
+                                ? `Local (${localSpritesInfo.entities}ent/${localSpritesInfo.icons}ico)`
+                                : 'Load Local Factorio Sprites…'}
+                            </button>
+                            {localSpritesInfo && (
+                              <button
+                                type="button"
+                                className="btn btn-sm"
+                                style={{ justifyContent: 'center' }}
+                                onClick={() => {
+                                  clearLocalFactorioAssets();
+                                  setLocalSpritesInfo(null);
+                                  setAssetVersion((v) => v + 1);
+                                }}
+                              >
+                                Revert to CDN Sprites
+                              </button>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -1129,6 +1479,10 @@ export default function App() {
               onMovePin={handleMovePin}
               onMoveMacro={handleMoveMacro}
               onRotateMacro={handleRotateMacro}
+              onFlipMacro={handleFlipMacro}
+              onToggleAltMode={() => setAltMode((a) => !a)}
+              onUndo={handleUndo}
+              onRedo={handleRedo}
             />
           )}
 
@@ -1137,6 +1491,7 @@ export default function App() {
               synthesis={synthesis}
               spec={spec}
               onToggleInputOverride={(item, nextMode) => {
+                pushHistory(spec);
                 updateSpec(
                   (prev) => {
                     const nextOverrides = { ...prev.inputOverrides };
@@ -1157,7 +1512,9 @@ export default function App() {
             <YamlEditor
               spec={spec}
               onApplySpec={(next) => {
+                pushHistory(spec);
                 setSpec(next);
+                setActivePresetId('custom');
                 setSelection(null);
                 runFull(next);
               }}
@@ -1166,21 +1523,170 @@ export default function App() {
         </main>
 
         {/* Right Panel: Inspector, Signoff (DRC/STA), BOM */}
-        <aside className="side-panel right">
-          {/* Inspector for Selected Pin or Macro */}
-          {(selectedPin || selectedMacro) && (
+        <aside className={`side-panel right ${rightOpen ? '' : 'collapsed'}`}>
+          {/* Inspector for Selected Pin, Macro, or Net */}
+          {(selectedPin || selectedMacro || selectedNet) && (
             <div className="panel-section">
               <div className="section-title">
-                <span>{selectedPin ? 'Pin Inspector' : 'Macro Inspector'}</span>
+                <span>
+                  {selectedPin
+                    ? 'Pin Inspector'
+                    : selectedMacro
+                      ? 'Macro Inspector'
+                      : 'Net Inspector'}
+                </span>
                 <button className="btn btn-sm" onClick={() => setSelection(null)}>
                   Clear
                 </button>
               </div>
 
+              {selectedNet && (() => {
+                const srcInfo = resolveNetEndpointInfo(selectedNet.source, floorplan);
+                const snkInfo = resolveNetEndpointInfo(selectedNet.sink, floorplan);
+                return (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <div className="row" style={{ gap: 8 }}>
+                      <ItemIcon itemId={selectedNet.item} size={22} />
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: 700, color: '#f8fafc' }}>
+                          {getItemMeta(selectedNet.item).name}
+                        </div>
+                        <div
+                          className="mono"
+                          style={{
+                            fontSize: 10.5,
+                            color: 'var(--bp-text-muted)',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                          }}
+                        >
+                          {selectedNet.id}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div
+                      style={{
+                        background: '#0b1e33',
+                        border: '1px solid var(--bp-border)',
+                        borderRadius: 5,
+                        padding: '6px 8px',
+                        fontSize: 11.5,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 4,
+                      }}
+                    >
+                      <div>
+                        <span style={{ color: '#4ade80', fontWeight: 600 }}>Source: </span>
+                        <span className="mono">{srcInfo.label}</span>
+                      </div>
+                      <div>
+                        <span style={{ color: '#f472b6', fontWeight: 600 }}>Sink: </span>
+                        <span className="mono">{snkInfo.label}</span>
+                      </div>
+                      <div style={{ color: 'var(--bp-text-muted)' }}>
+                        Throughput:{' '}
+                        <strong className="mono" style={{ color: '#f8fafc' }}>
+                          {selectedNet.ratePerSec.toFixed(2)}/s
+                        </strong>{' '}
+                        ({(selectedNet.ratePerSec * 60).toFixed(0)}/min •{' '}
+                        {selectedNet.beltTier})
+                      </div>
+                      {selectedStaNet && (
+                        <div>
+                          <div className="row" style={{ justifyContent: 'space-between' }}>
+                            <span style={{ color: 'var(--bp-text-muted)' }}>Belt Utilization</span>
+                            <span className="mono">
+                              {(selectedStaNet.utilization * 100).toFixed(1)}%
+                            </span>
+                          </div>
+                          <div
+                            style={{
+                              height: 4,
+                              background: '#091a2c',
+                              borderRadius: 2,
+                              overflow: 'hidden',
+                              marginTop: 2,
+                            }}
+                          >
+                            <div
+                              style={{
+                                width: `${Math.min(100, selectedStaNet.utilization * 100)}%`,
+                                height: '100%',
+                                background:
+                                  selectedStaNet.utilization > 1
+                                    ? '#ef4444'
+                                    : selectedStaNet.utilization > 0.8
+                                      ? '#f59e0b'
+                                      : '#4ade80',
+                              }}
+                            />
+                          </div>
+                          {selectedStaNet.leftRatePerSec !== undefined &&
+                            selectedStaNet.rightRatePerSec !== undefined && (
+                              <div
+                                className="mono"
+                                style={{
+                                  fontSize: 10.5,
+                                  color:
+                                    (selectedStaNet.laneUtilization ?? 0) > 1
+                                      ? '#f87171'
+                                      : 'var(--bp-text-muted)',
+                                  marginTop: 3,
+                                }}
+                              >
+                                L: {selectedStaNet.leftRatePerSec.toFixed(1)}/s • R:{' '}
+                                {selectedStaNet.rightRatePerSec.toFixed(1)}/s
+                              </div>
+                            )}
+                        </div>
+                      )}
+                      {selectedRoutedNet && (
+                        <div className="mono" style={{ fontSize: 11, color: 'var(--bp-cyan)' }}>
+                          {selectedRoutedNet.tiles.length} tiles •{' '}
+                          {selectedRoutedNet.undergroundCount} UGs • {selectedNetBends} bends
+                        </div>
+                      )}
+                    </div>
+
+                    {floorplan && (
+                      <div className="field-grid">
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          style={{ justifyContent: 'center' }}
+                          onClick={() => {
+                            setActiveTab('layout');
+                            setFocusTile({ tx: srcInfo.tx, ty: srcInfo.ty, nonce: Date.now() });
+                          }}
+                        >
+                          <Crosshair size={12} /> Focus Source
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          style={{ justifyContent: 'center' }}
+                          onClick={() => {
+                            setActiveTab('layout');
+                            setFocusTile({ tx: snkInfo.tx, ty: snkInfo.ty, nonce: Date.now() });
+                          }}
+                        >
+                          <Crosshair size={12} /> Focus Sink
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
               {selectedPin && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  <div className="mono" style={{ fontWeight: 700, color: '#f8fafc' }}>
-                    {selectedPin.id}
+                  <div className="row" style={{ gap: 8 }}>
+                    <ItemIcon itemId={selectedPin.item} size={20} />
+                    <div className="mono" style={{ fontWeight: 700, color: '#f8fafc' }}>
+                      {selectedPin.id}
+                    </div>
                   </div>
                   <div style={{ fontSize: 11.5, color: 'var(--bp-text-muted)' }}>
                     {getItemMeta(selectedPin.item).name} •{' '}
@@ -1228,8 +1734,11 @@ export default function App() {
 
               {selectedMacro && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  <div style={{ fontWeight: 700, color: '#f8fafc' }}>
-                    {selectedMacro.macro.label} ({selectedMacro.macro.sublabel})
+                  <div className="row" style={{ gap: 8 }}>
+                    <ItemIcon itemId={selectedMacro.macro.outputItem} size={20} />
+                    <div style={{ fontWeight: 700, color: '#f8fafc' }}>
+                      {selectedMacro.macro.label} ({selectedMacro.macro.sublabel})
+                    </div>
                   </div>
                   <div className="mono" style={{ fontSize: 11, color: 'var(--bp-text-muted)' }}>
                     {selectedMacro.id} • {selectedMacro.macro.width}×{selectedMacro.macro.height}
@@ -1277,11 +1786,12 @@ export default function App() {
                       className="btn btn-sm"
                       onClick={() => handleFlipMacro(selectedMacro.id)}
                     >
-                      ⇅ Flip Y{selectedMacro.macro.flippedY ? ' (On)' : ''}
+                      <ArrowUpDown size={12} /> Flip Y{selectedMacro.macro.flippedY ? ' (On)' : ''}
                     </button>
                     <button
                       className="btn btn-sm"
                       onClick={() => {
+                        pushHistory(spec);
                         const ov = spec.macroOverrides[selectedMacro.id] ?? {};
                         const nextLocked = !selectedMacro.locked;
                         updateSpec((prev) => ({
@@ -1378,37 +1888,61 @@ export default function App() {
                     ))}
                   </div>
                 )}
-                <div style={{ maxHeight: 150, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {sta.nets.slice(0, 12).map((n) => (
-                    <div key={n.netId} style={{ fontSize: 11 }}>
-                      <div className="row" style={{ justifyContent: 'space-between' }}>
-                        <span>{n.item}</span>
-                        <span className="mono">{(n.utilization * 100).toFixed(0)}%</span>
-                      </div>
-                      <div
-                        style={{
-                          height: 4,
-                          background: '#091a2c',
-                          borderRadius: 2,
-                          overflow: 'hidden',
-                          marginTop: 2,
+                <div style={{ maxHeight: 165, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 3 }}>
+                  {sta.nets.slice(0, 14).map((n) => {
+                    const isNetActive =
+                      selection?.kind === 'net' && selection.netId === n.netId;
+                    return (
+                      <button
+                        type="button"
+                        key={n.netId}
+                        className={`sta-net-row ${isNetActive ? 'active' : ''}`}
+                        onClick={() => {
+                          setSelection({ kind: 'net', netId: n.netId });
+                          setActiveTab('layout');
                         }}
+                        title={`Highlight net ${n.netId} on canvas`}
                       >
+                        <div className="row" style={{ justifyContent: 'space-between', width: '100%' }}>
+                          <span className="row" style={{ gap: 5, minWidth: 0 }}>
+                            <ItemIcon itemId={n.item} size={14} />
+                            <span
+                              style={{
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {getItemMeta(n.item).name}
+                            </span>
+                          </span>
+                          <span className="mono">{(n.utilization * 100).toFixed(0)}%</span>
+                        </div>
                         <div
                           style={{
-                            width: `${Math.min(100, n.utilization * 100)}%`,
-                            height: '100%',
-                            background:
-                              n.utilization > 1
-                                ? '#ef4444'
-                                : n.utilization > 0.8
-                                  ? '#f59e0b'
-                                  : '#4ade80',
+                            width: '100%',
+                            height: 4,
+                            background: '#091a2c',
+                            borderRadius: 2,
+                            overflow: 'hidden',
                           }}
-                        />
-                      </div>
-                    </div>
-                  ))}
+                        >
+                          <div
+                            style={{
+                              width: `${Math.min(100, n.utilization * 100)}%`,
+                              height: '100%',
+                              background:
+                                n.utilization > 1
+                                  ? '#ef4444'
+                                  : n.utilization > 0.8
+                                    ? '#f59e0b'
+                                    : '#4ade80',
+                            }}
+                          />
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -1478,15 +2012,27 @@ export default function App() {
                       <div
                         key={name}
                         className="row"
+                        title={name}
                         style={{
                           justifyContent: 'space-between',
                           fontSize: 11.5,
-                          padding: '2px 4px',
+                          padding: '3px 6px',
                           background: '#0b1e33',
                           borderRadius: 3,
                         }}
                       >
-                        <span className="mono">{name}</span>
+                        <span className="row" style={{ gap: 6, minWidth: 0 }}>
+                          <ItemIcon itemId={name} size={16} />
+                          <span
+                            style={{
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {formatEntityLabel(name)}
+                          </span>
+                        </span>
                         <strong className="mono" style={{ color: 'var(--bp-cyan)' }}>
                           {count}
                         </strong>

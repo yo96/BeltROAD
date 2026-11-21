@@ -13,6 +13,7 @@ import {
   INSERTER_SPECS,
   MACHINE_SPECS,
   POLE_SPECS,
+  PoleSpec,
   doesPoleSupplyEntity,
 } from '../data/entities.js';
 import { getCatalog } from '../data/catalog.js';
@@ -114,6 +115,59 @@ interface MachineRowGeometry {
   poleXs: number[];
   substationXs: number[];
   endX: number;
+  laneFlipX?: number;
+}
+
+function layoutSegmentSubstations(
+  startX: number,
+  count: number,
+  poleSpec: PoleSpec,
+  existingLastSub: number | undefined,
+): { machineXs: number[]; substationXs: number[]; endX: number } {
+  const machineXs: number[] = [];
+  const substationXs: number[] = [];
+  let x = startX;
+  let lastSub = existingLastSub;
+  const firstSubIdx = count <= 4 ? Math.floor(count / 2) : 2;
+
+  for (let i = 0; i < count; i++) {
+    const needWireBridge =
+      lastSub !== undefined && x + 1 - (lastSub + 1) > poleSpec.wireReach - 4;
+    const needCover =
+      lastSub === undefined ||
+      !doesPoleSupplyEntity(lastSub, 0, poleSpec, x, 0, 1, 1) ||
+      !doesPoleSupplyEntity(lastSub, 0, poleSpec, x + 2, 0, 1, 1);
+
+    const periodicSub =
+      existingLastSub === undefined
+        ? i === firstSubIdx || (i > firstSubIdx && (i - firstSubIdx) % 5 === 0)
+        : i > 0 && i % 5 === 0;
+
+    if (periodicSub || needCover || needWireBridge) {
+      substationXs.push(x);
+      lastSub = x;
+      x += 2;
+    }
+    machineXs.push(x);
+    x += 3;
+  }
+
+  if (count > 0 && lastSub === undefined) {
+    substationXs.push(x);
+    lastSub = x;
+    x += 2;
+  } else if (count > 0 && lastSub !== undefined) {
+    const lastMx = machineXs[count - 1];
+    if (
+      !doesPoleSupplyEntity(lastSub, 0, poleSpec, lastMx, 0, 3, 1) ||
+      !doesPoleSupplyEntity(lastSub, 0, poleSpec, lastMx + 2, 0, 1, 1)
+    ) {
+      substationXs.push(x);
+      x += 2;
+    }
+  }
+
+  return { machineXs, substationXs, endX: x };
 }
 
 function layoutMachineRow(
@@ -122,86 +176,154 @@ function layoutMachineRow(
   northInsertersPerMachine: number,
   southInsertersPerMachine: number,
   pdk: PdkConfig,
+  laneFlipAfterIdx?: number,
 ): MachineRowGeometry {
   const poleSpec = POLE_SPECS[pdk.defaultPoleTier];
+  const hasSplit =
+    laneFlipAfterIdx !== undefined &&
+    laneFlipAfterIdx >= 0 &&
+    laneFlipAfterIdx < machineCount - 1;
 
   if (poleSpec.tier === 'substation') {
-    const machineXs: number[] = [];
-    const substationXs: number[] = [];
-    let x = startX;
-    const firstSubIdx = machineCount <= 4 ? Math.floor(machineCount / 2) : 2;
-    for (let i = 0; i < machineCount; i++) {
-      if (i === firstSubIdx || (i > firstSubIdx && (i - firstSubIdx) % 5 === 0)) {
-        substationXs.push(x);
-        x += 2;
-      }
-      machineXs.push(x);
-      x += 3;
+    if (!hasSplit) {
+      const seg = layoutSegmentSubstations(startX, machineCount, poleSpec, undefined);
+      return {
+        machineXs: seg.machineXs,
+        poleXs: [],
+        substationXs: seg.substationXs,
+        endX: seg.endX,
+      };
     }
-    if (substationXs.length === 0) {
-      substationXs.push(x);
-      x += 2;
-    } else if (machineCount > 0) {
-      const lastSub = substationXs[substationXs.length - 1];
-      const lastMx = machineXs[machineCount - 1];
-      if (!doesPoleSupplyEntity(lastSub, 0, poleSpec, lastMx, 0, 3, 1)) {
-        substationXs.push(x);
-        x += 2;
-      }
-    }
-    return { machineXs, poleXs: [], substationXs, endX: x };
+
+    const leftCount = laneFlipAfterIdx + 1;
+    const rightCount = machineCount - leftCount;
+    const leftSeg = layoutSegmentSubstations(startX, leftCount, poleSpec, undefined);
+    const laneFlipX = leftSeg.endX;
+    const lastLeftSub = leftSeg.substationXs[leftSeg.substationXs.length - 1];
+    const rightSeg = layoutSegmentSubstations(
+      laneFlipX + 3,
+      rightCount,
+      poleSpec,
+      lastLeftSub,
+    );
+
+    return {
+      machineXs: [...leftSeg.machineXs, ...rightSeg.machineXs],
+      poleXs: [],
+      substationXs: [...leftSeg.substationXs, ...rightSeg.substationXs],
+      endX: rightSeg.endX,
+      laneFlipX,
+    };
   }
 
   // Small or Medium poles sit on the north & south inserter strips.
   // If any machine needs all 3 slots for inserters on North or South, use stride 4 so poles sit cleanly in the 1-tile gap.
   const needsGap = northInsertersPerMachine >= 3 || southInsertersPerMachine >= 3;
   const stride = needsGap ? 4 : 3;
-  const machineXs: number[] = [];
-  for (let i = 0; i < machineCount; i++) {
-    machineXs.push(startX + i * stride);
-  }
-  const endX = startX + (machineCount > 0 ? (machineCount - 1) * stride + 3 : 0);
+  const poleOffset = needsGap ? 3 : 2;
+  const step = poleSpec.tier === 'small' ? 1 : 2;
+  const needSmallStarter = needsGap && poleSpec.tier === 'small' && machineCount > 0;
+  const leftMachineStartX = needSmallStarter ? startX + 1 : startX;
 
-  const poleXs: number[] = [];
-  if (needsGap) {
-    // Place poles in the gaps between machines (every 1 for small, every 2 for medium)
-    const step = poleSpec.tier === 'small' ? 1 : 2;
-    for (let i = 0; i < machineCount; i += step) {
-      if (i === 0 && machineCount === 1) {
-        // Put pole after the single machine
-        poleXs.push(machineXs[0] + 3);
-      } else if (i < machineCount - 1) {
-        poleXs.push(machineXs[i] + 3);
-      } else {
-        poleXs.push(machineXs[i] + 3);
-      }
+  if (!hasSplit) {
+    const machineXs: number[] = [];
+    for (let i = 0; i < machineCount; i++) {
+      machineXs.push(leftMachineStartX + i * stride);
     }
-    // Ensure last machine is covered
-    const lastMx = machineXs[machineCount - 1];
-    const coveredLast = poleXs.some((px) =>
-      doesPoleSupplyEntity(px, 0, poleSpec, lastMx, 0, 3, 1),
-    );
-    if (!coveredLast) {
-      poleXs.push(lastMx + 3);
+    const endX =
+      leftMachineStartX + (machineCount > 0 ? (machineCount - 1) * stride + 3 : 0);
+
+    const poleXs: number[] = [];
+    if (needSmallStarter) {
+      poleXs.push(startX);
+    }
+    for (let i = 0; i < machineCount; i += step) {
+      poleXs.push(machineXs[i] + poleOffset);
+    }
+    if (machineCount > 0) {
+      const lastMx = machineXs[machineCount - 1];
+      const coveredLast = poleXs.some(
+        (px) =>
+          doesPoleSupplyEntity(px, 0, poleSpec, lastMx, 0, 3, 1) &&
+          doesPoleSupplyEntity(px, 0, poleSpec, lastMx + (needsGap ? 2 : 1), 0, 1, 1),
+      );
+      if (!coveredLast) {
+        poleXs.push(lastMx + poleOffset);
+      }
     }
     const finalEndX = Math.max(endX, ...poleXs.map((p) => p + 1));
     return { machineXs, poleXs, substationXs: [], endX: finalEndX };
   }
 
-  // At most 2 inserters per machine side -> slot offset 2 (mx + 2) is ALWAYS free!
-  const step = poleSpec.tier === 'small' ? 1 : 2;
-  for (let i = 0; i < machineCount; i += step) {
-    poleXs.push(machineXs[i] + 2);
-  }
-  const lastMx = machineXs[machineCount - 1];
-  const coveredLast = poleXs.some((px) =>
-    doesPoleSupplyEntity(px, 0, poleSpec, lastMx, 0, 3, 1),
-  );
-  if (!coveredLast) {
-    poleXs.push(lastMx + 2);
+  // Split row around 3-tile mid-row lane-flip jog [laneFlipX .. laneFlipX + 2]
+  const leftCount = laneFlipAfterIdx + 1;
+  const rightCount = machineCount - leftCount;
+  const machineXs: number[] = [];
+  const poleXs: number[] = [];
+  if (needSmallStarter) {
+    poleXs.push(startX);
   }
 
-  return { machineXs, poleXs, substationXs: [], endX };
+  for (let i = 0; i < leftCount; i++) {
+    machineXs.push(leftMachineStartX + i * stride);
+  }
+  for (let i = 0; i < leftCount; i += step) {
+    poleXs.push(machineXs[i] + poleOffset);
+  }
+  const lastLeftMx = machineXs[leftCount - 1];
+  const lastLeftCovered = poleXs.some(
+    (px) =>
+      doesPoleSupplyEntity(px, 0, poleSpec, lastLeftMx, 0, 3, 1) &&
+      doesPoleSupplyEntity(px, 0, poleSpec, lastLeftMx + (needsGap ? 2 : 1), 0, 1, 1),
+  );
+  if (!lastLeftCovered) {
+    poleXs.push(lastLeftMx + poleOffset);
+  }
+
+  const laneFlipX = lastLeftMx + (needsGap ? 4 : 3);
+  let rightStartX = laneFlipX + 3;
+  if (needsGap && poleSpec.tier === 'small') {
+    // Small pole at laneFlipX + 3 powers the first right machine's leftmost inserter slot & bridges the jog
+    poleXs.push(laneFlipX + 3);
+    rightStartX = laneFlipX + 4;
+  }
+
+  const firstRightPole = rightStartX + poleOffset;
+  const lastLeftPole = poleXs[poleXs.length - 1];
+  if (firstRightPole - lastLeftPole > poleSpec.wireReach - 0.1) {
+    const bridgeLeft = lastLeftMx + poleOffset;
+    if (bridgeLeft !== lastLeftPole) {
+      poleXs.push(bridgeLeft);
+    }
+  }
+
+  for (let j = 0; j < rightCount; j++) {
+    machineXs.push(rightStartX + j * stride);
+  }
+  for (let j = 0; j < rightCount; j += step) {
+    poleXs.push(machineXs[leftCount + j] + poleOffset);
+  }
+  const lastRightMx = machineXs[machineCount - 1];
+  const lastRightCovered = poleXs.some(
+    (px) =>
+      doesPoleSupplyEntity(px, 0, poleSpec, lastRightMx, 0, 3, 1) &&
+      doesPoleSupplyEntity(px, 0, poleSpec, lastRightMx + (needsGap ? 2 : 1), 0, 1, 1),
+  );
+  if (!lastRightCovered) {
+    poleXs.push(lastRightMx + poleOffset);
+  }
+
+  const finalEndX = Math.max(
+    lastRightMx + 3,
+    ...poleXs.map((p) => p + 1),
+  );
+  return {
+    machineXs,
+    poleXs,
+    substationXs: [],
+    endX: finalEndX,
+    laneFlipX,
+  };
 }
 
 function populateStripEntities(
@@ -418,6 +540,13 @@ function populateStripEntities(
         role: 'belt-macro',
       });
     }
+    const gx = geom.laneFlipX;
+    let outDir = Dir.EAST;
+    let outSideLoad: boolean | undefined;
+    if (gx !== undefined) {
+      if (x === gx) outDir = Dir.NORTH;
+      else if (x === gx + 2) outSideLoad = true;
+    }
     entities.push({
       id: eid('bout'),
       name: beltSpec.beltName,
@@ -425,9 +554,10 @@ function populateStripEntities(
       ty: yOut,
       w: 1,
       h: 1,
-      direction: Dir.EAST,
+      direction: outDir,
       macroId,
       item: spec.outputItem,
+      intentionalSideLoad: outSideLoad,
       role: 'belt-macro',
     });
     if (hasSouthFar && x < southInEndX) {
@@ -444,6 +574,46 @@ function populateStripEntities(
         role: 'belt-macro',
       });
     }
+  }
+
+  if (geom.laneFlipX !== undefined) {
+    const gx = geom.laneFlipX;
+    entities.push({
+      id: eid('lf0'),
+      name: beltSpec.beltName,
+      tx: gx,
+      ty: yInsS,
+      w: 1,
+      h: 1,
+      direction: Dir.EAST,
+      macroId,
+      item: spec.outputItem,
+      role: 'belt-macro',
+    });
+    entities.push({
+      id: eid('lf1'),
+      name: beltSpec.beltName,
+      tx: gx + 1,
+      ty: yInsS,
+      w: 1,
+      h: 1,
+      direction: Dir.EAST,
+      macroId,
+      item: spec.outputItem,
+      role: 'belt-macro',
+    });
+    entities.push({
+      id: eid('lf2'),
+      name: beltSpec.beltName,
+      tx: gx + 2,
+      ty: yInsS,
+      w: 1,
+      h: 1,
+      direction: Dir.SOUTH,
+      macroId,
+      item: spec.outputItem,
+      role: 'belt-macro',
+    });
   }
   void machineCount;
 }
@@ -496,8 +666,15 @@ function buildSingleRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledMac
   const nNeeded = (northFarIns?.count ?? 0) + (northNearIns?.count ?? 0);
   const sNeeded = outIns.count + (southFarIns?.count ?? 0);
 
-  const geom = layoutMachineRow(headerW, M, nNeeded, sNeeded, pdk);
-  const width = geom.endX;
+  const needsLaneBalance =
+    Boolean(spec.balanceOutputLanes) ||
+    spec.outputRatePerSec > beltSpec.itemsPerSec * 0.49;
+  const laneFlipAfterIdx =
+    needsLaneBalance && M >= 2 ? Math.floor(M / 2) - 1 : undefined;
+  const tailW = needsLaneBalance && M === 1 ? 2 : 0;
+
+  const geom = layoutMachineRow(headerW, M, nNeeded, sNeeded, pdk, laneFlipAfterIdx);
+  const width = geom.endX + tailW;
 
   const entities: EntityInstance[] = [];
   const pins: MacroPin[] = [];
@@ -671,8 +848,24 @@ function buildSingleRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledMac
     outIns,
     southFarIns,
     geom,
-    width,
+    geom.endX,
   );
+
+  if (tailW === 2) {
+    entities.push({
+      id: `${spec.id}:tail:sp`,
+      name: beltSpec.splitterName,
+      tx: geom.endX,
+      ty: yMachine + 3,
+      w: 1,
+      h: 2,
+      direction: Dir.EAST,
+      macroId: spec.id,
+      role: 'splitter-macro',
+    });
+    entities.push(mkBelt(geom.endX + 1, yMachine + 3, Dir.SOUTH, spec.outputItem));
+    entities.push(mkBelt(geom.endX + 1, yOut, Dir.EAST, spec.outputItem, true));
+  }
 
   // Output pin on East edge
   const outPort = pinOutsideOffset(width - 1, yOut, Dir.EAST, 'output');

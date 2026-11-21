@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { DagSummaryNode, DesignSpec, SynthesisResult, getItemMeta } from '@factorio-eda/core';
+import { resolveIconUrl } from '../sprites/factorioAssets';
 
 interface NetlistViewProps {
   synthesis: SynthesisResult | null;
@@ -192,9 +193,17 @@ export const NetlistView: React.FC<NetlistViewProps> = ({
                 stroke={borderColor}
                 strokeWidth={1.8}
               />
-              <circle cx={18} cy={22} r={8} fill={meta.color} stroke="#091a2c" strokeWidth={1.2} />
-              <text x={32} y={25} fill="#f8fafc" fontSize="12" fontWeight="700">
-                {meta.name.length > 18 ? meta.name.slice(0, 17) + '…' : meta.name}
+              <circle cx={20} cy={22} r={11} fill="#091a2c" stroke={meta.color} strokeWidth={1.3} />
+              <image
+                href={resolveIconUrl(d.item)}
+                x={11}
+                y={13}
+                width={18}
+                height={18}
+                preserveAspectRatio="xMidYMid meet"
+              />
+              <text x={37} y={25} fill="#f8fafc" fontSize="12" fontWeight="700">
+                {meta.name.length > 17 ? meta.name.slice(0, 16) + '…' : meta.name}
               </text>
               <text
                 x={12}

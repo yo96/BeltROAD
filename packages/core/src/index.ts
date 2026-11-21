@@ -19,6 +19,7 @@ export * from './router/gridBuffers.js';
 export * from './router/pathfinder.js';
 export * from './pdn/powerGrid.js';
 export * from './verify/drc.js';
+export * from './verify/laneFlow.js';
 export * from './verify/sta.js';
 export * from './spec/yamlCodec.js';
 export * from './spec/urlCodec.js';

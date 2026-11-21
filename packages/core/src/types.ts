@@ -260,6 +260,7 @@ export interface RecipeMacroSpec {
   beltTier: BeltTier;
   ingredientRates: { item: string; ratePerSec: number; beltTier: BeltTier }[];
   preferredRows?: number;
+  balanceOutputLanes?: boolean;
   sliceIndex: number;
   sliceCount: number;
 }
@@ -447,6 +448,9 @@ export interface StaNetReport {
   ratePerSec: number;
   capacityPerSec: number;
   utilization: number;
+  leftRatePerSec?: number;
+  rightRatePerSec?: number;
+  laneUtilization?: number;
   beltTier: BeltTier;
   passed: boolean;
 }
@@ -457,6 +461,8 @@ export interface StaMacroReport {
   machineCount: number;
   exactMachines: number;
   utilization: number;
+  outputLeftPerSec?: number;
+  outputRightPerSec?: number;
   inserterOk: boolean;
   laneOk: boolean;
   issues: string[];

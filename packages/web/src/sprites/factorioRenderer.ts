@@ -18,6 +18,7 @@ import {
   getIcon,
   getLocalEntitySprite,
 } from './factorioAssets';
+import { drawSmartPinLabels } from '../components/pinLabels';
 
 export interface FactorioRenderLayerOpts {
   macros: boolean;
@@ -852,6 +853,7 @@ export function renderFactorioScene(
   netUtilMap: Map<string, number>,
   macroUtilMap: Map<string, number>,
   utilColorFn: (u: number) => string,
+  highlightedPinIds?: Set<string>,
 ): { ugInputs: EntityInstance[]; ugOutputs: EntityInstance[] } {
   const W = floorplan.width;
   const H = floorplan.height;
@@ -952,17 +954,6 @@ export function renderFactorioScene(
       ctx.lineWidth = isSel ? 2.2 : 1;
       ctx.strokeRect(mx, my, mw, mh);
       ctx.restore();
-
-      if (s >= 8) {
-        const tag = `${pm.locked ? '🔒 ' : ''}${pm.macro.label} (${pm.macro.sublabel})`;
-        ctx.font = `600 ${Math.max(9, Math.min(11, s * 0.5))}px Inter, sans-serif`;
-        const tw = ctx.measureText(tag).width;
-        ctx.fillStyle = 'rgba(20, 23, 28, 0.72)';
-        ctx.fillRect(mx + 2, my - 15, tw + 8, 13);
-        ctx.fillStyle = isBal ? '#fde68a' : '#e2e8f0';
-        ctx.textAlign = 'left';
-        ctx.fillText(tag, mx + 6, my - 5);
-      }
     }
   }
 
@@ -1110,15 +1101,41 @@ export function renderFactorioScene(
     ctx.restore();
   }
 
+  // Macro label pills drawn above entities & wires so adjacent machines/belts never occlude tags
+  if (layers.macros && s >= 8) {
+    ctx.save();
+    const fontSize = Math.max(9, Math.min(11, s * 0.5));
+    ctx.font = `600 ${fontSize}px Inter, sans-serif`;
+    ctx.textAlign = 'left';
+    for (const pm of floorplan.macros) {
+      const mx = ox + pm.x * s;
+      const my = oy + pm.y * s;
+      const isBal = pm.macro.kind === 'balancer-macro';
+      const isSel = selectedMacroId === pm.id;
+      const tag = `${pm.locked ? '🔒 ' : ''}${pm.macro.label} (${pm.macro.sublabel})`;
+      const tw = ctx.measureText(tag).width;
+      ctx.fillStyle = isSel ? 'rgba(30, 41, 59, 0.92)' : 'rgba(15, 20, 28, 0.84)';
+      ctx.fillRect(mx + 2, my - 15, tw + 8, 13);
+      if (isSel) {
+        ctx.strokeStyle = '#f59e0b';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(mx + 2, my - 15, tw + 8, 13);
+      }
+      ctx.fillStyle = isBal ? '#fde68a' : '#e2e8f0';
+      ctx.fillText(tag, mx + 6, my - 5);
+    }
+    ctx.restore();
+  }
+
   // Layer 7: Perimeter I/O Badges + Real Item Icons
   for (const pin of floorplan.pins) {
     const px = ox + (pin.x + 0.5) * s;
     const py = oy + (pin.y + 0.5) * s;
-    const isSel = selectedPinId === pin.id;
+    const isSel = selectedPinId === pin.id || (highlightedPinIds?.has(pin.id) ?? false);
     const col = pin.kind === 'input' ? '#4ade80' : '#f472b6';
 
     ctx.fillStyle = '#181c22';
-    ctx.strokeStyle = isSel ? '#ffffff' : col;
+    ctx.strokeStyle = selectedPinId === pin.id ? '#f59e0b' : isSel ? '#ffffff' : col;
     ctx.lineWidth = isSel ? 2.5 : 1.8;
     ctx.beginPath();
     ctx.arc(px, py, Math.max(4.5, s * 0.42), 0, Math.PI * 2);
@@ -1135,27 +1152,14 @@ export function renderFactorioScene(
       ctx.arc(px, py, Math.max(2, s * 0.2), 0, Math.PI * 2);
       ctx.fill();
     }
+  }
 
-    if (layers.pinLabels && s >= 7) {
-      const meta = getItemMeta(pin.item);
-      const text = `${pin.locked ? '🔒' : ''}${meta.name} (${(pin.ratePerSec * 60).toFixed(0)}/m)`;
-      ctx.font = `600 ${Math.max(9, Math.min(11, s * 0.5))}px JetBrains Mono, monospace`;
-      ctx.fillStyle = '#f1f5f9';
-      const pad = Math.max(10, s * 0.9);
-      if (pin.edge === 'W') {
-        ctx.textAlign = 'right';
-        ctx.fillText(text, px - pad, py + 3);
-      } else if (pin.edge === 'E') {
-        ctx.textAlign = 'left';
-        ctx.fillText(text, px + pad, py + 3);
-      } else if (pin.edge === 'N') {
-        ctx.textAlign = 'center';
-        ctx.fillText(text, px, py - pad);
-      } else {
-        ctx.textAlign = 'center';
-        ctx.fillText(text, px, py + pad + 8);
-      }
-    }
+  if (layers.pinLabels) {
+    drawSmartPinLabels(ctx, floorplan, ox, oy, s, {
+      selectedPinId,
+      highlightedPinIds,
+      theme: 'factorio',
+    });
   }
 
   void BELT_SPECS;

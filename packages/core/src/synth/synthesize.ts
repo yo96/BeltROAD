@@ -315,6 +315,7 @@ export function synthesizeDesign(spec: DesignSpec): SynthesisResult {
 
   // 4. Slice recipes into single-belt RecipeMacroSpecs and build Primary Input / Output nodes
   const nodes: SynthNode[] = [];
+  const macroNodesById = new Map<string, RecipeMacroSpec>();
   const macroOutputDepthById = new Map<string, number>();
   const itemSources = new Map<
     string,
@@ -436,13 +437,20 @@ export function synthesizeDesign(spec: DesignSpec): SynthesisResult {
     const useUniformCeil = sliceCount > 1 && unbalancedMax > maxBeltCap + 1e-4;
 
     for (let s = 0; s < sliceCount; s++) {
-      const mCount = useUniformCeil
+      let mCount = useUniformCeil
         ? Math.max(1, Math.ceil(comp.exactMachines / sliceCount))
         : baseMachines + (s < remMachines ? 1 : 0);
       const frac = sliceCount > 1 ? equalFrac : mCount / comp.machineCount;
       const sliceOutRate = comp.demandPerSec * frac;
       const sliceExactMachines = comp.exactMachines * frac;
       const outTier = pickBeltTierForRate(sliceOutRate, spec.pdk);
+      const sliceBeltCap = BELT_SPECS[outTier].itemsPerSec;
+      if (sliceOutRate > sliceBeltCap * 0.5 + 1e-4 && mCount % 2 === 1) {
+        const heavyLaneRate = (Math.ceil(mCount / 2) / mCount) * sliceOutRate;
+        if (heavyLaneRate > sliceBeltCap * 0.5 - 1e-4) {
+          mCount += 1;
+        }
+      }
       const macroId =
         sliceCount === 1 ? `macro:${comp.recipe.id}` : `macro:${comp.recipe.id}:${s}`;
       const override = spec.macroOverrides[macroId];
@@ -471,10 +479,12 @@ export function synthesizeDesign(spec: DesignSpec): SynthesisResult {
         beltTier: outTier,
         ingredientRates: ingRates,
         preferredRows: override?.rows,
+        balanceOutputLanes: sliceOutRate > sliceBeltCap * 0.49,
         sliceIndex: s,
         sliceCount,
       };
       nodes.push(macroNode);
+      macroNodesById.set(macroId, macroNode);
       macroOutputDepthById.set(macroId, itemDepth.get(comp.item) ?? 1);
 
       addSource(comp.item, {
@@ -641,6 +651,25 @@ export function synthesizeDesign(spec: DesignSpec): SynthesisResult {
 
     const balId = `bal:${item}:${S}x${D}`;
 
+    if (S >= 2) {
+      const maxSinkRate = Math.max(...sinks.map((s) => s.ratePerSec));
+      const balHalfCap = BELT_SPECS[template.beltTier].itemsPerSec * 0.5;
+      if (
+        totalRate > balHalfCap - 1e-4 ||
+        maxSinkRate > balHalfCap - 1e-4
+      ) {
+        for (const src of sources) {
+          const rm = macroNodesById.get(src.nodeId);
+          if (rm) {
+            rm.balanceOutputLanes = true;
+            if (rm.machineCount >= 3 && rm.machineCount % 2 === 1) {
+              rm.machineCount += 1;
+            }
+          }
+        }
+      }
+    }
+
     const balNode: BalancerMacroSpec = {
       id: balId,
       kind: 'balancer-macro',
@@ -714,14 +743,12 @@ function computeSynthBom(
     if (n.kind === 'recipe-macro') {
       entities[n.machineName] = (entities[n.machineName] ?? 0) + n.machineCount;
       totalMachines += n.machineCount;
+      const pKw = computedRecipes.get(n.outputItem)?.powerKwPerMachine ?? 150;
+      estimatedPowerKw += n.machineCount * pKw;
       for (const m of n.modules) {
         modules[m] = (modules[m] ?? 0) + n.machineCount;
       }
     }
-  }
-
-  for (const c of computedRecipes.values()) {
-    estimatedPowerKw += c.machineCount * c.powerKwPerMachine;
   }
   // Rough allowance for inserters
   estimatedPowerKw += totalMachines * 30;

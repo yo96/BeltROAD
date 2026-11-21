@@ -11,6 +11,7 @@ import {
   BELT_SPECS,
   INSERTER_BY_ENTITY_NAME,
 } from '../data/entities.js';
+import { analyzeNetworkLaneFlow } from './laneFlow.js';
 
 export function runSta(
   synth: SynthesisResult,
@@ -19,15 +20,27 @@ export function runSta(
 ): StaReport {
   const bottlenecks: string[] = [];
   let maxUtilization = 0;
+  const { macroLanes, netLanes } = analyzeNetworkLaneFlow(synth, allEntities);
 
   const nets: StaNetReport[] = synth.nets.map((net) => {
     const cap = BELT_SPECS[net.beltTier].itemsPerSec;
+    const halfCap = cap * 0.5;
     const util = net.ratePerSec / cap;
-    if (util > maxUtilization) maxUtilization = util;
-    const passed = util <= 1.0001;
-    if (!passed) {
+    const lr = netLanes.get(net.id) ?? { left: net.ratePerSec / 2, right: net.ratePerSec / 2 };
+    const laneUtil = Math.max(lr.left, lr.right) / halfCap;
+    const effUtil = Math.max(util, laneUtil);
+    if (effUtil > maxUtilization) maxUtilization = effUtil;
+
+    const totalOk = util <= 1.0001;
+    const laneOkNet = laneUtil <= 1.0001;
+    const passed = totalOk && laneOkNet;
+    if (!totalOk) {
       bottlenecks.push(
         `Net "${net.id}" (${net.item}) carries ${net.ratePerSec.toFixed(2)}/s > ${cap}/s (${net.beltTier} belt).`,
+      );
+    } else if (!laneOkNet) {
+      bottlenecks.push(
+        `Net "${net.id}" (${net.item}) lane overflow: L=${lr.left.toFixed(2)}/s, R=${lr.right.toFixed(2)}/s > ${halfCap.toFixed(2)}/s (half-${net.beltTier} belt).`,
       );
     }
     return {
@@ -36,6 +49,9 @@ export function runSta(
       ratePerSec: net.ratePerSec,
       capacityPerSec: cap,
       utilization: util,
+      leftRatePerSec: lr.left,
+      rightRatePerSec: lr.right,
+      laneUtilization: laneUtil,
       beltTier: net.beltTier,
       passed,
     };
@@ -114,6 +130,14 @@ export function runSta(
       );
     }
 
+    const ml = macroLanes.get(rm.id);
+    if (ml && (ml.peakLeft > beltCap * 0.5 + 1e-4 || ml.peakRight > beltCap * 0.5 + 1e-4)) {
+      laneOk = false;
+      issues.push(
+        `Output belt lane overflow: L=${ml.peakLeft.toFixed(2)}/s, R=${ml.peakRight.toFixed(2)}/s > ${(beltCap * 0.5).toFixed(2)}/s (half-${rm.beltTier} belt)`,
+      );
+    }
+
     for (const iss of issues) {
       bottlenecks.push(`${rm.id}: ${iss}`);
     }
@@ -124,6 +148,8 @@ export function runSta(
       machineCount: rm.machineCount,
       exactMachines: rm.exactMachines,
       utilization: util,
+      outputLeftPerSec: ml?.outLeft,
+      outputRightPerSec: ml?.outRight,
       inserterOk,
       laneOk,
       issues,
