@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { BUILTIN_PRESETS, runFullPipeline } from '../src/index.js';
+import {
+  BUILTIN_PRESETS,
+  DesignSpec,
+  defaultOptimizationConfig,
+  defaultPdkConfig,
+  runFullPipeline,
+} from '../src/index.js';
 
 describe('Die Size & Aspect Ratio Constraints', () => {
   it('adapts layout dimensions cleanly between tall (0.6) and wide (2.5) aspectRatio targets', () => {
@@ -62,5 +68,67 @@ describe('Die Size & Aspect Ratio Constraints', () => {
     expect(res.floorplan.width).toBe(35);
     expect(res.floorplan.height).toBe(35);
     expect(res.floorplan.warnings.length).toBeGreaterThan(0);
+  });
+
+  it('tracks aspectRatio monotonically across 0.5, 1.0, and 2.5 on flat designs', () => {
+    for (const idx of [0, 4]) {
+      const base = BUILTIN_PRESETS[idx];
+      const realized: number[] = [];
+      for (const ar of [0.5, 1.0, 2.5]) {
+        const s = structuredClone(base.spec);
+        s.floorplan.mode = 'auto';
+        s.floorplan.aspectRatio = ar;
+        const r = runFullPipeline(s);
+        expect(r.drc.errorCount).toBe(0);
+        expect(r.sta.passed).toBe(true);
+        realized.push(r.floorplan.width / r.floorplan.height);
+      }
+      expect(realized[0]).toBeLessThanOrEqual(realized[1]);
+      expect(realized[1]).toBeLessThanOrEqual(realized[2]);
+      expect(realized[0]).toBeLessThan(realized[2] * 0.7);
+    }
+  });
+
+  it('adapts tiled megafactory grids cleanly across 0.5 portrait, 1.35 balanced, and 2.5 wide aspectRatio', () => {
+    const makeSm3 = (ar: number): DesignSpec => ({
+      version: 1,
+      name: `SM3 60/min AR=${ar}`,
+      pdk: {
+        ...defaultPdkConfig(),
+        defaultBeltTier: 'blue',
+        defaultAssemblerTier: 3,
+        defaultInserterTier: 'bulk',
+      },
+      targets: [{ item: 'speed-module-3', ratePerMin: 60 }],
+      inputPreset: 'plates',
+      inputOverrides: {},
+      floorplan: { mode: 'auto', aspectRatio: ar, margin: 3, halo: 2 },
+      pins: [],
+      macroOverrides: {},
+      optimization: defaultOptimizationConfig('compact'),
+    });
+
+    const portrait = runFullPipeline(makeSm3(0.5));
+    const balanced = runFullPipeline(makeSm3(1.35));
+    const wide = runFullPipeline(makeSm3(2.5));
+
+    const arP = portrait.floorplan.width / portrait.floorplan.height;
+    const arB = balanced.floorplan.width / balanced.floorplan.height;
+    const arW = wide.floorplan.width / wide.floorplan.height;
+
+    expect(portrait.tiling).toBeDefined();
+    expect(balanced.tiling).toBeDefined();
+    expect(wide.tiling).toBeDefined();
+    expect(portrait.drc.errorCount).toBe(0);
+    expect(portrait.sta.passed).toBe(true);
+    expect(balanced.drc.errorCount).toBe(0);
+    expect(balanced.sta.passed).toBe(true);
+    expect(wide.drc.errorCount).toBe(0);
+    expect(wide.sta.passed).toBe(true);
+
+    expect(arP).toBeLessThan(0.75);
+    expect(arB).toBeGreaterThanOrEqual(1.0);
+    expect(arB).toBeLessThanOrEqual(1.9);
+    expect(arW).toBeGreaterThanOrEqual(1.9);
   });
 });

@@ -188,12 +188,8 @@ function evalCompactScore(
     return hpwl;
   }
   const curAspect = bbox.w / Math.max(1, bbox.h);
-  const arWeight =
-    aspect >= 1.1 && aspect <= 1.65
-      ? Math.max(8, bbox.area * 0.015)
-      : Math.max(35, bbox.area * 0.05);
-  const aspectPen =
-    Math.abs(Math.log(Math.max(0.1, curAspect / aspect))) * arWeight;
+  const arErr = Math.abs(Math.log(Math.max(0.1, curAspect / aspect)));
+  const aspectPen = arErr * arErr * Math.max(24, bbox.area * 0.032);
   return hpwl + (bbox.w + bbox.h) * 2.4 + bbox.area * 0.05 + aspectPen;
 }
 

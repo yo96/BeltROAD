@@ -503,7 +503,7 @@ export function runFloorplanAndPlacement(
 ): FloorplanResult {
   const margin = Math.max(2, spec.floorplan.margin ?? 3);
   const halo = Math.max(2, spec.floorplan.halo ?? 2);
-  const aspect = Math.max(0.5, Math.min(3.0, spec.floorplan.aspectRatio ?? 1.35));
+  const aspect = Math.max(0.2, Math.min(5.0, spec.floorplan.aspectRatio ?? 1.35));
   const optLevel = spec.optimization?.level ?? 'compact';
   const doCompact = spec.optimization?.compactFloorplan ?? true;
   const doAlignPins = spec.optimization?.alignPins ?? true;

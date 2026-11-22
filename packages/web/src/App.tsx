@@ -149,9 +149,16 @@ export default function App() {
   );
 
   useEffect(() => {
-    setAspectDraft(String(spec.floorplan.aspectRatio ?? 1.35));
-    if (spec.floorplan.width !== undefined) setWidthDraft(String(spec.floorplan.width));
-    if (spec.floorplan.height !== undefined) setHeightDraft(String(spec.floorplan.height));
+    const ar = spec.floorplan.aspectRatio ?? 1.35;
+    setAspectDraft((cur) => (cur.trim() !== '' && Number(cur) === ar ? cur : String(ar)));
+    if (spec.floorplan.width !== undefined) {
+      const w = spec.floorplan.width;
+      setWidthDraft((cur) => (cur.trim() !== '' && Number(cur) === w ? cur : String(w)));
+    }
+    if (spec.floorplan.height !== undefined) {
+      const h = spec.floorplan.height;
+      setHeightDraft((cur) => (cur.trim() !== '' && Number(cur) === h ? cur : String(h)));
+    }
   }, [spec.floorplan.aspectRatio, spec.floorplan.width, spec.floorplan.height, spec.floorplan.mode]);
 
   const [historyPast, setHistoryPast] = useState<DesignSpec[]>([]);
@@ -245,7 +252,7 @@ export default function App() {
     (curSpec: DesignSpec): DesignSpec => {
       const parsedAr = Number(aspectDraft);
       const nextAr = Number.isFinite(parsedAr)
-        ? Math.round(Math.max(0.4, Math.min(3.0, parsedAr)) * 100) / 100
+        ? Math.round(Math.max(0.2, Math.min(5.0, parsedAr)) * 100) / 100
         : curSpec.floorplan.aspectRatio ?? 1.35;
 
       const parsedW = Number(widthDraft);
@@ -1267,14 +1274,14 @@ export default function App() {
                     type="number"
                     className="input mono"
                     step={0.1}
-                    min={0.4}
-                    max={3.0}
+                    min={0.2}
+                    max={5.0}
                     value={aspectDraft}
                     onChange={(e) => {
                       const raw = e.target.value;
                       setAspectDraft(raw);
                       const v = Number(raw);
-                      if (raw.trim() !== '' && Number.isFinite(v) && v >= 0.4 && v <= 3.0) {
+                      if (raw.trim() !== '' && Number.isFinite(v) && v >= 0.2 && v <= 5.0) {
                         updateSpec((prev) => ({
                           ...prev,
                           floorplan: {
@@ -1288,7 +1295,7 @@ export default function App() {
                       const v = Number(aspectDraft);
                       const clamped =
                         aspectDraft.trim() !== '' && Number.isFinite(v)
-                          ? Math.round(Math.max(0.4, Math.min(3.0, v)) * 100) / 100
+                          ? Math.round(Math.max(0.2, Math.min(5.0, v)) * 100) / 100
                           : spec.floorplan.aspectRatio ?? 1.35;
                       setAspectDraft(String(clamped));
                       updateSpec((prev) => ({
@@ -2159,7 +2166,23 @@ export default function App() {
               <div className="kpi-card">
                 <div className="kpi-label">Die Size</div>
                 <div className="kpi-val">
-                  {floorplan ? `${floorplan.width}×${floorplan.height}` : '—'}
+                  {floorplan ? (
+                    <>
+                      {floorplan.width}×{floorplan.height}
+                      <span
+                        style={{
+                          fontSize: 10.5,
+                          fontWeight: 400,
+                          color: 'var(--bp-text-muted)',
+                          marginLeft: 5,
+                        }}
+                      >
+                        ({(floorplan.width / Math.max(1, floorplan.height)).toFixed(2)}:1)
+                      </span>
+                    </>
+                  ) : (
+                    '—'
+                  )}
                 </div>
               </div>
               <div className="kpi-card">

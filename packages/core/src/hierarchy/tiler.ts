@@ -1054,55 +1054,183 @@ function buildWingOutputCollector(
   };
 }
 
-/**
- * Stitches a verified `K`-tile unit into a DRC-clean, STA-passing megafactory.
- */
-function assembleTiledBlueprint(
-  spec: DesignSpec,
-  fullSynth: SynthesisResult,
-  unit: TileData,
-  unitBlueprintString: string,
-  K: number,
-): PipelineResult | null {
-  const uW = unit.floorplan.width;
-  const uH = unit.floorplan.height;
-  const unitInPins = unit.floorplan.pins
-    .filter((p) => p.kind === 'input' && p.edge === 'W')
-    .sort((a, b) => a.y - b.y);
-  const unitOutPins = unit.floorplan.pins
-    .filter((p) => p.kind === 'output' && p.edge === 'E')
-    .sort((a, b) => a.y - b.y);
+interface TiledGridPlan {
+  bayCount: number;
+  layout: 'stack' | 'twin';
+  desiredUnitAr: number;
+}
 
-  // Verify every unit pin lies cleanly on W (input) or E (output)
-  if (unitInPins.length + unitOutPins.length !== unit.floorplan.pins.length) {
-    return null;
+function clampNum(v: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, v));
+}
+
+function planTiledGridGeometry(
+  K: number,
+  reqArRaw: number,
+  prefLayout: 'auto' | 'stack' | 'twin',
+): TiledGridPlan {
+  const reqAr = clampNum(reqArRaw || 1.35, 0.2, 5.0);
+  if (prefLayout === 'stack' || K < 2) {
+    return {
+      bayCount: 1,
+      layout: 'stack',
+      desiredUnitAr: clampNum(reqAr * K - 0.12, 0.55, 2.5),
+    };
   }
 
-  const maxRowCapOut = unitOutPins.reduce(
-    (minG, p) => Math.min(minG, Math.floor((BELT_SPECS[p.beltTier].itemsPerSec + 1e-6) / Math.max(1e-6, p.ratePerSec))),
-    Infinity,
-  );
-  const canTwin =
-    K >= 2 &&
+  let bestScore = Infinity;
+  let best: TiledGridPlan = { bayCount: 1, layout: K >= 4 ? 'twin' : 'stack', desiredUnitAr: 1.1 };
+
+  const evalCand = (
+    bayCount: number,
+    layout: 'stack' | 'twin',
+    cols: number,
+    rows: number,
+  ) => {
+    const busFactor = layout === 'twin' ? 0.38 : 0.16;
+    const rawUnitAr =
+      layout === 'twin'
+        ? (reqAr * (rows / bayCount) - busFactor) / 2
+        : reqAr * rows - busFactor;
+    const desiredUnitAr = clampNum(rawUnitAr, 0.55, 2.5);
+    const predAr =
+      layout === 'twin'
+        ? ((2 * desiredUnitAr + busFactor) * bayCount) / rows
+        : (desiredUnitAr + busFactor) / rows;
+    const arErr = Math.abs(Math.log(Math.max(0.05, predAr / reqAr)));
+    const unitDev = 0.08 * Math.abs(Math.log(desiredUnitAr / 1.35));
+    const remPen = bayCount > 1 && K % bayCount !== 0 ? 0.12 : 0;
+    const stackPen = layout === 'stack' ? 0.08 : 0;
+    const score = arErr + unitDev + remPen + stackPen;
+    if (score < bestScore) {
+      bestScore = score;
+      best = { bayCount, layout, desiredUnitAr };
+    }
+  };
+
+  if (prefLayout === 'auto') {
+    evalCand(1, 'stack', 1, K);
+  }
+
+  const maxBays = Math.floor(K / 2);
+  for (let G = 1; G <= maxBays; G++) {
+    const maxBayK = Math.ceil(K / G);
+    const rows = Math.ceil(maxBayK / 2);
+    if (G === 1 && prefLayout === 'auto' && K < 4) continue;
+    evalCand(G, 'twin', 2 * G, rows);
+  }
+
+  return best;
+}
+
+function pickBestBayCountForCompiledUnit(
+  K: number,
+  uW: number,
+  uH: number,
+  unitInPins: PerimeterPin[],
+  unitOutPins: PerimeterPin[],
+  maxRowCapOut: number,
+  reqArRaw: number,
+  prefLayout: 'auto' | 'stack' | 'twin',
+): { bayCount: number; layout: 'stack' | 'twin' } {
+  const reqAr = clampNum(reqArRaw || 1.35, 0.2, 5.0);
+  if (prefLayout === 'stack' || K < 2) {
+    return { bayCount: 1, layout: 'stack' };
+  }
+
+  const canSingleTwin =
     unitOutPins.length >= 1 &&
     unitOutPins.length <= 2 &&
     Math.ceil(K / 2) <= maxRowCapOut;
-  const prefLayout = spec.optimization?.tileLayout ?? 'auto';
-  const twinAr =
-    (2 * uW + 8 * unitOutPins.length) / Math.max(1, Math.ceil(K / 2) * uH);
-  const stackAr = uW / Math.max(1, K * uH);
-  const reqAr = spec.floorplan.aspectRatio ?? 1.35;
-  const preferStackForAspect =
-    reqAr < 0.65 &&
-    Math.abs(Math.log(Math.max(0.05, stackAr / reqAr))) <
-      Math.abs(Math.log(Math.max(0.05, twinAr / reqAr)));
-  const layout: 'stack' | 'twin' =
-    prefLayout === 'twin' && canTwin
-      ? 'twin'
-      : prefLayout === 'auto' && K >= 4 && canTwin && !preferStackForAspect
-        ? 'twin'
-        : 'stack';
+  if (prefLayout === 'auto' && !canSingleTwin && Math.ceil(Math.ceil(K / 2) / 2) > maxRowCapOut) {
+    return { bayCount: 1, layout: 'stack' };
+  }
 
+  let bestScore = Infinity;
+  let bestPlan: { bayCount: number; layout: 'stack' | 'twin' } = {
+    bayCount: 1,
+    layout: prefLayout === 'twin' || (K >= 4 && canSingleTwin) ? 'twin' : 'stack',
+  };
+
+  const estBayFootprint = (kBay: number, layout: 'stack' | 'twin') => {
+    const rL = layout === 'twin' ? Math.ceil(kBay / 2) : kBay;
+    const rR = layout === 'twin' ? Math.floor(kBay / 2) : 0;
+    const wPlan = planTrunksForColumnPins(unitInPins, rL);
+    const westW = wPlan.trunks.length === 0 ? 0 : 1 + 4 * wPlan.trunks.length;
+    const ePlan = rR > 0 ? planTrunksForColumnPins(unitInPins, rR) : { trunks: [] };
+    const eastW = ePlan.trunks.length === 0 ? 0 : 1 + 4 * ePlan.trunks.length;
+    const spW = layout === 'twin' ? 8 * unitOutPins.length : 4 * unitOutPins.length;
+    const w = layout === 'twin' ? westW + 2 * uW + spW + eastW : westW + uW + spW;
+    const h = rL * uH + (layout === 'twin' ? 7 : 4);
+    return { w, h };
+  };
+
+  if (prefLayout === 'auto') {
+    const f = estBayFootprint(K, 'stack');
+    const err = Math.abs(Math.log(Math.max(0.05, f.w / Math.max(1, f.h) / reqAr)));
+    const sc = err + 0.08;
+    if (sc < bestScore) {
+      bestScore = sc;
+      bestPlan = { bayCount: 1, layout: 'stack' };
+    }
+  }
+
+  const maxBays = Math.floor(K / 2);
+  for (let G = 1; G <= maxBays; G++) {
+    if (G === 1 && prefLayout === 'auto' && K < 4) continue;
+    if (unitOutPins.length < 1 || unitOutPins.length > 2) break;
+    const maxBayK = Math.ceil(K / G);
+    const maxBayRows = Math.ceil(maxBayK / 2);
+    if (maxBayRows > maxRowCapOut) continue;
+
+    let sumW = (G - 1) * 6;
+    let maxH = 1;
+    const base = Math.floor(K / G);
+    const rem = K % G;
+    for (let g = 0; g < G; g++) {
+      const kBay = base + (g < rem ? 1 : 0);
+      const f = estBayFootprint(kBay, 'twin');
+      sumW += f.w;
+      maxH = Math.max(maxH, f.h);
+    }
+    const ar = sumW / Math.max(1, maxH);
+    const err = Math.abs(Math.log(Math.max(0.05, ar / reqAr)));
+    const remPen = rem !== 0 ? 0.08 : 0;
+    const sc = err + remPen;
+    if (sc < bestScore) {
+      bestScore = sc;
+      bestPlan = { bayCount: G, layout: 'twin' };
+    }
+  }
+
+  return bestPlan;
+}
+
+interface BuiltBayLayout {
+  W: number;
+  H: number;
+  cols: number;
+  rows: number;
+  layout: 'stack' | 'twin';
+  nodes: SynthNode[];
+  nets: SynthNet[];
+  macros: PlacedMacro[];
+  routeEntities: EntityInstance[];
+  routedNets: RoutedNetSegment[];
+  pdnEntities: EntityInstance[];
+  outerPins: PerimeterPin[];
+}
+
+function buildSingleBayLayout(
+  unit: TileData,
+  mirroredUnit: TileData | null,
+  unitInPins: PerimeterPin[],
+  unitOutPins: PerimeterPin[],
+  K: number,
+  layout: 'stack' | 'twin',
+): BuiltBayLayout {
+  const uW = unit.floorplan.width;
+  const uH = unit.floorplan.height;
   const rowsLeft = layout === 'twin' ? Math.ceil(K / 2) : K;
   const rowsRight = layout === 'twin' ? Math.floor(K / 2) : 0;
 
@@ -1110,12 +1238,10 @@ function assembleTiledBlueprint(
   const westPlan = planTrunksForColumnPins(unitInPins, rowsLeft);
   const westBusW = westPlan.trunks.length === 0 ? 0 : 1 + 4 * westPlan.trunks.length;
 
-  let mirroredUnit: TileData | null = null;
   let eastPlan = { trunks: [] as TrunkSpec[], consolidatedIds: new Set<string>() };
   let eastBusW = 0;
 
-  if (layout === 'twin' && rowsRight > 0) {
-    mirroredUnit = mirrorUnitTileX(unit);
+  if (layout === 'twin' && rowsRight > 0 && mirroredUnit) {
     const rightInPins = mirroredUnit.floorplan.pins
       .filter((p) => p.kind === 'input' && p.edge === 'E')
       .sort((a, b) => a.y - b.y);
@@ -1877,11 +2003,223 @@ function assembleTiledBlueprint(
     }
   }
 
+  return {
+    W,
+    H,
+    cols: layout === 'twin' ? 2 : 1,
+    rows: rowsLeft,
+    layout,
+    nodes: ctx.nodes,
+    nets: ctx.nets,
+    macros: stampedMacros,
+    routeEntities: [...stampedRouteEntities, ...ctx.busEntities],
+    routedNets: stampedRoutedNets,
+    pdnEntities: stampedPdnEntities,
+    outerPins: ctx.outerPins,
+  };
+}
+
+function offsetAndPrefixBay(
+  bay: BuiltBayLayout,
+  xOff: number,
+  targetH: number,
+  bayIdx: number,
+  prefixEnabled: boolean,
+): BuiltBayLayout {
+  const mapNodeId = (id: string): string => {
+    if (!prefixEnabled) return id;
+    if (id.startsWith('in:')) return `in:b${bayIdx}:${id.slice(3)}`;
+    if (id.startsWith('out:')) return `out:b${bayIdx}:${id.slice(4)}`;
+    return `b${bayIdx}:${id}`;
+  };
+  const mapNetId = (id: string): string => (prefixEnabled ? `b${bayIdx}:${id}` : id);
+  const mapEntId = (id: string): string => (prefixEnabled ? `b${bayIdx}:${id}` : id);
+
+  const nodes: SynthNode[] = bay.nodes.map((n) => {
+    const nid = mapNodeId(n.id);
+    if (n.kind === 'primary-input' || n.kind === 'primary-output') {
+      return { ...n, id: nid, pinId: mapNodeId(n.pinId) };
+    }
+    return { ...n, id: nid };
+  });
+
+  const nets: SynthNet[] = bay.nets.map((net) => ({
+    ...net,
+    id: mapNetId(net.id),
+    source: { ...net.source, nodeId: mapNodeId(net.source.nodeId) },
+    sink: { ...net.sink, nodeId: mapNodeId(net.sink.nodeId) },
+  }));
+
+  const macros: PlacedMacro[] = bay.macros.map((pm) => {
+    const newId = mapNodeId(pm.id);
+    return {
+      ...pm,
+      id: newId,
+      x: pm.x + xOff,
+      macro: {
+        ...pm.macro,
+        id: newId,
+        entities: pm.macro.entities.map((e) => ({
+          ...e,
+          macroId: e.macroId ? mapNodeId(e.macroId) : undefined,
+        })),
+      },
+    };
+  });
+
+  const routeEntities: EntityInstance[] = bay.routeEntities.map((e) => ({
+    ...e,
+    id: mapEntId(e.id),
+    tx: e.tx + xOff,
+    netId: e.netId ? mapNetId(e.netId) : undefined,
+    macroId: e.macroId ? mapNodeId(e.macroId) : undefined,
+  }));
+
+  const routedNets: RoutedNetSegment[] = bay.routedNets.map((rn) => ({
+    ...rn,
+    netId: mapNetId(rn.netId),
+    tiles: rn.tiles.map((t) => ({ ...t, tx: t.tx + xOff })),
+  }));
+
+  const pdnEntities: EntityInstance[] = bay.pdnEntities.map((pe) => ({
+    ...pe,
+    id: mapEntId(pe.id),
+    tx: pe.tx + xOff,
+  }));
+
+  let extCounter = 0;
+  const outerPins: PerimeterPin[] = bay.outerPins.map((pin) => {
+    const nx = pin.x + xOff;
+    const nextNetId = pin.netId ? mapNetId(pin.netId) : undefined;
+    let ny = pin.y;
+    if (bay.H < targetH && pin.edge === 'S') {
+      for (let y = bay.H; y < targetH; y++) {
+        addBeltEntity(
+          routeEntities,
+          `b${bayIdx}:ext:${extCounter++}`,
+          pin.beltTier,
+          nx,
+          y,
+          Dir.SOUTH,
+          nextNetId,
+          pin.item,
+        );
+      }
+      ny = targetH - 1;
+    }
+    return {
+      ...pin,
+      id: mapNodeId(pin.id),
+      x: nx,
+      y: ny,
+      offset: pin.edge === 'N' || pin.edge === 'S' ? nx : pin.offset,
+      netId: nextNetId,
+    };
+  });
+
+  return {
+    ...bay,
+    nodes,
+    nets,
+    macros,
+    routeEntities,
+    routedNets,
+    pdnEntities,
+    outerPins,
+  };
+}
+
+/**
+ * Stitches a verified `K`-tile unit into a DRC-clean, STA-passing megafactory across 1..G bays.
+ */
+function assembleTiledBlueprint(
+  spec: DesignSpec,
+  fullSynth: SynthesisResult,
+  unit: TileData,
+  unitBlueprintString: string,
+  K: number,
+): PipelineResult | null {
+  const uW = unit.floorplan.width;
+  const uH = unit.floorplan.height;
+  const unitInPins = unit.floorplan.pins
+    .filter((p) => p.kind === 'input' && p.edge === 'W')
+    .sort((a, b) => a.y - b.y);
+  const unitOutPins = unit.floorplan.pins
+    .filter((p) => p.kind === 'output' && p.edge === 'E')
+    .sort((a, b) => a.y - b.y);
+
+  // Verify every unit pin lies cleanly on W (input) or E (output)
+  if (unitInPins.length + unitOutPins.length !== unit.floorplan.pins.length) {
+    return null;
+  }
+
+  const maxRowCapOut = unitOutPins.reduce(
+    (minG, p) =>
+      Math.min(
+        minG,
+        Math.floor((BELT_SPECS[p.beltTier].itemsPerSec + 1e-6) / Math.max(1e-6, p.ratePerSec)),
+      ),
+    Infinity,
+  );
+  const prefLayout = spec.optimization?.tileLayout ?? 'auto';
+  const reqAr = spec.floorplan.aspectRatio ?? 1.35;
+  const { bayCount, layout } = pickBestBayCountForCompiledUnit(
+    K,
+    uW,
+    uH,
+    unitInPins,
+    unitOutPins,
+    maxRowCapOut,
+    reqAr,
+    prefLayout,
+  );
+
+  const mirroredUnit = layout === 'twin' ? mirrorUnitTileX(unit) : null;
+  const rawBays: BuiltBayLayout[] = [];
+  const baseTiles = Math.floor(K / bayCount);
+  const remTiles = K % bayCount;
+  for (let g = 0; g < bayCount; g++) {
+    const kBay = baseTiles + (g < remTiles ? 1 : 0);
+    rawBays.push(
+      buildSingleBayLayout(unit, mirroredUnit, unitInPins, unitOutPins, kBay, layout),
+    );
+  }
+
+  const BAY_GAP = 6;
+  const W =
+    rawBays.reduce((sum, b) => sum + b.W, 0) + Math.max(0, bayCount - 1) * BAY_GAP;
+  const H = rawBays.reduce((mx, b) => Math.max(mx, b.H), 1);
+
+  const allNodes: SynthNode[] = [];
+  const allNets: SynthNet[] = [];
+  const stampedMacros: PlacedMacro[] = [];
+  const allRouteEntities: EntityInstance[] = [];
+  const stampedRoutedNets: RoutedNetSegment[] = [];
+  const stampedPdnEntities: EntityInstance[] = [];
+  const allOuterPins: PerimeterPin[] = [];
+
+  let xOff = 0;
+  let totalCols = 0;
+  let maxRows = 0;
+  for (let g = 0; g < rawBays.length; g++) {
+    const shifted = offsetAndPrefixBay(rawBays[g], xOff, H, g, bayCount > 1);
+    allNodes.push(...shifted.nodes);
+    allNets.push(...shifted.nets);
+    stampedMacros.push(...shifted.macros);
+    allRouteEntities.push(...shifted.routeEntities);
+    stampedRoutedNets.push(...shifted.routedNets);
+    stampedPdnEntities.push(...shifted.pdnEntities);
+    allOuterPins.push(...shifted.outerPins);
+    totalCols += rawBays[g].cols;
+    maxRows = Math.max(maxRows, rawBays[g].rows);
+    xOff += rawBays[g].W + BAY_GAP;
+  }
+
   // Build tiled synthesis, floorplan, route, PDN, collect, DRC, STA!
   const tiledSynth: SynthesisResult = {
     spec,
-    nodes: ctx.nodes,
-    nets: ctx.nets,
+    nodes: allNodes,
+    nets: allNets,
     dag: fullSynth.dag,
     bom: fullSynth.bom,
     warnings: [...unit.synthesis.warnings],
@@ -1893,12 +2231,11 @@ function assembleTiledBlueprint(
     margin: unit.floorplan.margin,
     halo: unit.floorplan.halo,
     macros: stampedMacros,
-    pins: ctx.outerPins,
+    pins: allOuterPins,
     hpwl: unit.floorplan.hpwl * K,
     warnings: [],
   };
 
-  const allRouteEntities = [...stampedRouteEntities, ...ctx.busEntities];
   const tiledRoute: RouteResult = {
     width: W,
     height: H,
@@ -1928,7 +2265,7 @@ function assembleTiledBlueprint(
     poleCount: stampedPdnEntities.length + pdn.entities.length,
   };
 
-  // Add outer perimeter port markers
+  // Add perimeter port markers cleanly relative to each pin
   if (spec.pdk.portMarkers !== 'none') {
     const occupied = new Set<string>();
     for (const e of allEntities) {
@@ -1938,9 +2275,9 @@ function assembleTiledBlueprint(
         }
       }
     }
-    for (const pin of ctx.outerPins) {
-      const outX = pin.edge === 'W' ? -1 : pin.edge === 'E' ? W : pin.x;
-      const outY = pin.edge === 'N' ? -1 : pin.edge === 'S' ? H : pin.y;
+    for (const pin of allOuterPins) {
+      const outX = pin.edge === 'W' ? pin.x - 1 : pin.edge === 'E' ? pin.x + 1 : pin.x;
+      const outY = pin.edge === 'N' ? pin.y - 1 : pin.edge === 'S' ? pin.y + 1 : pin.y;
       if (occupied.has(`${outX},${outY}`)) continue;
       occupied.add(`${outX},${outY}`);
       const isOut = pin.kind === 'output';
@@ -1984,8 +2321,8 @@ function assembleTiledBlueprint(
     totalMachines,
   };
 
-  const cols = layout === 'twin' ? 2 : 1;
-  const rows = rowsLeft;
+  const cols = totalCols;
+  const rows = maxRows;
   const tilingSummary: TilingSummary = {
     tileCount: K,
     cols,
@@ -2029,6 +2366,11 @@ export function runTiledPipeline(
 ): PipelineResult | null {
   const start = Date.now();
   const candidates = chooseCandidateTileCounts(spec, fullSynth);
+  const reqAr = clampNum(spec.floorplan.aspectRatio ?? 1.35, 0.2, 5.0);
+  const fullMachines = Math.max(1, fullSynth.bom.totalMachines);
+
+  let bestResult: PipelineResult | null = null;
+  let bestScore = Infinity;
 
   for (const K of candidates) {
     if (options.shouldCancel?.()) break;
@@ -2037,7 +2379,16 @@ export function runTiledPipeline(
       message: `Divide & conquer: compiling 1/${K} unit tile (${K}× array)...`,
     });
 
+    const gridPlan = planTiledGridGeometry(
+      K,
+      reqAr,
+      spec.optimization?.tileLayout ?? 'auto',
+    );
     const unitSpec = scaleSpecTargets(spec, 1 / K, `1/${K} tile`);
+    unitSpec.floorplan = {
+      ...unitSpec.floorplan,
+      aspectRatio: gridPlan.desiredUnitAr,
+    };
     const unitRes = runFlatFn(
       unitSpec,
       { shouldCancel: options.shouldCancel },
@@ -2064,15 +2415,29 @@ export function runTiledPipeline(
     if (!stitched) continue;
 
     if (stitched.drc.passed && stitched.sta.passed) {
-      stitched.elapsedMs = Date.now() - start;
-      options.onProgress?.({
-        stage: 'done',
-        message: `Done in ${stitched.elapsedMs}ms (${K}× tiled ${stitched.tiling!.cols}×${stitched.tiling!.rows}) — DRC: PASS, STA: PASS`,
-        elapsedMs: stitched.elapsedMs,
-      });
-      return stitched;
+      const realAr = stitched.floorplan.width / Math.max(1, stitched.floorplan.height);
+      const arErr = Math.abs(Math.log(Math.max(0.05, realAr / reqAr)));
+      const overhead = Math.max(0, (stitched.bom.totalMachines - fullMachines) / fullMachines);
+      const score = arErr + 0.15 * overhead;
+      if (score < bestScore) {
+        bestScore = score;
+        bestResult = stitched;
+      }
+      if (arErr < 0.22) {
+        break;
+      }
     }
   }
 
-  return null;
+  if (bestResult) {
+    bestResult.elapsedMs = Date.now() - start;
+    const t = bestResult.tiling!;
+    options.onProgress?.({
+      stage: 'done',
+      message: `Done in ${bestResult.elapsedMs}ms (${t.tileCount}× tiled ${t.cols}×${t.rows}) — DRC: PASS, STA: PASS`,
+      elapsedMs: bestResult.elapsedMs,
+    });
+  }
+
+  return bestResult;
 }

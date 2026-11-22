@@ -201,8 +201,7 @@ export function buildLayeredPlacement(
         estArea * arErr * 0.6
       );
     }
-    const arWeight = aspect >= 1.1 && aspect <= 1.65 ? 0.35 : 0.95;
-    return estArea * (1 + arErr * arWeight);
+    return estArea * (1 + arErr * arErr * 0.4);
   };
 
   if (compactMacros && familyGroups.size > 0) {
@@ -542,10 +541,8 @@ export function buildLayeredPlacement(
       score = overflow * 10000 + (bands.length - 1) * 400 + candArea * 0.5;
     } else {
       const arErr = Math.abs(Math.log(Math.max(0.05, candW / Math.max(1, candH) / aspect)));
-      const mildAspect = aspect >= 1.1 && aspect <= 1.65;
-      const arWeight = mildAspect ? 0.45 : 1.35;
-      const bandFactor = 1 + (bands.length - 1) * (mildAspect ? 0.18 : 0.08);
-      score = candArea * bandFactor * (1 + arErr * arWeight);
+      const bandFactor = 1 + (bands.length - 1) * 0.16;
+      score = candArea * bandFactor * (1 + arErr * arErr * 0.9);
     }
     return { bands, bandH, gaps, candW, candH, score };
   };
