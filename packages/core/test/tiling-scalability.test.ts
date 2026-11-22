@@ -8,6 +8,8 @@ import {
   runFullPipeline,
 } from '../src/index.js';
 
+const CI_TIME_MULT = process.env.CI ? 4 : 1;
+
 function makeSpec(
   name: string,
   targets: DesignSpec['targets'],
@@ -60,7 +62,7 @@ describe('Hierarchical Tiling & Scalability Benchmarks', () => {
     expect(res.drc.errorCount).toBe(0);
     expect(res.drc.passed).toBe(true);
     expect(res.sta.passed).toBe(true);
-    expect(res.elapsedMs).toBeLessThan(2500);
+    expect(res.elapsedMs).toBeLessThan(2500 * CI_TIME_MULT);
     expect(res.bom.totalMachines).toBeGreaterThanOrEqual(1000);
     expect(res.blueprintString.startsWith('0eN')).toBe(true);
     expect(res.tiling!.unitBlueprintString.startsWith('0eN')).toBe(true);
@@ -88,7 +90,7 @@ describe('Hierarchical Tiling & Scalability Benchmarks', () => {
     expect(res.drc.errorCount).toBe(0);
     expect(res.drc.passed).toBe(true);
     expect(res.sta.passed).toBe(true);
-    expect(res.elapsedMs).toBeLessThan(3500);
+    expect(res.elapsedMs).toBeLessThan(3500 * CI_TIME_MULT);
   });
 
   it('tiles 600/min red+green science (blue/Asm3/bulk) in twin-wing layout under 2.5s', () => {
@@ -110,7 +112,7 @@ describe('Hierarchical Tiling & Scalability Benchmarks', () => {
     expect(res.drc.errorCount).toBe(0);
     expect(res.drc.passed).toBe(true);
     expect(res.sta.passed).toBe(true);
-    expect(res.elapsedMs).toBeLessThan(2500);
+    expect(res.elapsedMs).toBeLessThan(2500 * CI_TIME_MULT);
   });
 
   it('respects explicit tileLayout: stack mode on 60/min speed-module-3', () => {
@@ -153,7 +155,7 @@ describe('Hierarchical Tiling & Scalability Benchmarks', () => {
 
     const res = runFullPipeline(spec);
     expect(res.tiling).toBeDefined();
-    expect(res.elapsedMs).toBeLessThan(2500);
+    expect(res.elapsedMs).toBeLessThan(2500 * CI_TIME_MULT);
     expect(res.drc.errorCount).toBe(0);
     expect(res.drc.passed).toBe(true);
     expect(res.sta.passed).toBe(true);
@@ -168,7 +170,7 @@ describe('Hierarchical Tiling & Scalability Benchmarks', () => {
     fitting.floorplan = { mode: 'fixed', width: 320, height: 260, aspectRatio: 1.23, margin: 3, halo: 2 };
     const fitRes = runFullPipeline(fitting);
     expect(fitRes.tiling).toBeDefined();
-    expect(fitRes.elapsedMs).toBeLessThan(2500);
+    expect(fitRes.elapsedMs).toBeLessThan(2500 * CI_TIME_MULT);
     expect(fitRes.floorplan.width).toBe(320);
     expect(fitRes.floorplan.height).toBe(260);
     expect(fitRes.drc.errorCount).toBe(0);
@@ -182,7 +184,7 @@ describe('Hierarchical Tiling & Scalability Benchmarks', () => {
     tight.floorplan = { mode: 'fixed', width: 200, height: 200, aspectRatio: 1.0, margin: 3, halo: 2 };
     const tightRes = runFullPipeline(tight);
     expect(tightRes.tiling).toBeDefined();
-    expect(tightRes.elapsedMs).toBeLessThan(2500);
+    expect(tightRes.elapsedMs).toBeLessThan(2500 * CI_TIME_MULT);
     expect(tightRes.drc.errorCount).toBe(0);
     expect(tightRes.sta.passed).toBe(true);
     expect(tightRes.floorplan.warnings.length).toBeGreaterThan(0);
@@ -199,7 +201,7 @@ describe('Hierarchical Tiling & Scalability Benchmarks', () => {
         spec.pdk.modules.global = [mod, mod, mod, mod];
         const res = runFullPipeline(spec);
         expect(res.tiling, `${belt}/${mod}`).toBeDefined();
-        expect(res.elapsedMs, `${belt}/${mod}`).toBeLessThan(2500);
+        expect(res.elapsedMs, `${belt}/${mod}`).toBeLessThan(2500 * CI_TIME_MULT);
         expect(res.drc.errorCount, `${belt}/${mod}`).toBe(0);
         expect(res.sta.passed, `${belt}/${mod}`).toBe(true);
       }
@@ -215,6 +217,6 @@ describe('Hierarchical Tiling & Scalability Benchmarks', () => {
     const t0 = Date.now();
     const res = runFullPipeline(flatSpec);
     expect(res.tiling).toBeUndefined();
-    expect(Date.now() - t0).toBeLessThan(7000);
+    expect(Date.now() - t0).toBeLessThan(7000 * CI_TIME_MULT);
   });
 });

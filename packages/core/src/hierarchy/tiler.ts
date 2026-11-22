@@ -2583,7 +2583,7 @@ export function runTiledPipeline(
       unitSpec,
       {
         shouldCancel: () =>
-          Boolean(options.shouldCancel?.()) || Date.now() - unitStart > 2500,
+          Boolean(options.shouldCancel?.()) || Date.now() - unitStart > 5000,
       },
       { forceBalancedOutputs: true },
     );

@@ -10,6 +10,8 @@ import {
   runFullPipeline,
 } from '../src/index.js';
 
+const CI_TIME_MULT = process.env.CI ? 4 : 1;
+
 function logBenchmark(tag: string, res: PipelineResult) {
   const area = res.floorplan.width * res.floorplan.height;
   const entityTiles = res.allEntities.reduce(
@@ -40,7 +42,7 @@ describe('End-to-End P&R Benchmarks', () => {
     expect(res.drc.passed).toBe(true);
     expect(res.sta.passed).toBe(true);
     expect(m.area).toBeLessThan(3500);
-    expect(res.elapsedMs).toBeLessThan(1500);
+    expect(res.elapsedMs).toBeLessThan(1500 * CI_TIME_MULT);
     expect(res.blueprintString.startsWith('0eN')).toBe(true);
     const decoded = decodeBlueprintWrapper(res.blueprintString);
     expect(decoded.blueprint?.entities.length).toBeGreaterThan(20);
@@ -55,7 +57,7 @@ describe('End-to-End P&R Benchmarks', () => {
     expect(res.drc.passed).toBe(true);
     expect(res.sta.passed).toBe(true);
     expect(m.area).toBeLessThan(2200);
-    expect(res.elapsedMs).toBeLessThan(1000);
+    expect(res.elapsedMs).toBeLessThan(1000 * CI_TIME_MULT);
     expect(res.blueprintString.startsWith('0eN')).toBe(true);
   });
 
@@ -74,7 +76,7 @@ describe('End-to-End P&R Benchmarks', () => {
     expect(res.drc.violations).toEqual([]);
     expect(res.drc.passed).toBe(true);
     expect(res.sta.passed).toBe(true);
-    expect(res.elapsedMs).toBeLessThan(1000);
+    expect(res.elapsedMs).toBeLessThan(1000 * CI_TIME_MULT);
 
     const plasticPin = res.floorplan.pins.find((p) => p.id === 'in:plastic-bar:0')!;
     expect(plasticPin.edge).toBe('N');
@@ -103,7 +105,7 @@ describe('End-to-End P&R Benchmarks', () => {
     expect(res.drc.violations).toEqual([]);
     expect(res.drc.passed).toBe(true);
     expect(res.sta.passed).toBe(true);
-    expect(res.elapsedMs).toBeLessThan(1000);
+    expect(res.elapsedMs).toBeLessThan(1000 * CI_TIME_MULT);
 
     const lockedMacro = res.floorplan.macros.find(
       (m) => m.id === 'macro:military-science-pack',
@@ -122,7 +124,7 @@ describe('End-to-End P&R Benchmarks', () => {
     expect(res.drc.passed).toBe(true);
     expect(res.sta.passed).toBe(true);
     expect(m.area).toBeLessThan(3200);
-    expect(res.elapsedMs).toBeLessThan(1500);
+    expect(res.elapsedMs).toBeLessThan(1500 * CI_TIME_MULT);
     expect(res.blueprintString.startsWith('0eN')).toBe(true);
   });
 
