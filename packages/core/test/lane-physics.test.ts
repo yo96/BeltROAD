@@ -13,6 +13,7 @@ import {
   defaultOptimizationConfig,
   defaultPdkConfig,
   inserterDropLane,
+  inserterPickupNearLane,
   mirrorMacroY,
   rotateMacro,
   runDrc,
@@ -413,5 +414,160 @@ describe('Factorio Far-Lane Inserter Physics & Per-Lane STA', () => {
     const mergedNet = staMerged.nets.find((n) => n.netId === 'net:merged')!;
     expect(mergedNet.passed).toBe(false);
     expect(mergedNet.rightRatePerSec).toBeCloseTo(24, 2);
+  });
+
+  it('computes near-lane-first inserter pickup lane accurately across perpendicular and parallel orientations', () => {
+    // ins.direction points from inserter center toward pickup belt:
+    // Inserter South of EAST belt has ins.direction = NORTH -> belt's South (right) lane is near
+    expect(inserterPickupNearLane(Dir.NORTH, Dir.EAST)).toBe('right');
+    // Inserter North of EAST belt has ins.direction = SOUTH -> belt's North (left) lane is near
+    expect(inserterPickupNearLane(Dir.SOUTH, Dir.EAST)).toBe('left');
+    // Inserter West of SOUTH belt has ins.direction = EAST -> belt's West (right) lane is near
+    expect(inserterPickupNearLane(Dir.EAST, Dir.SOUTH)).toBe('right');
+    // Inserter East of NORTH belt has ins.direction = WEST -> belt's East (right) lane is near
+    expect(inserterPickupNearLane(Dir.WEST, Dir.NORTH)).toBe('right');
+    // Parallel pickup defaults to left lane
+    expect(inserterPickupNearLane(Dir.EAST, Dir.EAST)).toBe('left');
+    expect(inserterPickupNearLane(Dir.WEST, Dir.EAST)).toBe('left');
+  });
+
+  it('populates per-tile entityLanes for macro outputs (including lane-flip transitions), inputs, and balancers on Green Circuits', () => {
+    const res = runFullPipeline(structuredClone(BUILTIN_PRESETS[0].spec));
+    expect(res.drc.passed).toBe(true);
+    expect(res.sta.passed).toBe(true);
+    expect(res.sta.entityLanes).toBeDefined();
+
+    const entityLanes = res.sta.entityLanes!;
+    // Routed belts should NOT be duplicated into entityLanes
+    for (const e of res.allEntities) {
+      if (e.netId) {
+        expect(entityLanes[e.id]).toBeUndefined();
+      }
+    }
+
+    // Balancer entities must be populated with non-zero L/R rates
+    const balancerEnts = res.allEntities.filter((e) => e.role === 'balancer');
+    expect(balancerEnts.length).toBeGreaterThan(0);
+    for (const b of balancerEnts) {
+      const info = entityLanes[b.id];
+      expect(info, `balancer ${b.id}`).toBeDefined();
+      expect(info.source).toBe('balancer');
+      expect(info.leftRatePerSec + info.rightRatePerSec).toBeGreaterThan(0);
+    }
+
+    // Every macro transport tile should appear in entityLanes
+    const macroTransport = res.allEntities.filter(
+      (e) =>
+        (e.role === 'belt-macro' || e.role === 'ug-macro' || e.role === 'splitter-macro') &&
+        !e.netId,
+    );
+    expect(macroTransport.length).toBeGreaterThan(0);
+    for (const e of macroTransport) {
+      expect(entityLanes[e.id], `macro tile ${e.id}`).toBeDefined();
+    }
+
+    // Check output macro lane-flip: tiles exist both with single-lane accumulation and post-flip balance
+    const ecOutputs = macroTransport.filter(
+      (e) => entityLanes[e.id]?.source === 'macro-output' && entityLanes[e.id]?.leftItem === 'electronic-circuit',
+    );
+    expect(ecOutputs.length).toBeGreaterThan(0);
+    expect(
+      ecOutputs.some((e) => {
+        const lr = entityLanes[e.id]!;
+        return lr.leftRatePerSec > 0 && lr.rightRatePerSec === 0;
+      }) ||
+        ecOutputs.some((e) => {
+          const lr = entityLanes[e.id]!;
+          return lr.rightRatePerSec > 0 && lr.leftRatePerSec === 0;
+        }),
+    ).toBe(true);
+    expect(
+      ecOutputs.some((e) => {
+        const lr = entityLanes[e.id]!;
+        return lr.leftRatePerSec > 0.5 && lr.rightRatePerSec > 0.5;
+      }),
+    ).toBe(true);
+
+    // Check near-lane-first drain on single-item iron-plate macro input belts
+    const ironInputs = macroTransport.filter(
+      (e) => entityLanes[e.id]?.source === 'macro-input' && entityLanes[e.id]?.leftItem === 'iron-plate',
+    );
+    expect(ironInputs.length).toBeGreaterThan(0);
+    // Downstream of near-lane consumption (and before/after midpoint), at least some tiles should show unequal L vs R rates while mid-row drains
+    expect(
+      ironInputs.some((e) => {
+        const lr = entityLanes[e.id]!;
+        return lr.leftRatePerSec + lr.rightRatePerSec > 0.1 && Math.abs(lr.leftRatePerSec - lr.rightRatePerSec) > 0.05;
+      }),
+    ).toBe(true);
+  });
+
+  it('tracks dual-lane macro input belts and header UG bridges separately per lane on Military Science', () => {
+    const milPreset = BUILTIN_PRESETS.find((p) => p.id === 'military-science')!;
+    const res = runFullPipeline(structuredClone(milPreset.spec));
+    expect(res.drc.passed).toBe(true);
+    expect(res.sta.passed).toBe(true);
+    const entityLanes = res.sta.entityLanes!;
+
+    const dualLaneEnts = res.allEntities.filter(
+      (e) => e.laneItems && e.laneItems.length === 2,
+    );
+    expect(dualLaneEnts.length).toBeGreaterThan(0);
+    for (const e of dualLaneEnts) {
+      const info = entityLanes[e.id];
+      expect(info, `dual-lane ${e.id}`).toBeDefined();
+      expect(info.source).toBe('macro-input');
+      expect(info.leftItem).toBe(e.laneItems![0]);
+      expect(info.rightItem).toBe(e.laneItems![1]);
+      expect(info.leftItem).not.toBe(info.rightItem);
+      expect(info.leftRatePerSec).toBeGreaterThanOrEqual(0);
+      expect(info.rightRatePerSec).toBeGreaterThanOrEqual(0);
+    }
+
+    // Dual-lane merge header tiles must start with positive steady-state rates on BOTH lanes matching incoming nets
+    const mergeHeaders = dualLaneEnts.filter((e) => e.intentionalSideLoad);
+    expect(mergeHeaders.length).toBeGreaterThan(0);
+    for (const hdr of mergeHeaders) {
+      const info = entityLanes[hdr.id]!;
+      expect(info.leftRatePerSec).toBeGreaterThan(0);
+      expect(info.rightRatePerSec).toBeGreaterThan(0);
+    }
+
+    // Header ug-macro tiles inside dual-lane macros must inherit item identities & positive throughput
+    const headerUgs = res.allEntities.filter((e) => e.role === 'ug-macro');
+    expect(headerUgs.length).toBeGreaterThan(0);
+    for (const ug of headerUgs) {
+      const info = entityLanes[ug.id];
+      expect(info, `header ug ${ug.id}`).toBeDefined();
+      expect(info.leftItem || info.rightItem).toBeTruthy();
+      expect(info.leftRatePerSec + info.rightRatePerSec).toBeGreaterThan(0);
+    }
+  });
+
+  it('populates per-tile entityLanes on tiled megafactories without duplicating routed nets', () => {
+    const spec: DesignSpec = {
+      ...structuredClone(BUILTIN_PRESETS[0].spec),
+      name: 'Speed Module 3 Telemetry Check',
+      targets: [{ item: 'speed-module-3', ratePerMin: 60 }],
+      pins: [],
+      optimization: defaultOptimizationConfig('compact'),
+    };
+    const res = runFullPipeline(spec);
+    expect(res.drc.passed).toBe(true);
+    expect(res.sta.passed).toBe(true);
+    expect(res.tiling).toBeDefined();
+
+    const entityLanes = res.sta.entityLanes!;
+    const routedCount = res.allEntities.filter((e) => e.netId !== undefined).length;
+    expect(routedCount).toBeGreaterThan(100);
+    expect(Object.keys(entityLanes).length).toBeLessThan(routedCount + res.allEntities.filter((e) => !e.netId).length);
+
+    // Every tiler splitter has balancer telemetry
+    const balEnts = res.allEntities.filter((e) => e.role === 'balancer');
+    expect(balEnts.length).toBeGreaterThan(0);
+    for (const b of balEnts) {
+      expect(entityLanes[b.id]?.source).toBe('balancer');
+      expect((entityLanes[b.id]?.leftRatePerSec ?? 0) + (entityLanes[b.id]?.rightRatePerSec ?? 0)).toBeGreaterThan(0);
+    }
   });
 });

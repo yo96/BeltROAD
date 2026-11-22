@@ -946,10 +946,14 @@ function runRoutingAttempt(
   const useCorridor = W * H > 80 * 80;
   const largeGrid = W * H > 5000;
   const hWeight = W * H > 10000 ? 1.12 : 1.0;
+  const attemptStart = Date.now();
+  const maxRouteMs = W * H > 25000 ? 4500 : 8000;
+  const timedOut = () =>
+    Boolean(shouldCancel?.()) || Date.now() - attemptStart > maxRouteMs;
 
   // Pass 0: greedy conflict-free routing where possible, falling back to congestion-aware
   for (const idx of order) {
-    if (shouldCancel?.()) break;
+    if (timedOut()) break;
     const spec = specs[idx];
     let steps = routeSingleNet(buf, spec, false, useCorridor, 0.65, 3.8, hWeight, 14);
     if (!steps && useCorridor) {
@@ -976,7 +980,7 @@ function runRoutingAttempt(
   });
 
   for (let iter = 1; iter <= MAX_ITERS && conflictInfo.totalConflicts > 0; iter++) {
-    if (shouldCancel?.()) break;
+    if (timedOut()) break;
     iterations = iter;
 
     for (const tIdx of conflictInfo.conflictTiles) {
@@ -996,7 +1000,7 @@ function runRoutingAttempt(
     }
 
     for (const idx of ripList) {
-      if (shouldCancel?.()) break;
+      if (timedOut()) break;
       const spec = specs[idx];
       let steps: PlacedTileStep[] | null;
       if (largeGrid) {
@@ -1025,7 +1029,7 @@ function runRoutingAttempt(
     });
   }
 
-  if (optimizeRoutes && conflictInfo.totalConflicts === 0 && !shouldCancel?.()) {
+  if (optimizeRoutes && conflictInfo.totalConflicts === 0 && !timedOut()) {
     const hugeGrid = W * H > 25000 || Date.now() - startTime > 1200;
     optimizeRoutedNets(buf, specs, netSteps, hugeGrid ? 1 : 4, shouldCancel, hugeGrid);
     conflictInfo = findConflicts(buf, specs, netSteps);

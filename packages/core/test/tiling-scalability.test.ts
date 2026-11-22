@@ -145,4 +145,76 @@ describe('Hierarchical Tiling & Scalability Benchmarks', () => {
     const presetRes = runFullPipeline(preset);
     expect(presetRes.tiling).toBeUndefined();
   });
+
+  it('compiles 20/min productivity-module-3 quickly even when starting from a preset with N/S pins', () => {
+    const redPreset = BUILTIN_PRESETS.find((p) => p.id === 'red-circuits')!;
+    const spec = structuredClone(redPreset.spec);
+    spec.targets = [{ item: 'productivity-module-3', ratePerMin: 20 }];
+
+    const res = runFullPipeline(spec);
+    expect(res.tiling).toBeDefined();
+    expect(res.elapsedMs).toBeLessThan(2500);
+    expect(res.drc.errorCount).toBe(0);
+    expect(res.drc.passed).toBe(true);
+    expect(res.sta.passed).toBe(true);
+  });
+
+  it('compiles 20/min productivity-module-3 quickly in Fixed W x H die mode', () => {
+    const fitting = makeSpec(
+      'Prod Module 3 (20/min fixed 320x260)',
+      [{ item: 'productivity-module-3', ratePerMin: 20 }],
+      { belt: 'red', asm: 2, ins: 'fast' },
+    );
+    fitting.floorplan = { mode: 'fixed', width: 320, height: 260, aspectRatio: 1.23, margin: 3, halo: 2 };
+    const fitRes = runFullPipeline(fitting);
+    expect(fitRes.tiling).toBeDefined();
+    expect(fitRes.elapsedMs).toBeLessThan(2500);
+    expect(fitRes.floorplan.width).toBe(320);
+    expect(fitRes.floorplan.height).toBe(260);
+    expect(fitRes.drc.errorCount).toBe(0);
+    expect(fitRes.sta.passed).toBe(true);
+
+    const tight = makeSpec(
+      'Prod Module 3 (20/min fixed 200x200)',
+      [{ item: 'productivity-module-3', ratePerMin: 20 }],
+      { belt: 'red', asm: 2, ins: 'fast' },
+    );
+    tight.floorplan = { mode: 'fixed', width: 200, height: 200, aspectRatio: 1.0, margin: 3, halo: 2 };
+    const tightRes = runFullPipeline(tight);
+    expect(tightRes.tiling).toBeDefined();
+    expect(tightRes.elapsedMs).toBeLessThan(2500);
+    expect(tightRes.drc.errorCount).toBe(0);
+    expect(tightRes.sta.passed).toBe(true);
+    expect(tightRes.floorplan.warnings.length).toBeGreaterThan(0);
+  });
+
+  it('sizes inserter I/O for 20/min productivity-module-3 with speed-module-2/3 fills so tiling passes under 2.5s', () => {
+    for (const mod of ['speed-module-2', 'speed-module-3'] as const) {
+      for (const belt of ['yellow', 'blue'] as const) {
+        const spec = makeSpec(
+          `Prod Module 3 (20/min ${belt} ${mod})`,
+          [{ item: 'productivity-module-3', ratePerMin: 20 }],
+          { belt, asm: 3, ins: 'bulk' },
+        );
+        spec.pdk.modules.global = [mod, mod, mod, mod];
+        const res = runFullPipeline(spec);
+        expect(res.tiling, `${belt}/${mod}`).toBeDefined();
+        expect(res.elapsedMs, `${belt}/${mod}`).toBeLessThan(2500);
+        expect(res.drc.errorCount, `${belt}/${mod}`).toBe(0);
+        expect(res.sta.passed, `${belt}/${mod}`).toBe(true);
+      }
+    }
+  });
+
+  it('bounds explicit flat mode (tiling: off) on 20/min productivity-module-3 without hanging', () => {
+    const flatSpec = makeSpec(
+      'Prod Module 3 (20/min flat bounded)',
+      [{ item: 'productivity-module-3', ratePerMin: 20 }],
+      { belt: 'red', asm: 2, ins: 'fast', tiling: 'off' },
+    );
+    const t0 = Date.now();
+    const res = runFullPipeline(flatSpec);
+    expect(res.tiling).toBeUndefined();
+    expect(Date.now() - t0).toBeLessThan(7000);
+  });
 });

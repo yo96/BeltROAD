@@ -16,6 +16,7 @@ import {
 } from '../types.js';
 import {
   BELT_SPECS,
+  INSERTER_SPECS,
   MACHINE_SPECS,
   MODULE_SPECS,
   assemblerNameForTier,
@@ -262,7 +263,6 @@ export function synthesizeDesign(
     const outPerMachinePerSec =
       (recipe.outputCount * effectiveProd * effectiveSpeed) / recipe.energyRequired;
     const exactMachines = demand / outPerMachinePerSec;
-    const machineCount = Math.max(1, Math.ceil(exactMachines));
 
     const ingredients: { item: string; ratePerSec: number }[] = [];
     for (const ing of recipe.ingredients) {
@@ -273,6 +273,28 @@ export function synthesizeDesign(
       ingredients.push({ item: ing.item, ratePerSec: ingRate });
       demandPerSec.set(ing.item, (demandPerSec.get(ing.item) ?? 0) + ingRate);
     }
+
+    const reach1Pool = spec.pdk.allowedInserterTiers.filter(
+      (t): t is 'yellow' | 'fast' | 'bulk' => t !== 'long',
+    );
+    const maxReach1 = Math.max(
+      INSERTER_SPECS[spec.pdk.defaultInserterTier].itemsPerSec,
+      ...reach1Pool.map((t) => INSERTER_SPECS[t].itemsPerSec),
+    );
+    const maxReach2 = INSERTER_SPECS.long.itemsPerSec;
+    const totalIngRate = ingredients.reduce((a, b) => a + b.ratePerSec, 0);
+    const maxOutPerMach = (ingredients.length <= 2 ? 3 : 2) * maxReach1;
+    const maxInPerMach =
+      ingredients.length <= 1
+        ? 3 * maxReach1
+        : ingredients.length === 2
+          ? Math.min(2 * maxReach1 + maxReach2, 1.5 * maxReach1 + 1.5 * maxReach2)
+          : 2 * maxReach1 + 2 * maxReach2;
+    const minMachinesForIo = Math.max(
+      Math.ceil(demand / Math.max(0.1, maxOutPerMach)),
+      Math.ceil(totalIngRate / Math.max(0.1, maxInPerMach)),
+    );
+    const machineCount = Math.max(1, Math.ceil(exactMachines), minMachinesForIo);
 
     computedRecipes.set(item, {
       item,

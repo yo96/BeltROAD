@@ -10,6 +10,7 @@ import {
   PerimeterPin,
   PlacedMacro,
   RouteResult,
+  StaNetReport,
   StaReport,
   SynthesisResult,
   beltTierFromEntityName,
@@ -67,12 +68,17 @@ interface BlueprintCanvasProps {
   onRedo?: () => void;
 }
 
+interface HoverLine {
+  text: string;
+  color?: string;
+}
+
 interface HoverInfo {
   tx: number;
   ty: number;
   screenX: number;
   screenY: number;
-  lines: string[];
+  lines: HoverLine[];
 }
 
 export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
@@ -167,6 +173,14 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
     }
     return { ugOutByTile: ugOuts, tileEntityMap: byTile, tileNetEntityMap: netByTile };
   }, [entities]);
+
+  const staNetMap = useMemo(() => {
+    const m = new Map<string, StaNetReport>();
+    if (sta) {
+      for (const n of sta.nets) m.set(n.netId, n);
+    }
+    return m;
+  }, [sta]);
 
   const dragRef = useRef<
     | {
@@ -1297,25 +1311,84 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
       return;
     }
 
-    const lines: string[] = [`Tile (${tx}, ${ty})`];
+    const lines: HoverLine[] = [{ text: `Tile (${tx}, ${ty})` }];
     const hitPin = floorplan.pins.find((p) => p.x === tx && p.y === ty);
     if (hitPin) {
-      lines.push(
-        `PIN ${hitPin.kind.toUpperCase()}: ${getItemMeta(hitPin.item).name} (${(hitPin.ratePerSec * 60).toFixed(1)}/min)`,
-      );
+      lines.push({
+        text: `PIN ${hitPin.kind.toUpperCase()}: ${getItemMeta(hitPin.item).name} (${(hitPin.ratePerSec * 60).toFixed(1)}/min)`,
+      });
     }
+    const laneColor = (pct: number) =>
+      pct > 100.1 ? '#f87171' : pct > 85 ? '#fbbf24' : '#7dd3fc';
     const hitEnt = tileEntityMap.get(`${tx},${ty}`);
     if (hitEnt) {
-      lines.push(`Entity: ${hitEnt.name}`);
-      if (hitEnt.recipe) lines.push(`Recipe: ${hitEnt.recipe}`);
-      if (hitEnt.laneItems) lines.push(`Dual-Lane: ${hitEnt.laneItems.join(' + ')}`);
-      else if (hitEnt.item) lines.push(`Item: ${hitEnt.item}`);
-      if (hitEnt.netId && sta) {
-        const st = sta.nets.find((n) => n.netId === hitEnt.netId);
-        if (st) {
-          lines.push(
-            `Rate: ${st.ratePerSec.toFixed(2)}/s (${(st.utilization * 100).toFixed(0)}% of ${st.beltTier}) — click to trace`,
-          );
+      lines.push({ text: `Entity: ${hitEnt.name}` });
+      if (hitEnt.recipe) lines.push({ text: `Recipe: ${hitEnt.recipe}` });
+
+      const netSt = hitEnt.netId ? staNetMap.get(hitEnt.netId) : undefined;
+      const entLane = !netSt ? sta?.entityLanes?.[hitEnt.id] : undefined;
+
+      if (hitEnt.laneItems) {
+        lines.push({
+          text: `Dual-Lane: ${hitEnt.laneItems.map((id) => getItemMeta(id).name).join(' + ')}`,
+        });
+      } else if (hitEnt.item) {
+        lines.push({ text: `Item: ${getItemMeta(hitEnt.item).name}` });
+      } else if (
+        entLane?.leftItem &&
+        entLane?.rightItem &&
+        entLane.leftItem !== entLane.rightItem
+      ) {
+        lines.push({
+          text: `Dual-Lane: ${getItemMeta(entLane.leftItem).name} + ${getItemMeta(entLane.rightItem).name}`,
+        });
+      } else if (entLane?.leftItem || entLane?.rightItem) {
+        lines.push({
+          text: `Item: ${getItemMeta((entLane.leftItem ?? entLane.rightItem)!).name}`,
+        });
+      }
+
+      if (netSt) {
+        const left = netSt.leftRatePerSec ?? netSt.ratePerSec / 2;
+        const right = netSt.rightRatePerSec ?? netSt.ratePerSec / 2;
+        const halfCap = netSt.capacityPerSec * 0.5;
+        const lPct = halfCap > 0 ? (left / halfCap) * 100 : 0;
+        const rPct = halfCap > 0 ? (right / halfCap) * 100 : 0;
+        lines.push({
+          text: `Total: ${netSt.ratePerSec.toFixed(2)}/s (${(netSt.utilization * 100).toFixed(0)}% of ${netSt.beltTier}) — click to trace`,
+        });
+        lines.push({
+          text: `L Lane: ${left.toFixed(2)}/s (${lPct.toFixed(0)}%) | R Lane: ${right.toFixed(2)}/s (${rPct.toFixed(0)}%)`,
+          color: laneColor(Math.max(lPct, rPct)),
+        });
+      } else if (entLane) {
+        const total = entLane.leftRatePerSec + entLane.rightRatePerSec;
+        const utilPct =
+          entLane.capacityPerSec > 0 ? (total / entLane.capacityPerSec) * 100 : 0;
+        const halfCap = entLane.capacityPerSec * 0.5;
+        const lPct = halfCap > 0 ? (entLane.leftRatePerSec / halfCap) * 100 : 0;
+        const rPct = halfCap > 0 ? (entLane.rightRatePerSec / halfCap) * 100 : 0;
+        lines.push({
+          text: `Total: ${total.toFixed(2)}/s (${utilPct.toFixed(0)}% of ${entLane.beltTier})`,
+        });
+        if (
+          entLane.leftItem &&
+          entLane.rightItem &&
+          entLane.leftItem !== entLane.rightItem
+        ) {
+          lines.push({
+            text: `L (${getItemMeta(entLane.leftItem).name}): ${entLane.leftRatePerSec.toFixed(2)}/s (${lPct.toFixed(0)}%)`,
+            color: laneColor(lPct),
+          });
+          lines.push({
+            text: `R (${getItemMeta(entLane.rightItem).name}): ${entLane.rightRatePerSec.toFixed(2)}/s (${rPct.toFixed(0)}%)`,
+            color: laneColor(rPct),
+          });
+        } else {
+          lines.push({
+            text: `L Lane: ${entLane.leftRatePerSec.toFixed(2)}/s (${lPct.toFixed(0)}%) | R Lane: ${entLane.rightRatePerSec.toFixed(2)}/s (${rPct.toFixed(0)}%)`,
+            color: laneColor(Math.max(lPct, rPct)),
+          });
         }
       }
     }
@@ -1518,8 +1591,9 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
         <div
           style={{
             position: 'absolute',
-            left: Math.min(size.w - 250, hover.screenX + 14),
-            top: Math.min(size.h - 90, Math.max(8, hover.screenY - 12)),
+            left: Math.max(8, Math.min(size.w - 330, hover.screenX + 14)),
+            top: Math.max(8, Math.min(size.h - 140, hover.screenY - 12)),
+            maxWidth: 340,
             pointerEvents: 'none',
             background: 'rgba(9, 24, 40, 0.94)',
             border: '1px solid var(--bp-border-bright)',
@@ -1532,8 +1606,11 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
           }}
         >
           {hover.lines.map((l, i) => (
-            <div key={i} style={{ color: i === 0 ? 'var(--bp-cyan)' : 'var(--bp-text)' }}>
-              {l}
+            <div
+              key={i}
+              style={{ color: l.color ?? (i === 0 ? 'var(--bp-cyan)' : 'var(--bp-text)') }}
+            >
+              {l.text}
             </div>
           ))}
         </div>

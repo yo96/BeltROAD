@@ -59,6 +59,7 @@ import {
   Undo2,
   Unlock,
   Wrench,
+  X,
 } from 'lucide-react';
 import {
   BlueprintCanvas,
@@ -367,12 +368,13 @@ export default function App() {
     };
   }, [stepsMenuOpen, layersMenuOpen]);
 
-  useEffect(() => {
+  const specRef = useRef(spec);
+  specRef.current = spec;
+
+  const createWorker = useCallback(() => {
     const worker = new Worker(new URL('./worker/eda.worker.ts', import.meta.url), {
       type: 'module',
     });
-    workerRef.current = worker;
-
     worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
       const msg = event.data;
       if (msg.jobId !== jobIdRef.current) return;
@@ -425,7 +427,7 @@ export default function App() {
             componentsBefore: 0,
             componentsAfter: 0,
           },
-          spec,
+          specRef.current,
         );
         setAllEntities(macroEntities);
         setProgress({
@@ -451,6 +453,23 @@ export default function App() {
         });
       }
     };
+    workerRef.current = worker;
+    return worker;
+  }, []);
+
+  const handleCancelRun = useCallback(() => {
+    jobIdRef.current++;
+    if (workerRef.current) {
+      workerRef.current.terminate();
+      workerRef.current = null;
+    }
+    createWorker();
+    setRunning(false);
+    setProgress({ stage: 'done', message: 'Cancelled' });
+  }, [createWorker]);
+
+  useEffect(() => {
+    const worker = createWorker();
 
     // Initial run on mount
     const initJob = ++jobIdRef.current;
@@ -840,6 +859,17 @@ export default function App() {
             <Play size={13} /> {running ? 'Running…' : 'Run Full P&R'}
             {isSpecDirty && <span className="dirty-dot" aria-label="Changes pending" />}
           </button>
+          {running && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={handleCancelRun}
+              title="Terminate the running P&R worker"
+              style={{ borderColor: 'rgba(248, 113, 113, 0.5)', color: '#fca5a5' }}
+            >
+              <X size={13} /> Cancel
+            </button>
+          )}
         </div>
 
         {progress && (
@@ -962,6 +992,8 @@ export default function App() {
                     updateSpec((prev) => ({
                       ...prev,
                       targets: [...prev.targets, { item: 'iron-gear-wheel', ratePerMin: 60 }],
+                      pins: [],
+                      macroOverrides: {},
                     }))
                   }
                 >
@@ -994,6 +1026,8 @@ export default function App() {
                           targets: prev.targets.map((item, i) =>
                             i === idx ? { ...item, item: val } : item,
                           ),
+                          pins: [],
+                          macroOverrides: {},
                         }));
                       }}
                     />
@@ -1005,6 +1039,8 @@ export default function App() {
                           updateSpec((prev) => ({
                             ...prev,
                             targets: prev.targets.filter((_, i) => i !== idx),
+                            pins: [],
+                            macroOverrides: {},
                           }))
                         }
                       >
@@ -1814,22 +1850,27 @@ export default function App() {
                             />
                           </div>
                           {selectedStaNet.leftRatePerSec !== undefined &&
-                            selectedStaNet.rightRatePerSec !== undefined && (
-                              <div
-                                className="mono"
-                                style={{
-                                  fontSize: 10.5,
-                                  color:
-                                    (selectedStaNet.laneUtilization ?? 0) > 1
-                                      ? '#f87171'
-                                      : 'var(--bp-text-muted)',
-                                  marginTop: 3,
-                                }}
-                              >
-                                L: {selectedStaNet.leftRatePerSec.toFixed(1)}/s • R:{' '}
-                                {selectedStaNet.rightRatePerSec.toFixed(1)}/s
-                              </div>
-                            )}
+                            selectedStaNet.rightRatePerSec !== undefined && (() => {
+                              const halfCap = selectedStaNet.capacityPerSec * 0.5;
+                              const lPct = halfCap > 0 ? (selectedStaNet.leftRatePerSec / halfCap) * 100 : 0;
+                              const rPct = halfCap > 0 ? (selectedStaNet.rightRatePerSec / halfCap) * 100 : 0;
+                              return (
+                                <div
+                                  className="mono"
+                                  style={{
+                                    fontSize: 10.5,
+                                    color:
+                                      (selectedStaNet.laneUtilization ?? 0) > 1
+                                        ? '#f87171'
+                                        : 'var(--bp-text-muted)',
+                                    marginTop: 3,
+                                  }}
+                                >
+                                  L: {selectedStaNet.leftRatePerSec.toFixed(2)}/s ({lPct.toFixed(0)}%) • R:{' '}
+                                  {selectedStaNet.rightRatePerSec.toFixed(2)}/s ({rPct.toFixed(0)}%)
+                                </div>
+                              );
+                            })()}
                         </div>
                       )}
                       {selectedRoutedNet && (

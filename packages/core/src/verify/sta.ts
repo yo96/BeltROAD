@@ -20,7 +20,7 @@ export function runSta(
 ): StaReport {
   const bottlenecks: string[] = [];
   let maxUtilization = 0;
-  const { macroLanes, netLanes } = analyzeNetworkLaneFlow(synth, allEntities);
+  const { macroLanes, netLanes, entityLanes } = analyzeNetworkLaneFlow(synth, allEntities);
 
   const nets: StaNetReport[] = synth.nets.map((net) => {
     const cap = BELT_SPECS[net.beltTier].itemsPerSec;
@@ -167,5 +167,6 @@ export function runSta(
     bottlenecks,
     nets,
     macros,
+    entityLanes,
   };
 }

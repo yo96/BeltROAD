@@ -470,12 +470,24 @@ export interface StaMacroReport {
   issues: string[];
 }
 
+export interface BeltLaneFlowInfo {
+  leftRatePerSec: number;
+  rightRatePerSec: number;
+  leftItem?: string;
+  rightItem?: string;
+  beltTier: BeltTier;
+  capacityPerSec: number;
+  source: 'macro-output' | 'macro-input' | 'balancer';
+}
+
 export interface StaReport {
   passed: boolean;
   maxUtilization: number;
   bottlenecks: string[];
   nets: StaNetReport[];
   macros: StaMacroReport[];
+  /** Per-entity lane telemetry for macro-internal and balancer transport entities (routed belts resolve via `nets`). */
+  entityLanes?: Record<string, BeltLaneFlowInfo>;
 }
 
 export interface PipelineProgress {

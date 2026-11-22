@@ -433,7 +433,8 @@ function populateStripEntities(
     const northFree = [mx, mx + 1, mx + 2].filter((x) => !poleSet.has(x));
     let nCursor = 0;
     if (northNearIns) {
-      for (let c = 0; c < northNearIns.count && nCursor < northFree.length; c++) {
+      const nearLimit = northFarIns ? Math.max(1, northFree.length - 1) : northFree.length;
+      for (let c = 0; c < northNearIns.count && nCursor < nearLimit; c++) {
         const ix = northFree[nCursor++];
         if (ix > maxNorthInX) maxNorthInX = ix;
         entities.push({
@@ -1137,7 +1138,8 @@ function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): Compil
   for (const mx of geomTop.machineXs) {
     const inFree = [mx, mx + 1, mx + 2].filter((x) => !topPoleSet.has(x));
     let ic = 0;
-    for (let c = 0; c < topInsTrack1.count && ic < inFree.length; c++) {
+    const t1Limit = topInsTrack2 ? Math.max(1, inFree.length - 1) : inFree.length;
+    for (let c = 0; c < topInsTrack1.count && ic < t1Limit; c++) {
       const ix = inFree[ic++];
       if (ix > maxInX) maxInX = ix;
       entities.push({
@@ -1192,7 +1194,8 @@ function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): Compil
     const inFree = [mx, mx + 1, mx + 2].filter((x) => !botPoleSet.has(x));
     let ic = 0;
     if (botInsTrack2) {
-      for (let c = 0; c < botInsTrack2.count && ic < inFree.length; c++) {
+      const b2Limit = Math.max(1, inFree.length - 1);
+      for (let c = 0; c < botInsTrack2.count && ic < b2Limit; c++) {
         const ix = inFree[ic++];
         if (ix > maxInX) maxInX = ix;
         entities.push({

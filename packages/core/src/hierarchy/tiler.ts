@@ -46,14 +46,38 @@ function countRecipeAndBalancerMacros(synth: SynthesisResult): number {
 export function shouldUseTiling(spec: DesignSpec, fullSynth: SynthesisResult): boolean {
   const mode = spec.optimization?.tiling ?? 'auto';
   if (mode === 'off') return false;
-  const hasNonStandardPins = spec.pins.some(
-    (p) => p.offset !== undefined || p.edge === 'N' || p.edge === 'S',
-  );
-  if (
-    hasNonStandardPins ||
-    Object.keys(spec.macroOverrides).length > 0 ||
-    spec.floorplan.mode === 'fixed'
-  ) {
+
+  const activeMacroIds = new Set<string>();
+  const activePinIds = new Set<string>();
+  const activeBusIds = new Set<string>();
+  for (const n of fullSynth.nodes) {
+    if (n.kind === 'recipe-macro' || n.kind === 'balancer-macro') {
+      activeMacroIds.add(n.id);
+    } else if (n.kind === 'primary-input' || n.kind === 'primary-output') {
+      activePinIds.add(n.pinId);
+      const prefix = n.kind === 'primary-input' ? 'in:' : 'out:';
+      activeBusIds.add(`${prefix}${n.item}`);
+      activeBusIds.add(n.item);
+    }
+  }
+
+  const isHuge = fullSynth.nets.length > 60 || fullSynth.bom.totalMachines > 200;
+  const hasActiveBlockingPin = spec.pins.some((p) => {
+    const matchesNode =
+      (p.id && activePinIds.has(p.id)) ||
+      (p.bus && activeBusIds.has(p.bus));
+    if (!matchesNode) return false;
+    const isNonStandard = p.offset !== undefined || p.edge === 'N' || p.edge === 'S';
+    if (!isNonStandard) return false;
+    return isHuge ? p.locked === true : true;
+  });
+
+  const hasActiveMacroOverride = Object.entries(spec.macroOverrides).some(([id, ov]) => {
+    if (!activeMacroIds.has(id)) return false;
+    return isHuge ? ov.locked === true : true;
+  });
+
+  if (hasActiveBlockingPin || hasActiveMacroOverride) {
     return false;
   }
   if (typeof mode === 'number') {
@@ -98,22 +122,41 @@ function chooseCandidateTileCounts(
     return Array.from(candSet).slice(0, 4);
   }
 
+  const estMinK = Math.max(
+    2,
+    Math.ceil(fullSynth.bom.totalMachines / 95),
+    Math.ceil(fullSynth.nets.length / 32),
+  );
+  const maxK = Math.max(64, Math.min(512, estMinK * 2));
+
   for (const t of spec.targets) {
     if (Number.isInteger(t.ratePerMin) && t.ratePerMin >= 2) {
       const n = t.ratePerMin;
-      for (let d = 2; d <= 64; d++) {
+      for (let d = 2; d <= maxK; d++) {
         if (n % d === 0) {
           candSet.add(d);
           const q = n / d;
-          if (q >= 2 && q <= 64) candSet.add(q);
+          if (q >= 2 && q <= maxK) candSet.add(q);
         }
       }
     }
   }
   for (const s of smooth) candSet.add(s);
+  if (estMinK > 32) {
+    const dynamic = [
+      estMinK,
+      estMinK + (estMinK % 2),
+      Math.ceil(estMinK * 1.25),
+      Math.ceil(estMinK * 1.5),
+      Math.ceil(estMinK * 2),
+    ];
+    for (const k of dynamic) {
+      if (k >= 2 && k <= 512) candSet.add(k);
+    }
+  }
 
   const candidates = Array.from(candSet)
-    .filter((k) => k >= 2 && k <= 64)
+    .filter((k) => k >= 2 && k <= maxK)
     .sort((a, b) => a - b);
 
   const fullMachines = Math.max(1, fullSynth.bom.totalMachines);
@@ -144,11 +187,11 @@ function chooseCandidateTileCounts(
 
   const feasibleList = scored.filter((c) => c.feasible).sort((a, b) => a.score - b.score);
   if (feasibleList.length > 0) {
-    return feasibleList.slice(0, 3).map((c) => c.k);
+    return feasibleList.slice(0, 6).map((c) => c.k);
   }
   return scored
     .sort((a, b) => a.penalty - b.penalty || a.score - b.score)
-    .slice(0, 3)
+    .slice(0, 6)
     .map((c) => c.k);
 }
 
@@ -2162,7 +2205,10 @@ function assembleTiledBlueprint(
     Infinity,
   );
   const prefLayout = spec.optimization?.tileLayout ?? 'auto';
-  const reqAr = spec.floorplan.aspectRatio ?? 1.35;
+  const reqAr =
+    spec.floorplan.mode === 'fixed' && spec.floorplan.width && spec.floorplan.height
+      ? clampNum(spec.floorplan.width / Math.max(1, spec.floorplan.height), 0.2, 5.0)
+      : spec.floorplan.aspectRatio ?? 1.35;
   const { bayCount, layout } = pickBestBayCountForCompiledUnit(
     K,
     uW,
@@ -2186,9 +2232,9 @@ function assembleTiledBlueprint(
   }
 
   const BAY_GAP = 6;
-  const W =
+  let W =
     rawBays.reduce((sum, b) => sum + b.W, 0) + Math.max(0, bayCount - 1) * BAY_GAP;
-  const H = rawBays.reduce((mx, b) => Math.max(mx, b.H), 1);
+  let H = rawBays.reduce((mx, b) => Math.max(mx, b.H), 1);
 
   const allNodes: SynthNode[] = [];
   const allNets: SynthNet[] = [];
@@ -2215,6 +2261,138 @@ function assembleTiledBlueprint(
     xOff += rawBays[g].W + BAY_GAP;
   }
 
+  const fixedWarnings: string[] = [];
+  if (
+    spec.floorplan.mode === 'fixed' &&
+    spec.floorplan.width !== undefined &&
+    spec.floorplan.height !== undefined
+  ) {
+    const origW = W;
+    const origH = H;
+    const fixedW = Math.max(16, Math.round(spec.floorplan.width));
+    const fixedH = Math.max(16, Math.round(spec.floorplan.height));
+    const targetW = Math.max(origW, fixedW);
+    const targetH = Math.max(origH, fixedH);
+
+    if (targetW > origW || targetH > origH) {
+      const shiftX = Math.floor((targetW - origW) / 2);
+      const shiftY = Math.floor((targetH - origH) / 2);
+
+      for (const pm of stampedMacros) {
+        pm.x += shiftX;
+        pm.y += shiftY;
+      }
+      for (const re of allRouteEntities) {
+        re.tx += shiftX;
+        re.ty += shiftY;
+      }
+      for (const rn of stampedRoutedNets) {
+        for (const t of rn.tiles) {
+          t.tx += shiftX;
+          t.ty += shiftY;
+        }
+      }
+      for (const pe of stampedPdnEntities) {
+        pe.tx += shiftX;
+        pe.ty += shiftY;
+      }
+
+      let fixedExtCounter = 0;
+      const routedByNetId = new Map<string, RoutedNetSegment>();
+      for (const rn of stampedRoutedNets) routedByNetId.set(rn.netId, rn);
+
+      for (const pin of allOuterPins) {
+        const origX = pin.x;
+        const origY = pin.y;
+        pin.x += shiftX;
+        pin.y += shiftY;
+
+        const addedTiles: Array<{ tx: number; ty: number }> = [];
+        if (pin.edge === 'W' && origX === 0 && shiftX > 0) {
+          for (let x = 0; x < shiftX; x++) {
+            addBeltEntity(
+              allRouteEntities,
+              `bus:fixedext:${fixedExtCounter++}`,
+              pin.beltTier,
+              x,
+              pin.y,
+              pin.dir,
+              pin.netId,
+              pin.item,
+            );
+            addedTiles.push({ tx: x, ty: pin.y });
+          }
+          pin.x = 0;
+        } else if (pin.edge === 'E' && origX === origW - 1 && shiftX + origW < targetW) {
+          for (let x = shiftX + origW; x < targetW; x++) {
+            addBeltEntity(
+              allRouteEntities,
+              `bus:fixedext:${fixedExtCounter++}`,
+              pin.beltTier,
+              x,
+              pin.y,
+              pin.dir,
+              pin.netId,
+              pin.item,
+            );
+            addedTiles.push({ tx: x, ty: pin.y });
+          }
+          pin.x = targetW - 1;
+        } else if (pin.edge === 'N' && origY === 0 && shiftY > 0) {
+          for (let y = 0; y < shiftY; y++) {
+            addBeltEntity(
+              allRouteEntities,
+              `bus:fixedext:${fixedExtCounter++}`,
+              pin.beltTier,
+              pin.x,
+              y,
+              pin.dir,
+              pin.netId,
+              pin.item,
+            );
+            addedTiles.push({ tx: pin.x, ty: y });
+          }
+          pin.y = 0;
+        } else if (pin.edge === 'S' && origY === origH - 1 && shiftY + origH < targetH) {
+          for (let y = shiftY + origH; y < targetH; y++) {
+            addBeltEntity(
+              allRouteEntities,
+              `bus:fixedext:${fixedExtCounter++}`,
+              pin.beltTier,
+              pin.x,
+              y,
+              pin.dir,
+              pin.netId,
+              pin.item,
+            );
+            addedTiles.push({ tx: pin.x, ty: y });
+          }
+          pin.y = targetH - 1;
+        }
+
+        if (addedTiles.length > 0 && pin.netId) {
+          const rn = routedByNetId.get(pin.netId);
+          if (rn) {
+            for (const t of addedTiles) {
+              rn.tiles.push({ tx: t.tx, ty: t.ty, dir: pin.dir, kind: 'belt' });
+            }
+            rn.length = rn.tiles.length;
+          }
+        }
+        pin.offset = pin.edge === 'W' || pin.edge === 'E' ? pin.y : pin.x;
+      }
+
+      W = targetW;
+      H = targetH;
+    }
+
+    if (origW > fixedW || origH > fixedH) {
+      fixedWarnings.push(
+        `Fixed die ${fixedW}×${fixedH} is smaller than minimum tiled footprint ${origW}×${origH}; expanded to ${W}×${H}.`,
+      );
+    }
+  }
+
   // Build tiled synthesis, floorplan, route, PDN, collect, DRC, STA!
   const tiledSynth: SynthesisResult = {
     spec,
@@ -2222,7 +2400,7 @@ function assembleTiledBlueprint(
     nets: allNets,
     dag: fullSynth.dag,
     bom: fullSynth.bom,
-    warnings: [...unit.synthesis.warnings],
+    warnings: [...unit.synthesis.warnings, ...fixedWarnings],
   };
 
   const tiledFloorplan: FloorplanResult = {
@@ -2233,7 +2411,7 @@ function assembleTiledBlueprint(
     macros: stampedMacros,
     pins: allOuterPins,
     hpwl: unit.floorplan.hpwl * K,
-    warnings: [],
+    warnings: fixedWarnings,
   };
 
   const tiledRoute: RouteResult = {
@@ -2366,7 +2544,15 @@ export function runTiledPipeline(
 ): PipelineResult | null {
   const start = Date.now();
   const candidates = chooseCandidateTileCounts(spec, fullSynth);
-  const reqAr = clampNum(spec.floorplan.aspectRatio ?? 1.35, 0.2, 5.0);
+  const isFixed =
+    spec.floorplan.mode === 'fixed' &&
+    spec.floorplan.width !== undefined &&
+    spec.floorplan.height !== undefined;
+  const fixedW = isFixed ? Math.max(16, Math.round(spec.floorplan.width!)) : 0;
+  const fixedH = isFixed ? Math.max(16, Math.round(spec.floorplan.height!)) : 0;
+  const reqAr = isFixed
+    ? clampNum(fixedW / Math.max(1, fixedH), 0.2, 5.0)
+    : clampNum(spec.floorplan.aspectRatio ?? 1.35, 0.2, 5.0);
   const fullMachines = Math.max(1, fullSynth.bom.totalMachines);
 
   let bestResult: PipelineResult | null = null;
@@ -2387,11 +2573,18 @@ export function runTiledPipeline(
     const unitSpec = scaleSpecTargets(spec, 1 / K, `1/${K} tile`);
     unitSpec.floorplan = {
       ...unitSpec.floorplan,
+      mode: 'auto',
+      width: undefined,
+      height: undefined,
       aspectRatio: gridPlan.desiredUnitAr,
     };
+    const unitStart = Date.now();
     const unitRes = runFlatFn(
       unitSpec,
-      { shouldCancel: options.shouldCancel },
+      {
+        shouldCancel: () =>
+          Boolean(options.shouldCancel?.()) || Date.now() - unitStart > 2500,
+      },
       { forceBalancedOutputs: true },
     );
 
@@ -2418,12 +2611,16 @@ export function runTiledPipeline(
       const realAr = stitched.floorplan.width / Math.max(1, stitched.floorplan.height);
       const arErr = Math.abs(Math.log(Math.max(0.05, realAr / reqAr)));
       const overhead = Math.max(0, (stitched.bom.totalMachines - fullMachines) / fullMachines);
-      const score = arErr + 0.15 * overhead;
+      const overflow = isFixed
+        ? Math.max(0, stitched.floorplan.width - fixedW) +
+          Math.max(0, stitched.floorplan.height - fixedH)
+        : 0;
+      const score = overflow * 10 + arErr + 0.15 * overhead;
       if (score < bestScore) {
         bestScore = score;
         bestResult = stitched;
       }
-      if (arErr < 0.22) {
+      if (overflow === 0 && arErr < 0.22) {
         break;
       }
     }
