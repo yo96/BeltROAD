@@ -391,40 +391,107 @@ function legalizeMacros(
       continue;
     }
 
+    const overlapsWithLimit = (
+      a: PlacerMacroState,
+      b: PlacerMacroState,
+      sepLimit: number,
+    ): boolean => {
+      const ma = getActiveMacro(a);
+      const mb = getActiveMacro(b);
+      const pairSep = sepLimit > 0 ? pairHaloFor(ma, mb, sepLimit) : 0;
+      return (
+        rectOverlapArea(
+          a.x,
+          a.y,
+          ma.width + pairSep,
+          ma.height + pairSep,
+          b.x,
+          b.y,
+          mb.width + pairSep,
+          mb.height + pairSep,
+        ) > 0
+      );
+    };
+
+    const tryFindSpot = (sepLimit: number, stepSize: number): boolean => {
+      let foundScore = Infinity;
+      let fx = s.x;
+      let fy = s.y;
+      let fRot = s.rot;
+      let fVar = s.variantIdx;
+
+      const varOpts =
+        !isFixedDie || s.rowsLocked
+          ? [s.variantIdx]
+          : s.variants.map((_, idx) => idx);
+      const rotOpts: Rot90[] =
+        !isFixedDie || s.rotLocked ? [s.rot] : [0, 1];
+
+      for (const vOpt of varOpts) {
+        for (const rOpt of rotOpts) {
+          const candMacro = s.orientCache[vOpt][s.flipY][rOpt];
+          const limX = isFixedDie ? W - margin - candMacro.width : searchW - margin - candMacro.width;
+          const limY = isFixedDie ? H - margin - candMacro.height : searchH - margin - candMacro.height;
+          if (isFixedDie && (limX < margin || limY < margin)) continue;
+
+          for (let cy = margin; cy <= Math.max(margin, limY); cy += stepSize) {
+            for (let cx = margin; cx <= Math.max(margin, limX); cx += stepSize) {
+              const cand: PlacerMacroState = {
+                ...s,
+                variantIdx: vOpt,
+                rot: rOpt,
+                x: cx,
+                y: cy,
+              };
+              if (placed.some((p) => overlapsWithLimit(cand, p, sepLimit))) continue;
+              const distOrig = Math.abs(cx - s.x) + Math.abs(cy - s.y);
+              const compactBias =
+                (cx + candMacro.width) * 0.25 + (cy + candMacro.height) * 0.25;
+              const rotPen = rOpt === s.rot ? 0 : 12;
+              const score = distOrig + compactBias + rotPen;
+              if (score < foundScore) {
+                foundScore = score;
+                fx = cx;
+                fy = cy;
+                fRot = rOpt;
+                fVar = vOpt;
+              }
+            }
+          }
+        }
+      }
+
+      if (foundScore < Infinity) {
+        s.x = fx;
+        s.y = fy;
+        s.rot = fRot;
+        s.variantIdx = fVar;
+        return true;
+      }
+      return false;
+    };
+
     const m = getActiveMacro(s);
     const searchW = isFixedDie ? W : Math.max(W, m.width + margin * 2 + 30);
     const searchH = isFixedDie ? H : Math.max(H, m.height + margin * 2 + 30);
 
-    let bestX = s.x;
-    let bestY = s.y;
-    let bestScore = Infinity;
-
-    for (let cy = margin; cy <= Math.max(margin, searchH - margin - m.height); cy += 2) {
-      for (let cx = margin; cx <= Math.max(margin, searchW - margin - m.width); cx += 2) {
-        const cand: PlacerMacroState = { ...s, x: cx, y: cy };
-        if (placed.some((p) => overlapsWithSep(cand, p))) continue;
-        const distOrig = Math.abs(cx - s.x) + Math.abs(cy - s.y);
-        const compactBias = (cx + m.width) * 0.25 + (cy + m.height) * 0.25;
-        const score = distOrig + compactBias;
-        if (score < bestScore) {
-          bestScore = score;
-          bestX = cx;
-          bestY = cy;
-        }
-      }
+    let placedClean = tryFindSpot(sep, 2);
+    if (!placedClean && isFixedDie) {
+      placedClean =
+        tryFindSpot(sep, 1) ||
+        (sep > 1 && tryFindSpot(1, 1)) ||
+        tryFindSpot(0, 1);
     }
 
-    if (bestScore === Infinity && !isFixedDie) {
+    if (!placedClean && !isFixedDie) {
       const maxBottom = placed.reduce(
         (acc, p) => Math.max(acc, p.y + getActiveMacro(p).height + sep),
         margin,
       );
-      bestX = margin;
-      bestY = maxBottom;
+      s.x = margin;
+      s.y = maxBottom;
     }
 
-    s.x = bestX;
-    s.y = bestY;
     placed.push(s);
   }
 }
@@ -582,6 +649,35 @@ export function runFloorplanAndPlacement(
     .filter((i) => i >= 0);
 
   if (!skipSa && movableIndices.length > 0) {
+    if (isFixed) {
+      const innerW = Math.max(4, W - 2 * margin);
+      const innerH = Math.max(4, H - 2 * margin);
+      for (const idx of movableIndices) {
+        const st = states[idx];
+        const mCur = getActiveMacro(st);
+        if (mCur.width > innerW || mCur.height > innerH) {
+          let bestOv =
+            Math.max(0, mCur.width - innerW) + Math.max(0, mCur.height - innerH);
+          const vOpts = st.rowsLocked ? [st.variantIdx] : st.variants.map((_, i) => i);
+          const rOpts: Rot90[] = st.rotLocked ? [st.rot] : [0, 1];
+          for (const v of vOpts) {
+            for (const r of rOpts) {
+              const cand = st.orientCache[v][st.flipY][r];
+              const ov =
+                Math.max(0, cand.width - innerW) + Math.max(0, cand.height - innerH);
+              if (ov < bestOv) {
+                bestOv = ov;
+                st.variantIdx = v;
+                st.rot = r;
+              }
+            }
+          }
+        }
+        const mFin = getActiveMacro(st);
+        st.x = Math.max(margin, Math.min(Math.max(margin, W - margin - mFin.width), st.x));
+        st.y = Math.max(margin, Math.min(Math.max(margin, H - margin - mFin.height), st.y));
+      }
+    }
     const rng = mulberry32(1337);
     let curEval = evaluatePlacement(
       states,
@@ -842,9 +938,9 @@ export function runFloorplanAndPlacement(
     aspect,
     false,
   );
-  if (finalEval.overlap > 0 && isFixed) {
+  if ((finalEval.overlap > 0 || finalEval.outOfBounds > 0) && isFixed) {
     warnings.push(
-      `Fixed die (${W}x${H}) is too tight for macro halo; some macros have reduced spacing.`,
+      `Fixed die (${W}x${H}) is too tight for all macros + routing channels; enlarge W/H or switch to Auto-Compact.`,
     );
   }
 

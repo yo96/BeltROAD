@@ -46,6 +46,12 @@ export function flipDirY(dir: Dir): Dir {
   return dir;
 }
 
+export function flipDirX(dir: Dir): Dir {
+  if (dir === Dir.EAST) return Dir.WEST;
+  if (dir === Dir.WEST) return Dir.EAST;
+  return dir;
+}
+
 export function dirName(dir: Dir): string {
   switch (dir) {
     case Dir.NORTH:

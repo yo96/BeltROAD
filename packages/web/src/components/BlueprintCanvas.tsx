@@ -144,6 +144,30 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
     return { highlightedNetIds: netIds, highlightedPinIds: pinIds };
   }, [selection, synthesis]);
 
+  const { ugOutByTile, tileEntityMap, tileNetEntityMap } = useMemo(() => {
+    const ugOuts = new Map<string, EntityInstance>();
+    const byTile = new Map<string, EntityInstance>();
+    const netByTile = new Map<string, EntityInstance>();
+    for (const e of entities) {
+      if (isUndergroundName(e.name) && e.type === 'output') {
+        ugOuts.set(`${e.tx},${e.ty}`, e);
+      }
+      for (let dx = 0; dx < e.w; dx++) {
+        for (let dy = 0; dy < e.h; dy++) {
+          const key = `${e.tx + dx},${e.ty + dy}`;
+          if (!byTile.has(key)) byTile.set(key, e);
+          if (e.netId) {
+            const prev = netByTile.get(key);
+            if (!prev || e.role === 'belt-route' || e.role === 'ug-route') {
+              netByTile.set(key, e);
+            }
+          }
+        }
+      }
+    }
+    return { ugOutByTile: ugOuts, tileEntityMap: byTile, tileNetEntityMap: netByTile };
+  }, [entities]);
+
   const dragRef = useRef<
     | {
         mode: 'pan';
@@ -195,7 +219,7 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
     const availW = Math.max(120, size.w - padLeftPx - padRightPx);
     const availH = Math.max(120, size.h - padTopPx - padBotPx);
     const scale = Math.max(
-      4,
+      0.5,
       Math.min(36, Math.min(availW / floorplan.width, availH / floorplan.height)),
     );
     const x = padLeftPx + (availW - floorplan.width * scale) / 2;
@@ -332,7 +356,6 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
     };
 
     let ugInputs: EntityInstance[] = [];
-    let ugOutputs: EntityInstance[] = [];
 
     if (renderMode === 'factorio') {
       const res = renderFactorioScene(
@@ -362,7 +385,6 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
         highlightedPinIds,
       );
       ugInputs = res.ugInputs;
-      ugOutputs = res.ugOutputs;
     } else {
       // Die surface
       ctx.fillStyle = '#102b47';
@@ -386,16 +408,17 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
         ctx.stroke();
       }
 
-      // Major 5-tile grid
+      // Major 5-tile (or 20-tile when zoomed out) grid
+      const gridStep = s < 3 ? 20 : 5;
       ctx.strokeStyle = 'rgba(59, 130, 246, 0.35)';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      for (let x = 0; x <= W; x += 5) {
+      for (let x = 0; x <= W; x += gridStep) {
         const px = Math.round(ox + x * s) + 0.5;
         ctx.moveTo(px, oy);
         ctx.lineTo(px, oy + H * s);
       }
-      for (let y = 0; y <= H; y += 5) {
+      for (let y = 0; y <= H; y += gridStep) {
         const py = Math.round(oy + y * s) + 0.5;
         ctx.moveTo(ox, py);
         ctx.lineTo(ox + W * s, py);
@@ -469,8 +492,10 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
         }
       }
 
-      // Draw entities
+      // Draw entities (viewport-culled + fast LOD when zoomed out)
       const poles: Array<{ ent: EntityInstance; cx: number; cy: number; wireReach: number }> = [];
+      const fastLod = s < 4.5;
+      const polePadPx = Math.max(s, 18 * s);
 
       for (const e of entities) {
         const ex = ox + e.tx * s;
@@ -478,8 +503,83 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
         const ew = e.w * s;
         const eh = e.h * s;
 
+        if (isUndergroundName(e.name)) {
+          if (e.type === 'input') {
+            if (ex + 10 * s >= 0 && ex - 10 * s <= size.w && ey + 10 * s >= 0 && ey - 10 * s <= size.h) {
+              ugInputs.push(e);
+            }
+          }
+          if (!layers.undergrounds) continue;
+          if (ex + ew < -s || ex > size.w + s || ey + eh < -s || ey > size.h + s) continue;
+
+          const tier = beltTierFromEntityName(e.name) ?? 'yellow';
+          const col = BELT_SPECS[tier].color;
+          if (fastLod) {
+            ctx.fillStyle = e.type === 'input' ? '#f59e0b' : '#38bdf8';
+            ctx.fillRect(ex, ey, Math.max(1.2, ew), Math.max(1.2, eh));
+            continue;
+          }
+          ctx.fillStyle = e.type === 'input' ? '#0b1320' : '#1e293b';
+          ctx.fillRect(ex + s * 0.08, ey + s * 0.08, ew - s * 0.16, eh - s * 0.16);
+          ctx.strokeStyle = col;
+          ctx.lineWidth = 1.6;
+          ctx.strokeRect(ex + s * 0.08, ey + s * 0.08, ew - s * 0.16, eh - s * 0.16);
+
+          // Directional hood arrow
+          const cx = ex + ew / 2;
+          const cy = ey + eh / 2;
+          const { dx, dy } = dirDelta(e.direction);
+          ctx.fillStyle = e.type === 'input' ? '#f59e0b' : '#38bdf8';
+          ctx.beginPath();
+          ctx.arc(cx + dx * s * 0.16, cy + dy * s * 0.16, Math.max(1.8, s * 0.16), 0, Math.PI * 2);
+          ctx.fill();
+          continue;
+        }
+
+        if (e.name in POLE_BY_ENTITY_NAME) {
+          if (
+            ex + ew < -polePadPx ||
+            ex > size.w + polePadPx ||
+            ey + eh < -polePadPx ||
+            ey > size.h + polePadPx
+          ) {
+            continue;
+          }
+          const ps = POLE_BY_ENTITY_NAME[e.name];
+          const cx = ex + ew / 2;
+          const cy = ey + eh / 2;
+          poles.push({ ent: e, cx, cy, wireReach: ps.wireReach });
+          if (!layers.powerGrid) continue;
+          if (ex + ew < -s || ex > size.w + s || ey + eh < -s || ey > size.h + s) continue;
+
+          if (fastLod) {
+            ctx.fillStyle = ps.color;
+            ctx.fillRect(cx - 1.2, cy - 1.2, 2.4, 2.4);
+            continue;
+          }
+          ctx.fillStyle = '#1e293b';
+          ctx.strokeStyle = ps.color;
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.arc(cx, cy, Math.max(2.5, Math.min(ew, eh) * 0.32), 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+
+          // Copper center dot
+          ctx.fillStyle = '#f59e0b';
+          ctx.beginPath();
+          ctx.arc(cx, cy, Math.max(1.4, Math.min(ew, eh) * 0.14), 0, Math.PI * 2);
+          ctx.fill();
+          continue;
+        }
+
+        // General viewport cull for all other entity classes
+        if (ex + ew < -s || ex > size.w + s || ey + eh < -s || ey > size.h + s) {
+          continue;
+        }
+
         if (e.role === 'port-marker') {
-          if (!layers.pinLabels) continue;
+          if (!layers.pinLabels || fastLod) continue;
           ctx.fillStyle = '#0f172a';
           ctx.strokeStyle = '#94a3b8';
           ctx.lineWidth = 1.2;
@@ -490,6 +590,16 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
 
         if (isMachineName(e.name)) {
           const isFurnace = e.name === 'electric-furnace';
+          if (fastLod) {
+            ctx.fillStyle =
+              layers.heatmap && e.macroId && macroUtilMap.has(e.macroId)
+                ? utilColor(macroUtilMap.get(e.macroId)!)
+                : isFurnace
+                  ? '#475569'
+                  : '#1d4ed8';
+            ctx.fillRect(ex + 0.4, ey + 0.4, Math.max(1.5, ew - 0.8), Math.max(1.5, eh - 0.8));
+            continue;
+          }
           ctx.fillStyle = isFurnace ? '#2b3445' : '#1b385c';
           ctx.fillRect(ex + 1, ey + 1, ew - 2, eh - 2);
           ctx.strokeStyle = isFurnace ? '#fb923c' : '#7dd3fc';
@@ -548,6 +658,11 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
           if (!layers.belts) continue;
           const tier = beltTierFromEntityName(e.name) ?? 'yellow';
           const col = BELT_SPECS[tier].color;
+          if (fastLod) {
+            ctx.fillStyle = col;
+            ctx.fillRect(ex + 0.3, ey + 0.3, Math.max(1.5, ew - 0.6), Math.max(1.5, eh - 0.6));
+            continue;
+          }
           ctx.fillStyle = '#1e293b';
           ctx.fillRect(ex + 1, ey + 1, ew - 2, eh - 2);
           ctx.strokeStyle = col;
@@ -570,34 +685,20 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
           continue;
         }
 
-        if (isUndergroundName(e.name)) {
-          if (e.type === 'input') ugInputs.push(e);
-          else ugOutputs.push(e);
-          if (!layers.undergrounds) continue;
-
-          const tier = beltTierFromEntityName(e.name) ?? 'yellow';
-          const col = BELT_SPECS[tier].color;
-          ctx.fillStyle = e.type === 'input' ? '#0b1320' : '#1e293b';
-          ctx.fillRect(ex + s * 0.08, ey + s * 0.08, ew - s * 0.16, eh - s * 0.16);
-          ctx.strokeStyle = col;
-          ctx.lineWidth = 1.6;
-          ctx.strokeRect(ex + s * 0.08, ey + s * 0.08, ew - s * 0.16, eh - s * 0.16);
-
-          // Directional hood arrow
-          const cx = ex + ew / 2;
-          const cy = ey + eh / 2;
-          const { dx, dy } = dirDelta(e.direction);
-          ctx.fillStyle = e.type === 'input' ? '#f59e0b' : '#38bdf8';
-          ctx.beginPath();
-          ctx.arc(cx + dx * s * 0.16, cy + dy * s * 0.16, Math.max(1.8, s * 0.16), 0, Math.PI * 2);
-          ctx.fill();
-          continue;
-        }
-
         if (beltTierFromEntityName(e.name)) {
           if (!layers.belts) continue;
           const tier = beltTierFromEntityName(e.name)!;
           const col = BELT_SPECS[tier].color;
+          if (fastLod) {
+            ctx.fillStyle =
+              layers.heatmap && e.netId && netUtilMap.has(e.netId)
+                ? utilColor(netUtilMap.get(e.netId)!)
+                : e.item
+                  ? getItemMeta(e.item).color
+                  : col;
+            ctx.fillRect(ex, ey, Math.max(1.2, ew), Math.max(1.2, eh));
+            continue;
+          }
           ctx.fillStyle = '#0d1929';
           ctx.fillRect(ex + s * 0.08, ey + s * 0.08, ew - s * 0.16, eh - s * 0.16);
           ctx.strokeStyle = col;
@@ -629,6 +730,11 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
 
         if (e.name in INSERTER_BY_ENTITY_NAME) {
           const ins = INSERTER_BY_ENTITY_NAME[e.name];
+          if (fastLod) {
+            ctx.fillStyle = ins.color;
+            ctx.fillRect(ex + ew * 0.25, ey + eh * 0.25, Math.max(1.2, ew * 0.5), Math.max(1.2, eh * 0.5));
+            continue;
+          }
           const cx = ex + ew / 2;
           const cy = ey + eh / 2;
           const { dx, dy } = dirDelta(e.direction);
@@ -656,56 +762,58 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
           ctx.fill();
           continue;
         }
-
-        if (e.name in POLE_BY_ENTITY_NAME) {
-          const ps = POLE_BY_ENTITY_NAME[e.name];
-          const cx = ex + ew / 2;
-          const cy = ey + eh / 2;
-          poles.push({ ent: e, cx, cy, wireReach: ps.wireReach });
-          if (!layers.powerGrid) continue;
-
-          ctx.fillStyle = '#1e293b';
-          ctx.strokeStyle = ps.color;
-          ctx.lineWidth = 1.6;
-          ctx.beginPath();
-          ctx.arc(cx, cy, Math.max(2.5, Math.min(ew, eh) * 0.32), 0, Math.PI * 2);
-          ctx.fill();
-          ctx.stroke();
-
-          // Copper center dot
-          ctx.fillStyle = '#f59e0b';
-          ctx.beginPath();
-          ctx.arc(cx, cy, Math.max(1.4, Math.min(ew, eh) * 0.14), 0, Math.PI * 2);
-          ctx.fill();
-        }
       }
 
-      // Power grid copper wires (MST/reach lines)
+      // Power grid copper wires (O(N) spatial-hashed reach lines)
       if (layers.powerGrid && poles.length > 1) {
+        const CELL = 18;
+        const poleGrid = new Map<string, number[]>();
+        for (let i = 0; i < poles.length; i++) {
+          const pe = poles[i].ent;
+          const key = `${Math.floor((pe.tx + pe.w / 2) / CELL)},${Math.floor((pe.ty + pe.h / 2) / CELL)}`;
+          let b = poleGrid.get(key);
+          if (!b) {
+            b = [];
+            poleGrid.set(key, b);
+          }
+          b.push(i);
+        }
+
         ctx.save();
         ctx.strokeStyle = 'rgba(245, 158, 11, 0.55)';
-        ctx.lineWidth = 1.2;
+        ctx.lineWidth = s < 4 ? 0.8 : 1.2;
+        ctx.beginPath();
         for (let i = 0; i < poles.length; i++) {
-          for (let j = i + 1; j < poles.length; j++) {
-            const a = poles[i];
-            const b = poles[j];
-            const reach = Math.min(a.wireReach, b.wireReach);
-            const dx = a.ent.tx + a.ent.w / 2 - (b.ent.tx + b.ent.w / 2);
-            const dy = a.ent.ty + a.ent.h / 2 - (b.ent.ty + b.ent.h / 2);
-            if (dx * dx + dy * dy <= reach * reach + 1e-6) {
-              ctx.beginPath();
-              ctx.moveTo(a.cx, a.cy);
-              ctx.lineTo(b.cx, b.cy);
-              ctx.stroke();
+          const a = poles[i];
+          const ax = a.ent.tx + a.ent.w / 2;
+          const ay = a.ent.ty + a.ent.h / 2;
+          const gcx = Math.floor(ax / CELL);
+          const gcy = Math.floor(ay / CELL);
+          for (let ky = gcy - 1; ky <= gcy + 1; ky++) {
+            for (let kx = gcx - 1; kx <= gcx + 1; kx++) {
+              const bucket = poleGrid.get(`${kx},${ky}`);
+              if (!bucket) continue;
+              for (const j of bucket) {
+                if (j <= i) continue;
+                const b = poles[j];
+                const reach = Math.min(a.wireReach, b.wireReach);
+                const dx = ax - (b.ent.tx + b.ent.w / 2);
+                const dy = ay - (b.ent.ty + b.ent.h / 2);
+                if (dx * dx + dy * dy <= reach * reach + 1e-6) {
+                  ctx.moveTo(a.cx, a.cy);
+                  ctx.lineTo(b.cx, b.cy);
+                }
+              }
             }
           }
         }
+        ctx.stroke();
         ctx.restore();
       }
     }
 
-    // Underground dashed bridge lines (M2 layer)
-    if (layers.undergrounds) {
+    // Underground dashed bridge lines (O(1) spatial partner lookup)
+    if (layers.undergrounds && s >= 2.5) {
       ctx.save();
       ctx.setLineDash([4, 3]);
       ctx.strokeStyle = '#38bdf8';
@@ -715,14 +823,12 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
         const tier = beltTierFromEntityName(u.name)!;
         const maxD = BELT_SPECS[tier].maxUgDistance;
         for (let step = 1; step <= maxD; step++) {
-          const partner = ugOutputs.find(
-            (o) =>
-              o.tx === u.tx + dx * step &&
-              o.ty === u.ty + dy * step &&
-              o.direction === u.direction &&
-              beltTierFromEntityName(o.name) === tier,
-          );
-          if (partner) {
+          const partner = ugOutByTile.get(`${u.tx + dx * step},${u.ty + dy * step}`);
+          if (
+            partner &&
+            partner.direction === u.direction &&
+            beltTierFromEntityName(partner.name) === tier
+          ) {
             ctx.beginPath();
             ctx.moveTo(ox + (u.tx + 0.5) * s, oy + (u.ty + 0.5) * s);
             ctx.lineTo(ox + (partner.tx + 0.5) * s, oy + (partner.ty + 0.5) * s);
@@ -750,6 +856,7 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
         const ry = oy + e.ty * s;
         const rw = e.w * s;
         const rh = e.h * s;
+        if (rx + rw < -s || rx > size.w + s || ry + rh < -s || ry > size.h + s) continue;
         ctx.fillRect(rx, ry, rw, rh);
         ctx.strokeRect(rx + 0.5, ry + 0.5, rw - 1, rh - 1);
       }
@@ -764,14 +871,12 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
         const tier = beltTierFromEntityName(u.name)!;
         const maxD = BELT_SPECS[tier].maxUgDistance;
         for (let step = 1; step <= maxD; step++) {
-          const partner = ugOutputs.find(
-            (o) =>
-              o.tx === u.tx + dx * step &&
-              o.ty === u.ty + dy * step &&
-              o.direction === u.direction &&
-              beltTierFromEntityName(o.name) === tier,
-          );
-          if (partner) {
+          const partner = ugOutByTile.get(`${u.tx + dx * step},${u.ty + dy * step}`);
+          if (
+            partner &&
+            partner.direction === u.direction &&
+            beltTierFromEntityName(partner.name) === tier
+          ) {
             ctx.beginPath();
             ctx.moveTo(ox + (u.tx + 0.5) * s, oy + (u.ty + 0.5) * s);
             ctx.lineTo(ox + (partner.tx + 0.5) * s, oy + (partner.ty + 0.5) * s);
@@ -1026,6 +1131,7 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
     selection,
     highlightedNetIds,
     highlightedPinIds,
+    ugOutByTile,
     dragPreview,
   ]);
 
@@ -1035,7 +1141,7 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
     const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-    const nextScale = Math.max(3, Math.min(64, cam.scale * factor));
+    const nextScale = Math.max(0.5, Math.min(64, cam.scale * factor));
     const ratio = nextScale / cam.scale;
     setCam({
       scale: nextScale,
@@ -1198,9 +1304,7 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
         `PIN ${hitPin.kind.toUpperCase()}: ${getItemMeta(hitPin.item).name} (${(hitPin.ratePerSec * 60).toFixed(1)}/min)`,
       );
     }
-    const hitEnt = entities.find(
-      (en) => tx >= en.tx && tx < en.tx + en.w && ty >= en.ty && ty < en.ty + en.h,
-    );
+    const hitEnt = tileEntityMap.get(`${tx},${ty}`);
     if (hitEnt) {
       lines.push(`Entity: ${hitEnt.name}`);
       if (hitEnt.recipe) lines.push(`Recipe: ${hitEnt.recipe}`);
@@ -1228,24 +1332,7 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
     if (drag.mode === 'pan') {
       if (allowClick && drag.movedPx < 4 && floorplan) {
         const { tx, ty } = screenToTile(drag.startX, drag.startY);
-        const hitEnt =
-          entities.find(
-            (en) =>
-              en.netId &&
-              (en.role === 'belt-route' || en.role === 'ug-route') &&
-              tx >= en.tx &&
-              tx < en.tx + en.w &&
-              ty >= en.ty &&
-              ty < en.ty + en.h,
-          ) ??
-          entities.find(
-            (en) =>
-              en.netId &&
-              tx >= en.tx &&
-              tx < en.tx + en.w &&
-              ty >= en.ty &&
-              ty < en.ty + en.h,
-          );
+        const hitEnt = tileNetEntityMap.get(`${tx},${ty}`);
         if (hitEnt?.netId) {
           onSelect({ kind: 'net', netId: hitEnt.netId });
         } else {

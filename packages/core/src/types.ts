@@ -124,6 +124,8 @@ export interface OptimizationConfig {
   busTaps?: boolean;
   portSwap?: boolean;
   allowFlipY?: boolean;
+  tiling?: 'auto' | 'off' | number;
+  tileLayout?: 'auto' | 'stack' | 'twin';
 }
 
 export interface DesignSpec {
@@ -485,6 +487,17 @@ export interface PipelineProgress {
   elapsedMs?: number;
 }
 
+export interface TilingSummary {
+  tileCount: number;
+  cols: number;
+  rows: number;
+  layout: 'stack' | 'twin';
+  unitWidth: number;
+  unitHeight: number;
+  unitMachines: number;
+  unitBlueprintString: string;
+}
+
 export interface PipelineResult {
   spec: DesignSpec;
   synthesis: SynthesisResult;
@@ -497,4 +510,5 @@ export interface PipelineResult {
   bom: BomSummary;
   blueprintString: string;
   elapsedMs: number;
+  tiling?: TilingSummary;
 }

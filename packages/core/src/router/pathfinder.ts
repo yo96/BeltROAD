@@ -395,6 +395,8 @@ function routeSingleNet(
   useCorridor: boolean,
   turnPenalty = 0.65,
   ugBasePenalty = 3.8,
+  hWeight = 1.0,
+  corridorPad = 14,
 ): PlacedTileStep[] | null {
   const W = buf.width;
   const H = buf.height;
@@ -412,7 +414,7 @@ function routeSingleNet(
   }
 
   if (useCorridor) {
-    buildCoarseCorridor(buf, spec, 14);
+    buildCoarseCorridor(buf, spec, corridorPad);
   }
 
   const stamp = ++buf.currentStamp;
@@ -430,7 +432,7 @@ function routeSingleNet(
   buf.parentState[startState] = -1;
   buf.parentJump[startState] = 0;
   buf.openStamp[startState] = activeStamp;
-  heapPush(buf, startState, Math.abs(tx - sx) + Math.abs(ty - sy));
+  heapPush(buf, startState, (Math.abs(tx - sx) + Math.abs(ty - sy)) * hWeight);
 
   const gScore = buf.gScore;
   const parentState = buf.parentState;
@@ -517,7 +519,7 @@ function routeSingleNet(
         parentJump[nState] = 0; // surface belt
         openStamp[nState] = activeStamp;
         const h = Math.abs(tx - nx) + Math.abs(ty - ny);
-        heapPush(buf, nState, candG + h);
+        heapPush(buf, nState, candG + h * hWeight);
       }
     }
 
@@ -617,7 +619,7 @@ function routeSingleNet(
         parentJump[nState] = k;
         openStamp[nState] = activeStamp;
         const h = Math.abs(tx - ax) + Math.abs(ty - ay);
-        heapPush(buf, nState, candG + h);
+        heapPush(buf, nState, candG + h * hWeight);
       }
     }
     void ugBlocked;
@@ -782,6 +784,7 @@ function optimizeRoutedNets(
   netSteps: Array<PlacedTileStep[] | null>,
   maxPasses = 4,
   shouldCancel?: () => boolean,
+  skipPairs = false,
 ): void {
   const W = buf.width;
 
@@ -821,7 +824,7 @@ function optimizeRoutedNets(
   }
 
   // Phase B: Pairwise rip-up & swap net priority between nearby detoured nets
-  if (shouldCancel?.()) return;
+  if (skipPairs || shouldCancel?.()) return;
   const worstNets = specs
     .map((s, idx) => {
       const steps = netSteps[idx];
@@ -941,17 +944,19 @@ function runRoutingAttempt(
 
   const netSteps: Array<PlacedTileStep[] | null> = new Array(specs.length).fill(null);
   const useCorridor = W * H > 80 * 80;
+  const largeGrid = W * H > 5000;
+  const hWeight = W * H > 10000 ? 1.12 : 1.0;
 
   // Pass 0: greedy conflict-free routing where possible, falling back to congestion-aware
   for (const idx of order) {
     if (shouldCancel?.()) break;
     const spec = specs[idx];
-    let steps = routeSingleNet(buf, spec, false, useCorridor);
+    let steps = routeSingleNet(buf, spec, false, useCorridor, 0.65, 3.8, hWeight, 14);
     if (!steps && useCorridor) {
-      steps = routeSingleNet(buf, spec, false, false);
+      steps = routeSingleNet(buf, spec, false, false, 0.65, 3.8, hWeight, 14);
     }
     if (!steps) {
-      steps = routeSingleNet(buf, spec, true, false);
+      steps = routeSingleNet(buf, spec, true, false, 0.65, 3.8, hWeight, 14);
     }
     netSteps[idx] = steps;
     if (steps) {
@@ -993,9 +998,17 @@ function runRoutingAttempt(
     for (const idx of ripList) {
       if (shouldCancel?.()) break;
       const spec = specs[idx];
-      let steps = routeSingleNet(buf, spec, false, false);
-      if (!steps) {
-        steps = routeSingleNet(buf, spec, true, false);
+      let steps: PlacedTileStep[] | null;
+      if (largeGrid) {
+        steps = routeSingleNet(buf, spec, true, true, 0.65, 3.8, hWeight, 16 + iter * 5);
+        if (!steps) {
+          steps = routeSingleNet(buf, spec, true, false, 0.65, 3.8, hWeight, 14);
+        }
+      } else {
+        steps = routeSingleNet(buf, spec, false, false, 0.65, 3.8, hWeight, 14);
+        if (!steps) {
+          steps = routeSingleNet(buf, spec, true, false, 0.65, 3.8, hWeight, 14);
+        }
       }
       netSteps[idx] = steps;
       if (steps) {
@@ -1013,7 +1026,8 @@ function runRoutingAttempt(
   }
 
   if (optimizeRoutes && conflictInfo.totalConflicts === 0 && !shouldCancel?.()) {
-    optimizeRoutedNets(buf, specs, netSteps, 4, shouldCancel);
+    const hugeGrid = W * H > 25000 || Date.now() - startTime > 1200;
+    optimizeRoutedNets(buf, specs, netSteps, hugeGrid ? 1 : 4, shouldCancel, hugeGrid);
     conflictInfo = findConflicts(buf, specs, netSteps);
   }
 

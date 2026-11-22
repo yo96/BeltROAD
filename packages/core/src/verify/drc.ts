@@ -276,16 +276,48 @@ export function runDrc(
     }
   }
 
-  // 5. Power coverage & connectivity check
+  // 5. Power coverage & connectivity check (spatial-hashed O(E + P))
   const poles = entities
     .map((e) => ({ entity: e, spec: POLE_BY_ENTITY_NAME[e.name] }))
     .filter((p) => p.spec !== undefined);
 
+  const POLE_CELL = 18;
+  const poleBuckets = new Map<string, number[]>();
+  const poleCenters = poles.map((p, idx) => {
+    const cx = p.entity.tx + p.spec!.size / 2;
+    const cy = p.entity.ty + p.spec!.size / 2;
+    const kx = Math.floor(cx / POLE_CELL);
+    const ky = Math.floor(cy / POLE_CELL);
+    const key = `${kx},${ky}`;
+    let b = poleBuckets.get(key);
+    if (!b) {
+      b = [];
+      poleBuckets.set(key, b);
+    }
+    b.push(idx);
+    return { cx, cy, kx, ky };
+  });
+
   const poweredEntities = entities.filter((e) => requiresPower(e.name));
   for (const pe of poweredEntities) {
-    const isSupplied = poles.some((p) =>
-      doesPoleSupplyEntity(p.entity.tx, p.entity.ty, p.spec!, pe.tx, pe.ty, pe.w, pe.h),
-    );
+    const minKx = Math.floor((pe.tx - 10) / POLE_CELL);
+    const maxKx = Math.floor((pe.tx + pe.w + 10) / POLE_CELL);
+    const minKy = Math.floor((pe.ty - 10) / POLE_CELL);
+    const maxKy = Math.floor((pe.ty + pe.h + 10) / POLE_CELL);
+    let isSupplied = false;
+    for (let ky = minKy; ky <= maxKy && !isSupplied; ky++) {
+      for (let kx = minKx; kx <= maxKx && !isSupplied; kx++) {
+        const list = poleBuckets.get(`${kx},${ky}`);
+        if (!list) continue;
+        for (const pIdx of list) {
+          const p = poles[pIdx];
+          if (doesPoleSupplyEntity(p.entity.tx, p.entity.ty, p.spec!, pe.tx, pe.ty, pe.w, pe.h)) {
+            isSupplied = true;
+            break;
+          }
+        }
+      }
+    }
     if (!isSupplied) {
       addV(
         'POWER_COVERAGE',
@@ -302,24 +334,29 @@ export function runDrc(
     const visited = new Uint8Array(poles.length);
     const q = [0];
     visited[0] = 1;
+    let head = 0;
     let count = 0;
-    while (q.length > 0) {
-      const u = q.shift()!;
+    while (head < q.length) {
+      const u = q[head++];
       count++;
       const pu = poles[u];
-      const ucx = pu.entity.tx + pu.spec!.size / 2;
-      const ucy = pu.entity.ty + pu.spec!.size / 2;
-      for (let v = 0; v < poles.length; v++) {
-        if (visited[v]) continue;
-        const pv = poles[v];
-        const vcx = pv.entity.tx + pv.spec!.size / 2;
-        const vcy = pv.entity.ty + pv.spec!.size / 2;
-        const reach = Math.min(pu.spec!.wireReach, pv.spec!.wireReach);
-        const dx = ucx - vcx;
-        const dy = ucy - vcy;
-        if (dx * dx + dy * dy <= reach * reach + 1e-6) {
-          visited[v] = 1;
-          q.push(v);
+      const uc = poleCenters[u];
+      for (let ky = uc.ky - 1; ky <= uc.ky + 1; ky++) {
+        for (let kx = uc.kx - 1; kx <= uc.kx + 1; kx++) {
+          const list = poleBuckets.get(`${kx},${ky}`);
+          if (!list) continue;
+          for (const v of list) {
+            if (visited[v]) continue;
+            const pv = poles[v];
+            const vc = poleCenters[v];
+            const reach = Math.min(pu.spec!.wireReach, pv.spec!.wireReach);
+            const dx = uc.cx - vc.cx;
+            const dy = uc.cy - vc.cy;
+            if (dx * dx + dy * dy <= reach * reach + 1e-6) {
+              visited[v] = 1;
+              q.push(v);
+            }
+          }
         }
       }
     }

@@ -108,7 +108,14 @@ function resolveMachineModules(
   return filtered;
 }
 
-export function synthesizeDesign(spec: DesignSpec): SynthesisResult {
+export interface SynthesizeOptions {
+  forceBalancedOutputs?: boolean;
+}
+
+export function synthesizeDesign(
+  spec: DesignSpec,
+  opts?: SynthesizeOptions,
+): SynthesisResult {
   const warnings: string[] = [];
   if (spec.targets.length === 0) {
     throw new Error('At least one target item is required for synthesis.');
@@ -451,6 +458,10 @@ export function synthesizeDesign(spec: DesignSpec): SynthesisResult {
           mCount += 1;
         }
       }
+      const forceBal = Boolean(opts?.forceBalancedOutputs) && targetRates.has(comp.item);
+      if (forceBal && mCount >= 3 && mCount % 2 === 1) {
+        mCount += 1;
+      }
       const macroId =
         sliceCount === 1 ? `macro:${comp.recipe.id}` : `macro:${comp.recipe.id}:${s}`;
       const override = spec.macroOverrides[macroId];
@@ -479,7 +490,7 @@ export function synthesizeDesign(spec: DesignSpec): SynthesisResult {
         beltTier: outTier,
         ingredientRates: ingRates,
         preferredRows: override?.rows,
-        balanceOutputLanes: sliceOutRate > sliceBeltCap * 0.49,
+        balanceOutputLanes: forceBal || sliceOutRate > sliceBeltCap * 0.49,
         sliceIndex: s,
         sliceCount,
       };

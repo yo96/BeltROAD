@@ -138,6 +138,22 @@ export default function App() {
   const [activePresetId, setActivePresetId] = useState<string>(initial.presetId);
   const [lastRunSpecSig, setLastRunSpecSig] = useState<string>(() => JSON.stringify(initial.spec));
 
+  const [aspectDraft, setAspectDraft] = useState<string>(() =>
+    String(initial.spec.floorplan.aspectRatio ?? 1.35),
+  );
+  const [widthDraft, setWidthDraft] = useState<string>(() =>
+    String(initial.spec.floorplan.width ?? 60),
+  );
+  const [heightDraft, setHeightDraft] = useState<string>(() =>
+    String(initial.spec.floorplan.height ?? 45),
+  );
+
+  useEffect(() => {
+    setAspectDraft(String(spec.floorplan.aspectRatio ?? 1.35));
+    if (spec.floorplan.width !== undefined) setWidthDraft(String(spec.floorplan.width));
+    if (spec.floorplan.height !== undefined) setHeightDraft(String(spec.floorplan.height));
+  }, [spec.floorplan.aspectRatio, spec.floorplan.width, spec.floorplan.height, spec.floorplan.mode]);
+
   const [historyPast, setHistoryPast] = useState<DesignSpec[]>([]);
   const [historyFuture, setHistoryFuture] = useState<DesignSpec[]>([]);
 
@@ -223,6 +239,45 @@ export default function App() {
       postJob({ type: 'run-full', jobId, spec: targetSpec });
     },
     [postJob],
+  );
+
+  const commitFloorplanDrafts = useCallback(
+    (curSpec: DesignSpec): DesignSpec => {
+      const parsedAr = Number(aspectDraft);
+      const nextAr = Number.isFinite(parsedAr)
+        ? Math.round(Math.max(0.4, Math.min(3.0, parsedAr)) * 100) / 100
+        : curSpec.floorplan.aspectRatio ?? 1.35;
+
+      const parsedW = Number(widthDraft);
+      const nextW = Number.isFinite(parsedW) && parsedW > 0
+        ? Math.max(16, Math.round(parsedW))
+        : curSpec.floorplan.width ?? floorplan?.width ?? 60;
+
+      const parsedH = Number(heightDraft);
+      const nextH = Number.isFinite(parsedH) && parsedH > 0
+        ? Math.max(16, Math.round(parsedH))
+        : curSpec.floorplan.height ?? floorplan?.height ?? 45;
+
+      setAspectDraft(String(nextAr));
+      if (curSpec.floorplan.mode === 'fixed') {
+        setWidthDraft(String(nextW));
+        setHeightDraft(String(nextH));
+      }
+
+      const nextSpec: DesignSpec = {
+        ...curSpec,
+        floorplan: {
+          ...curSpec.floorplan,
+          aspectRatio: nextAr,
+          ...(curSpec.floorplan.mode === 'fixed' ? { width: nextW, height: nextH } : {}),
+        },
+      };
+      if (JSON.stringify(nextSpec.floorplan) !== JSON.stringify(curSpec.floorplan)) {
+        setSpec(nextSpec);
+      }
+      return nextSpec;
+    },
+    [aspectDraft, widthDraft, heightDraft, floorplan],
   );
 
   const runSynthOnly = useCallback(
@@ -565,6 +620,15 @@ export default function App() {
     );
   };
 
+  const handleCopyUnitTile = async () => {
+    const t = fullResult?.tiling;
+    if (!t?.unitBlueprintString) return;
+    await navigator.clipboard.writeText(t.unitBlueprintString);
+    showToast(
+      `Copied 1× unit tile blueprint (${t.unitWidth}×${t.unitHeight}, ${t.unitMachines} machines)!`,
+    );
+  };
+
   const handleShareUrl = async () => {
     const hash = encodeSpecToUrlHash(spec);
     window.history.replaceState(null, '', hash);
@@ -735,7 +799,7 @@ export default function App() {
                   disabled={running}
                   onClick={() => {
                     setStepsMenuOpen(false);
-                    runPlaceOnly(spec);
+                    runPlaceOnly(commitFloorplanDrafts(spec));
                   }}
                 >
                   2. Synth + Place
@@ -758,7 +822,7 @@ export default function App() {
           <button
             type="button"
             className={`btn btn-primary btn-sm ${isSpecDirty ? 'btn-dirty' : ''}`}
-            onClick={() => runFull(spec)}
+            onClick={() => runFull(commitFloorplanDrafts(spec))}
             disabled={running}
             title={
               isSpecDirty
@@ -777,8 +841,26 @@ export default function App() {
             {progress.message}
           </span>
         )}
+        {fullResult?.tiling && (
+          <span
+            className="pill pill-pass mono"
+            title={`${fullResult.tiling.unitWidth}×${fullResult.tiling.unitHeight} unit tile stamped ${fullResult.tiling.tileCount}× (${fullResult.tiling.layout})`}
+          >
+            Tiled {fullResult.tiling.tileCount}× ({fullResult.tiling.cols}×{fullResult.tiling.rows})
+          </span>
+        )}
 
         <div style={{ marginLeft: 'auto' }} className="row">
+          {fullResult?.tiling?.unitBlueprintString && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={handleCopyUnitTile}
+              title={`Copy single 1× repeatable tile (${fullResult.tiling.unitWidth}×${fullResult.tiling.unitHeight}, ${fullResult.tiling.unitMachines} machines)`}
+            >
+              <ClipboardCopy size={13} /> Copy 1× Tile
+            </button>
+          )}
           <button
             type="button"
             className="btn btn-cyan btn-sm"
@@ -1156,17 +1238,23 @@ export default function App() {
                 <select
                   className="select"
                   value={spec.floorplan.mode}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    const nextMode = e.target.value as 'auto' | 'fixed';
+                    const initW = floorplan?.width ?? spec.floorplan.width ?? 60;
+                    const initH = floorplan?.height ?? spec.floorplan.height ?? 45;
+                    if (nextMode === 'fixed') {
+                      setWidthDraft(String(initW));
+                      setHeightDraft(String(initH));
+                    }
                     updateSpec((prev) => ({
                       ...prev,
                       floorplan: {
                         ...prev.floorplan,
-                        mode: e.target.value as 'auto' | 'fixed',
-                        width: prev.floorplan.width ?? floorplan?.width ?? 60,
-                        height: prev.floorplan.height ?? floorplan?.height ?? 45,
+                        mode: nextMode,
+                        ...(nextMode === 'fixed' ? { width: initW, height: initH } : {}),
                       },
-                    }))
-                  }
+                    }));
+                  }}
                 >
                   <option value="auto">Auto-Compact</option>
                   <option value="fixed">Fixed W × H</option>
@@ -1179,18 +1267,38 @@ export default function App() {
                     type="number"
                     className="input mono"
                     step={0.1}
-                    min={0.6}
-                    max={2.5}
-                    value={spec.floorplan.aspectRatio}
-                    onChange={(e) =>
+                    min={0.4}
+                    max={3.0}
+                    value={aspectDraft}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      setAspectDraft(raw);
+                      const v = Number(raw);
+                      if (raw.trim() !== '' && Number.isFinite(v) && v >= 0.4 && v <= 3.0) {
+                        updateSpec((prev) => ({
+                          ...prev,
+                          floorplan: {
+                            ...prev.floorplan,
+                            aspectRatio: Math.round(v * 100) / 100,
+                          },
+                        }));
+                      }
+                    }}
+                    onBlur={() => {
+                      const v = Number(aspectDraft);
+                      const clamped =
+                        aspectDraft.trim() !== '' && Number.isFinite(v)
+                          ? Math.round(Math.max(0.4, Math.min(3.0, v)) * 100) / 100
+                          : spec.floorplan.aspectRatio ?? 1.35;
+                      setAspectDraft(String(clamped));
                       updateSpec((prev) => ({
                         ...prev,
-                        floorplan: {
-                          ...prev.floorplan,
-                          aspectRatio: Number(e.target.value) || 1.35,
-                        },
-                      }))
-                    }
+                        floorplan: { ...prev.floorplan, aspectRatio: clamped },
+                      }));
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') runFull(commitFloorplanDrafts(spec));
+                    }}
                   />
                 </div>
               ) : (
@@ -1201,16 +1309,33 @@ export default function App() {
                       type="number"
                       className="input mono"
                       min={16}
-                      value={spec.floorplan.width ?? 60}
-                      onChange={(e) =>
+                      value={widthDraft}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        setWidthDraft(raw);
+                        const v = Number(raw);
+                        if (raw.trim() !== '' && Number.isFinite(v) && v >= 1) {
+                          updateSpec((prev) => ({
+                            ...prev,
+                            floorplan: { ...prev.floorplan, width: Math.round(v) },
+                          }));
+                        }
+                      }}
+                      onBlur={() => {
+                        const v = Number(widthDraft);
+                        const clamped =
+                          widthDraft.trim() !== '' && Number.isFinite(v) && v > 0
+                            ? Math.max(16, Math.round(v))
+                            : spec.floorplan.width ?? floorplan?.width ?? 60;
+                        setWidthDraft(String(clamped));
                         updateSpec((prev) => ({
                           ...prev,
-                          floorplan: {
-                            ...prev.floorplan,
-                            width: Math.max(16, Number(e.target.value) || 60),
-                          },
-                        }))
-                      }
+                          floorplan: { ...prev.floorplan, width: clamped },
+                        }));
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') runFull(commitFloorplanDrafts(spec));
+                      }}
                     />
                   </div>
                   <div>
@@ -1219,16 +1344,33 @@ export default function App() {
                       type="number"
                       className="input mono"
                       min={16}
-                      value={spec.floorplan.height ?? 45}
-                      onChange={(e) =>
+                      value={heightDraft}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        setHeightDraft(raw);
+                        const v = Number(raw);
+                        if (raw.trim() !== '' && Number.isFinite(v) && v >= 1) {
+                          updateSpec((prev) => ({
+                            ...prev,
+                            floorplan: { ...prev.floorplan, height: Math.round(v) },
+                          }));
+                        }
+                      }}
+                      onBlur={() => {
+                        const v = Number(heightDraft);
+                        const clamped =
+                          heightDraft.trim() !== '' && Number.isFinite(v) && v > 0
+                            ? Math.max(16, Math.round(v))
+                            : spec.floorplan.height ?? floorplan?.height ?? 45;
+                        setHeightDraft(String(clamped));
                         updateSpec((prev) => ({
                           ...prev,
-                          floorplan: {
-                            ...prev.floorplan,
-                            height: Math.max(16, Number(e.target.value) || 45),
-                          },
-                        }))
-                      }
+                          floorplan: { ...prev.floorplan, height: clamped },
+                        }));
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') runFull(commitFloorplanDrafts(spec));
+                      }}
                     />
                   </div>
                 </div>
@@ -1242,10 +1384,17 @@ export default function App() {
                 onChange={(e) => {
                   const lvl = e.target.value as OptimizationLevel;
                   updateSpec(
-                    (prev) => ({
-                      ...prev,
-                      optimization: defaultOptimizationConfig(lvl),
-                    }),
+                    (prev) => {
+                      const nextOpt = defaultOptimizationConfig(lvl);
+                      return {
+                        ...prev,
+                        optimization: {
+                          ...nextOpt,
+                          tiling: prev.optimization?.tiling ?? nextOpt.tiling,
+                          tileLayout: prev.optimization?.tileLayout ?? nextOpt.tileLayout,
+                        },
+                      };
+                    },
                     true,
                   );
                 }}
@@ -1253,6 +1402,40 @@ export default function App() {
                 <option value="compact">Compact (Layered Bus + All Opts)</option>
                 <option value="balanced">Balanced (Layered + Compact)</option>
                 <option value="fast">Fast</option>
+              </select>
+            </div>
+            <div style={{ marginTop: 8 }}>
+              <label className="field-label">Large-Factory Tiling</label>
+              <select
+                className="select"
+                value={
+                  spec.optimization?.tiling === 'off'
+                    ? 'off'
+                    : spec.optimization?.tileLayout === 'twin'
+                      ? 'twin'
+                      : spec.optimization?.tileLayout === 'stack'
+                        ? 'stack'
+                        : 'auto'
+                }
+                onChange={(e) => {
+                  const val = e.target.value as 'auto' | 'twin' | 'stack' | 'off';
+                  updateSpec((prev) => {
+                    const base = prev.optimization ?? defaultOptimizationConfig('compact');
+                    return {
+                      ...prev,
+                      optimization: {
+                        ...base,
+                        tiling: val === 'off' ? 'off' : 'auto',
+                        tileLayout: val === 'off' ? 'auto' : val,
+                      },
+                    };
+                  }, true);
+                }}
+              >
+                <option value="auto">Auto (Divide &amp; Conquer)</option>
+                <option value="twin">Twin-Wing (2×R Mirrored)</option>
+                <option value="stack">1D Bus Stack (1×K)</option>
+                <option value="off">Off (Flat P&amp;R)</option>
               </select>
             </div>
             {(spec.pins.length > 0 || Object.keys(spec.macroOverrides).length > 0) && (
@@ -1846,6 +2029,27 @@ export default function App() {
               </div>
             </div>
 
+            {floorplan && floorplan.warnings.length > 0 && (
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 4,
+                  marginBottom: 8,
+                  padding: '6px 8px',
+                  borderRadius: 6,
+                  border: '1px solid rgba(245, 158, 11, 0.45)',
+                  background: 'rgba(245, 158, 11, 0.12)',
+                  color: '#fde68a',
+                  fontSize: 11,
+                }}
+              >
+                {floorplan.warnings.map((w, i) => (
+                  <div key={i}>⚠ {w}</div>
+                ))}
+              </div>
+            )}
+
             {drc && !drc.passed && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 8 }}>
                 {drc.violations.slice(0, 12).map((v) => (
@@ -2000,6 +2204,25 @@ export default function App() {
                     : '—'}
                 </div>
               </div>
+              {fullResult?.tiling && (
+                <div className="kpi-card" style={{ gridColumn: '1 / -1' }}>
+                  <div className="kpi-label">Tiled Array ({fullResult.tiling.layout})</div>
+                  <div className="kpi-val">
+                    {fullResult.tiling.tileCount}× ({fullResult.tiling.cols}×{fullResult.tiling.rows})
+                    <span
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 400,
+                        color: 'var(--bp-text-muted)',
+                        marginLeft: 8,
+                      }}
+                    >
+                      Unit Tile: {fullResult.tiling.unitWidth}×{fullResult.tiling.unitHeight} ·{' '}
+                      {fullResult.tiling.unitMachines}m
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
 
             {fullResult && (

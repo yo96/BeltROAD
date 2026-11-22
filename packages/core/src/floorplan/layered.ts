@@ -158,16 +158,25 @@ export function buildLayeredPlacement(
     }
   }
 
+  const targetAspect = isFixed ? fixedW / Math.max(1, fixedH) : aspect;
+
   const estimateGridScore = (): number => {
     const colMaxW = new Int32Array(maxStage + 1);
     const colSumH = new Int32Array(maxStage + 1);
     const colCnt = new Int32Array(maxStage + 1);
+    let singleOverflow = 0;
+    const innerW = Math.max(4, fixedW - 2 * margin);
+    const innerH = Math.max(4, fixedH - 2 * margin);
     for (let i = 0; i < n; i++) {
       const sIdx = stage[i];
       const m = getActiveMacro(states[i]);
       colMaxW[sIdx] = Math.max(colMaxW[sIdx], m.width);
       colSumH[sIdx] += (colCnt[sIdx] > 0 ? halo : 0) + m.height;
       colCnt[sIdx]++;
+      if (isFixed) {
+        singleOverflow +=
+          Math.max(0, m.width - innerW) + Math.max(0, m.height - innerH);
+      }
     }
     let activeCols = 0;
     let sumW = 0;
@@ -180,7 +189,20 @@ export function buildLayeredPlacement(
     }
     const estW = 2 * margin + sumW + Math.max(0, activeCols - 1) * halo;
     const estH = 2 * margin + maxH;
-    return estW * estH + Math.abs(estW / Math.max(1, estH) - aspect) * 450;
+    const estArea = estW * estH;
+    const curAr = estW / Math.max(1, estH);
+    const arErr = Math.abs(Math.log(Math.max(0.1, curAr / targetAspect)));
+    if (isFixed) {
+      return (
+        singleOverflow * 20000 +
+        Math.max(0, estW - fixedW) * 200 +
+        Math.max(0, estH - fixedH) * 200 +
+        estArea * 0.5 +
+        estArea * arErr * 0.6
+      );
+    }
+    const arWeight = aspect >= 1.1 && aspect <= 1.65 ? 0.35 : 0.95;
+    return estArea * (1 + arErr * arWeight);
   };
 
   if (compactMacros && familyGroups.size > 0) {
@@ -204,6 +226,21 @@ export function buildLayeredPlacement(
           for (const o of oneOption) states[o.i].variantIdx = o.oneIdx;
         }
       }
+    }
+  }
+
+  if (isFixed) {
+    const innerW = Math.max(4, fixedW - 2 * margin);
+    const innerH = Math.max(4, fixedH - 2 * margin);
+    for (let i = 0; i < n; i++) {
+      const s = states[i];
+      if (s.locked || s.rotLocked) continue;
+      const m0 = getActiveMacro(s);
+      if (m0.width <= innerW && m0.height <= innerH) continue;
+      const m90 = s.orientCache[s.variantIdx][s.flipY][1];
+      const ov0 = Math.max(0, m0.width - innerW) + Math.max(0, m0.height - innerH);
+      const ov90 = Math.max(0, m90.width - innerW) + Math.max(0, m90.height - innerH);
+      if (ov90 < ov0) s.rot = 1;
     }
   }
 
@@ -249,7 +286,7 @@ export function buildLayeredPlacement(
   for (let i = 0; i < n; i++) {
     stage[i] = compactStageMap.get(stage[i]) ?? 0;
   }
-  const numCols = Math.max(1, nonEmptyStages.length);
+  let numCols = Math.max(1, nonEmptyStages.length);
 
   // 3. Sugiyama barycenter vertical ordering per column
   const columns: number[][] = Array.from({ length: numCols }, () => []);
@@ -335,11 +372,6 @@ export function buildLayeredPlacement(
   }
 
   // 4. Column widths, West bypass gutter, and inter-column channel gaps (counting W/E bypass nets)
-  const unlockedColIndices = columns.map((col) => col.filter((i) => !states[i].locked));
-  const colWidths = unlockedColIndices.map((col) =>
-    col.reduce((mw, i) => Math.max(mw, getActiveMacro(states[i]).width), 0),
-  );
-
   let wBypassPins = 0;
   for (const net of synth.nets) {
     if (!net.source.nodeId.startsWith('in:')) continue;
@@ -352,147 +384,281 @@ export function buildLayeredPlacement(
   const westStartX =
     !isFixed && wBypassPins >= 3 ? Math.max(margin, 4) : margin;
 
-  const colGap: number[] = [];
-  for (let s = 0; s < numCols - 1; s++) {
-    if (colWidths[s] === 0) {
-      colGap.push(0);
-      continue;
-    }
-    let crossNets = 0;
-    for (const net of synth.nets) {
-      const uIdx = macroIndexById.get(net.source.nodeId);
-      const vIdx = macroIndexById.get(net.sink.nodeId);
-      let us = uIdx !== undefined ? stage[uIdx] : undefined;
-      let vs = vIdx !== undefined ? stage[vIdx] : undefined;
-      if (us === undefined && net.source.nodeId.startsWith('in:')) {
-        const p = pinById.get(net.source.nodeId);
-        if (p?.edge === 'W') us = -1;
-        else if (p?.edge === 'E') us = numCols;
-      }
-      if (vs === undefined && net.sink.nodeId.startsWith('out:')) {
-        const p = pinById.get(net.sink.nodeId);
-        if (p?.edge === 'E') vs = numCols;
-        else if (p?.edge === 'W') vs = -1;
-      }
-      if (us !== undefined && vs !== undefined && us <= s && vs >= s + 1) {
-        crossNets++;
-      }
-    }
-    const heavyBal = [...columns[s], ...columns[s + 1]].some((idx) => {
-      const m = getActiveMacro(states[idx]);
-      return m.kind === 'balancer-macro' && m.pins.length >= 4;
-    });
-    const gap = Math.max(
-      halo + (heavyBal ? 1 : 0),
-      Math.min(5, halo + Math.floor(crossNets / 4)),
+  const buildColumnLayout = () => {
+    const unlockedColIndices = columns.map((col) => col.filter((i) => !states[i].locked));
+    const colWidths = unlockedColIndices.map((col) =>
+      col.reduce((mw, i) => Math.max(mw, getActiveMacro(states[i]).width), 0),
     );
-    colGap.push(gap);
-  }
-
-  const colX = new Int32Array(numCols);
-  let curX = westStartX;
-  for (let s = 0; s < numCols; s++) {
-    colX[s] = curX;
-    if (colWidths[s] > 0) {
-      curX += colWidths[s] + (s < numCols - 1 ? colGap[s] : 0);
+    const colGap: number[] = [];
+    for (let s = 0; s < numCols - 1; s++) {
+      if (colWidths[s] === 0) {
+        colGap.push(0);
+        continue;
+      }
+      let crossNets = 0;
+      for (const net of synth.nets) {
+        const uIdx = macroIndexById.get(net.source.nodeId);
+        const vIdx = macroIndexById.get(net.sink.nodeId);
+        let us = uIdx !== undefined ? stage[uIdx] : undefined;
+        let vs = vIdx !== undefined ? stage[vIdx] : undefined;
+        if (us === undefined && net.source.nodeId.startsWith('in:')) {
+          const p = pinById.get(net.source.nodeId);
+          if (p?.edge === 'W') us = -1;
+          else if (p?.edge === 'E') us = numCols;
+        }
+        if (vs === undefined && net.sink.nodeId.startsWith('out:')) {
+          const p = pinById.get(net.sink.nodeId);
+          if (p?.edge === 'E') vs = numCols;
+          else if (p?.edge === 'W') vs = -1;
+        }
+        if (us !== undefined && vs !== undefined && us <= s && vs >= s + 1) {
+          crossNets++;
+        }
+      }
+      const heavyBal = [...columns[s], ...columns[s + 1]].some((idx) => {
+        const m = getActiveMacro(states[idx]);
+        return m.kind === 'balancer-macro' && m.pins.length >= 4;
+      });
+      const gap = Math.max(
+        halo + (heavyBal ? 1 : 0),
+        Math.min(5, halo + Math.floor(crossNets / 4)),
+      );
+      colGap.push(gap);
     }
-  }
 
-  const actualColH = new Int32Array(numCols);
-  for (let s = 0; s < numCols; s++) {
-    const col = unlockedColIndices[s];
-    let hSum = 0;
-    for (let pos = 0; pos < col.length; pos++) {
-      const curM = getActiveMacro(states[col[pos]]);
-      hSum += curM.height;
-      if (pos > 0) {
-        const prevM = getActiveMacro(states[col[pos - 1]]);
-        hSum += pairHaloFor(prevM, curM, halo);
+    const colX = new Int32Array(numCols);
+    let curX = westStartX;
+    for (let s = 0; s < numCols; s++) {
+      colX[s] = curX;
+      if (colWidths[s] > 0) {
+        curX += colWidths[s] + (s < numCols - 1 ? colGap[s] : 0);
       }
     }
-    actualColH[s] = hSum;
+
+    const actualColH = new Int32Array(numCols);
+    for (let s = 0; s < numCols; s++) {
+      const col = unlockedColIndices[s];
+      let hSum = 0;
+      for (let pos = 0; pos < col.length; pos++) {
+        const curM = getActiveMacro(states[col[pos]]);
+        hSum += curM.height;
+        if (pos > 0) {
+          const prevM = getActiveMacro(states[col[pos - 1]]);
+          hSum += pairHaloFor(prevM, curM, halo);
+        }
+      }
+      actualColH[s] = hSum;
+    }
+    const tallestH = Math.max(12, ...actualColH);
+    return { unlockedColIndices, colWidths, colGap, colX, actualColH, tallestH, curX };
+  };
+
+  let colLayout = buildColumnLayout();
+
+  // 4b. Parallel sub-column splitting when a tall stack needs a shorter/wider profile
+  if (states.every((s) => !s.locked)) {
+    for (let splitPass = 0; splitPass < 2; splitPass++) {
+      const curRawW = colLayout.curX + margin;
+      const curRawH = Math.max(12, colLayout.tallestH) + 2 * margin;
+      const targetH = isFixed
+        ? fixedH
+        : Math.sqrt((curRawW * curRawH) / targetAspect) * 1.12;
+      const needSplit =
+        (isFixed && curRawH > fixedH) ||
+        (!isFixed &&
+          curRawW / Math.max(1, curRawH) < targetAspect * 0.72 &&
+          curRawH > targetH);
+      if (!needSplit) break;
+
+      let bestCol = -1;
+      let bestH = targetH - 2 * margin;
+      for (let s = 0; s < numCols; s++) {
+        if (colLayout.unlockedColIndices[s].length >= 2 && colLayout.actualColH[s] > bestH) {
+          bestH = colLayout.actualColH[s];
+          bestCol = s;
+        }
+      }
+      if (bestCol < 0) break;
+
+      const half = Math.ceil(columns[bestCol].length / 2);
+      const topHalf = columns[bestCol].slice(0, half);
+      const botHalf = columns[bestCol].slice(half);
+      columns.splice(bestCol, 1, topHalf, botHalf);
+      numCols = columns.length;
+      for (let s = 0; s < numCols; s++) {
+        for (const idx of columns[s]) stage[idx] = s;
+      }
+      colLayout = buildColumnLayout();
+    }
   }
-  const tallestH = Math.max(12, ...actualColH);
 
-  // 5. General 2-band aspect-constrained column folding for deep wide pipelines
-  const rawW = curX + margin;
-  const rawH = tallestH + 2 * margin;
-  const shouldFold =
-    !isFixed &&
-    states.every((s) => !s.locked) &&
-    numCols >= 5 &&
-    rawW / Math.max(1, rawH) > Math.max(2.6, aspect * 1.85);
-
-  let splitCol = numCols;
-  let band0H = tallestH;
-  let band1H = 0;
-  let bandGap = 0;
-
-  if (shouldFold) {
-    const rangeWidth = (fromCol: number, toCol: number): number => {
-      let w = 0;
+  // 5. General multi-band column folding (1, 2, or 3 bands) respecting aspectRatio & fixedW/fixedH
+  const bandOfCol = new Int32Array(numCols);
+  const evalBands = (layout: typeof colLayout, bands: Array<[number, number]>) => {
+    const bandH: number[] = [];
+    const bandW: number[] = [];
+    for (let b = 0; b < bands.length; b++) {
+      const [fromCol, toCol] = bands[b];
+      let bw = 0;
+      let bh = 10;
+      let anyActive = false;
       for (let s = fromCol; s < toCol; s++) {
-        w += colWidths[s];
-        if (s + 1 < toCol && colWidths[s] > 0) w += colGap[s];
+        bandOfCol[s] = b;
+        bh = Math.max(bh, layout.actualColH[s]);
+        if (layout.colWidths[s] > 0) {
+          if (anyActive) bw += layout.colGap[s - 1];
+          bw += layout.colWidths[s];
+          anyActive = true;
+        }
       }
-      return w;
-    };
-
-    let bestScore = Infinity;
-    for (let sc = 2; sc <= numCols - 2; sc++) {
-      const w0 = rangeWidth(0, sc);
-      const w1 = rangeWidth(sc, numCols);
-      const score = Math.max(w0, w1) + Math.abs(w0 - w1) * 0.5 + (w0 > w1 + 8 ? 15 : 0);
-      if (score < bestScore) {
-        bestScore = score;
-        splitCol = sc;
-      }
+      bandW.push(bw);
+      bandH.push(bh);
     }
 
-    band0H = 10;
-    for (let s = 0; s < splitCol; s++) band0H = Math.max(band0H, actualColH[s]);
-    band1H = 10;
-    for (let s = splitCol; s < numCols; s++) band1H = Math.max(band1H, actualColH[s]);
-    bandGap = Math.max(halo + 1, 3);
+    const gaps: number[] = [];
+    for (let b = 0; b < bands.length - 1; b++) {
+      let crossNets = 0;
+      for (const net of synth.nets) {
+        const uIdx = macroIndexById.get(net.source.nodeId);
+        const vIdx = macroIndexById.get(net.sink.nodeId);
+        if (uIdx !== undefined && vIdx !== undefined) {
+          const ub = bandOfCol[stage[uIdx]];
+          const vb = bandOfCol[stage[vIdx]];
+          if (Math.min(ub, vb) <= b && Math.max(ub, vb) >= b + 1) crossNets++;
+        }
+      }
+      gaps.push(Math.max(halo + 1, Math.min(5, halo + Math.floor(crossNets / 4))));
+    }
 
-    // Recompute X starting at westStartX for each band independently
-    let bx0 = westStartX;
-    for (let s = 0; s < splitCol; s++) {
-      colX[s] = bx0;
-      if (colWidths[s] > 0) {
-        bx0 += colWidths[s] + (s + 1 < splitCol ? colGap[s] : 0);
+    const candW = westStartX + Math.max(0, ...bandW) + margin;
+    const candH =
+      2 * margin +
+      bandH.reduce((a, b) => a + b, 0) +
+      gaps.reduce((a, b) => a + b, 0);
+    const candArea = candW * candH;
+    let score: number;
+    if (isFixed) {
+      const overflow = Math.max(0, candW - fixedW) + Math.max(0, candH - fixedH);
+      score = overflow * 10000 + (bands.length - 1) * 400 + candArea * 0.5;
+    } else {
+      const arErr = Math.abs(Math.log(Math.max(0.05, candW / Math.max(1, candH) / aspect)));
+      const mildAspect = aspect >= 1.1 && aspect <= 1.65;
+      const arWeight = mildAspect ? 0.45 : 1.35;
+      const bandFactor = 1 + (bands.length - 1) * (mildAspect ? 0.18 : 0.08);
+      score = candArea * bandFactor * (1 + arErr * arWeight);
+    }
+    return { bands, bandH, gaps, candW, candH, score };
+  };
+
+  const selectBestBandPartition = (layout: typeof colLayout) => {
+    let chosen = evalBands(layout, [[0, numCols]]);
+    if (states.every((s) => !s.locked) && numCols >= 2) {
+      const candPartitions: Array<Array<[number, number]>> = [[[0, numCols]]];
+      for (let sc = 1; sc <= numCols - 1; sc++) {
+        candPartitions.push([
+          [0, sc],
+          [sc, numCols],
+        ]);
+      }
+      if (numCols >= 3) {
+        for (let s1 = 1; s1 <= numCols - 2; s1++) {
+          for (let s2 = s1 + 1; s2 <= numCols - 1; s2++) {
+            candPartitions.push([
+              [0, s1],
+              [s1, s2],
+              [s2, numCols],
+            ]);
+          }
+        }
+      }
+      for (let c = 1; c < candPartitions.length; c++) {
+        const cand = evalBands(layout, candPartitions[c]);
+        if (cand.score < chosen.score) {
+          chosen = cand;
+        }
       }
     }
-    let bx1 = westStartX;
-    for (let s = splitCol; s < numCols; s++) {
-      colX[s] = bx1;
-      if (colWidths[s] > 0) {
-        bx1 += colWidths[s] + (s + 1 < numCols ? colGap[s] : 0);
+    return chosen;
+  };
+
+  let bestPart = selectBestBandPartition(colLayout);
+
+  if (isFixed && familyGroups.size > 0 && (bestPart.candW > fixedW || bestPart.candH > fixedH)) {
+    for (const grp of familyGroups.values()) {
+      const opts = grp.map((i) => ({
+        i,
+        oldVar: states[i].variantIdx,
+        oneIdx: states[i].variants.findIndex((v) => v.rows === 1),
+        twoIdx: states[i].variants.findIndex((v) => v.rows === 2),
+      }));
+      if (opts.some((o) => o.oneIdx < 0 || o.twoIdx < 0)) continue;
+      for (const o of opts) {
+        states[o.i].variantIdx = o.oldVar === o.oneIdx ? o.twoIdx : o.oneIdx;
+      }
+      const nextLayout = buildColumnLayout();
+      const candPart = selectBestBandPartition(nextLayout);
+      if (candPart.score < bestPart.score) {
+        colLayout = nextLayout;
+        bestPart = candPart;
+      } else {
+        for (const o of opts) states[o.i].variantIdx = o.oldVar;
       }
     }
-    curX = Math.max(bx0, bx1);
+    colLayout = buildColumnLayout();
+    bestPart = selectBestBandPartition(colLayout);
   }
 
-  // Initial Y stacking centered within each column's band
-  for (let s = 0; s < numCols; s++) {
-    const band = shouldFold && s >= splitCol ? 1 : 0;
-    const bandMinY = band === 0 ? margin : margin + band0H + bandGap;
-    const bandHeight = band === 0 ? band0H : band1H;
-    const col = unlockedColIndices[s];
-    let cy = bandMinY + Math.floor((bandHeight - actualColH[s]) / 2);
-    for (let pos = 0; pos < col.length; pos++) {
-      const idx = col[pos];
-      const m = getActiveMacro(states[idx]);
-      if (pos > 0) {
-        const prevM = getActiveMacro(states[col[pos - 1]]);
-        cy += pairHaloFor(prevM, m, halo);
+  const { unlockedColIndices, colWidths, colGap, colX, actualColH } = colLayout;
+
+  if (isFixed && bestPart.bands.length > 1 && bestPart.candH < fixedH) {
+    const slackPerGap = Math.min(
+      2,
+      Math.floor((fixedH - bestPart.candH) / (bestPart.bands.length - 1)),
+    );
+    if (slackPerGap > 0) {
+      for (let b = 0; b < bestPart.gaps.length; b++) {
+        bestPart.gaps[b] += slackPerGap;
       }
-      states[idx].x = colX[s];
-      states[idx].y = cy;
-      bandByMacro[idx] = band;
-      cy += m.height;
     }
   }
+
+  const bestBands = bestPart.bands;
+  const bandTop = new Int32Array(bestBands.length);
+  const bandBottom = new Int32Array(bestBands.length);
+  let curBandY = margin;
+  let curX = westStartX;
+
+  for (let b = 0; b < bestBands.length; b++) {
+    const [fromCol, toCol] = bestBands[b];
+    const bh = bestPart.bandH[b];
+    bandTop[b] = curBandY;
+    bandBottom[b] = curBandY + bh;
+
+    let bx = westStartX;
+    for (let s = fromCol; s < toCol; s++) {
+      colX[s] = bx;
+      if (colWidths[s] > 0) {
+        bx += colWidths[s] + (s + 1 < toCol ? colGap[s] : 0);
+      }
+      const col = unlockedColIndices[s];
+      let cy = bandTop[b] + Math.floor((bh - actualColH[s]) / 2);
+      for (let pos = 0; pos < col.length; pos++) {
+        const idx = col[pos];
+        const m = getActiveMacro(states[idx]);
+        if (pos > 0) {
+          const prevM = getActiveMacro(states[col[pos - 1]]);
+          cy += pairHaloFor(prevM, m, halo);
+        }
+        states[idx].x = colX[s];
+        states[idx].y = cy;
+        bandByMacro[idx] = b;
+        cy += m.height;
+      }
+    }
+    curX = Math.max(curX, bx);
+    curBandY = bandBottom[b] + (b < bestBands.length - 1 ? bestPart.gaps[b] : 0);
+  }
+  const totalDieBottom = curBandY;
 
   // Build per-macro incident nets for port-level Y alignment and flipY evaluation
   interface IncidentNet {
@@ -549,8 +715,6 @@ export function buildLayeredPlacement(
     };
   };
 
-  const totalDieBottom = margin + band0H + bandGap + band1H;
-
   // 6. Port-level vertical alignment within each column (respecting band boundaries)
   for (let pass = 0; pass < 2; pass++) {
     const colSeq =
@@ -558,10 +722,11 @@ export function buildLayeredPlacement(
         ? Array.from({ length: numCols }, (_, i) => i)
         : Array.from({ length: numCols }, (_, i) => numCols - 1 - i);
     for (const s of colSeq) {
-      const band = shouldFold && s >= splitCol ? 1 : 0;
-      const bandTop = band === 0 ? margin : margin + band0H + bandGap;
-      const bandBottom = band === 0 ? margin + band0H : totalDieBottom;
       const col = unlockedColIndices[s];
+      if (col.length === 0) continue;
+      const band = bandByMacro[col[0]];
+      const bandMinY = bandTop[band];
+      const bandMaxY = bandBottom[band];
 
       for (let pos = 0; pos < col.length; pos++) {
         const idx = col[pos];
@@ -594,13 +759,13 @@ export function buildLayeredPlacement(
             ? states[prevIdx].y +
               getActiveMacro(states[prevIdx]).height +
               pairHaloFor(getActiveMacro(states[prevIdx]), m, halo)
-            : bandTop;
+            : bandMinY;
         const maxY =
           nextIdx >= 0
             ? states[nextIdx].y -
               m.height -
               pairHaloFor(m, getActiveMacro(states[nextIdx]), halo)
-            : Math.max(minY, bandBottom - m.height);
+            : Math.max(minY, bandMaxY - m.height);
 
         const candY = Math.max(minY, Math.min(maxY, states[idx].y + medianDy));
         states[idx].y = candY;

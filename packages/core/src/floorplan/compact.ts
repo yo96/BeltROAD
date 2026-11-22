@@ -188,7 +188,12 @@ function evalCompactScore(
     return hpwl;
   }
   const curAspect = bbox.w / Math.max(1, bbox.h);
-  const aspectPen = Math.abs(curAspect - aspect) * 8;
+  const arWeight =
+    aspect >= 1.1 && aspect <= 1.65
+      ? Math.max(8, bbox.area * 0.015)
+      : Math.max(35, bbox.area * 0.05);
+  const aspectPen =
+    Math.abs(Math.log(Math.max(0.1, curAspect / aspect))) * arWeight;
   return hpwl + (bbox.w + bbox.h) * 2.4 + bbox.area * 0.05 + aspectPen;
 }
 
@@ -250,11 +255,11 @@ export function compactMacros2D(
   };
 
   const violatesDagFlow = (idx: number, nx: number): boolean => {
-    if (isFixedDie) return false;
     const si = states[idx];
     if (si.rot !== 0) return false;
     const mi = getActiveMacro(si);
     for (const u of preds[idx]) {
+      if (bandByMacro && bandByMacro[idx] !== bandByMacro[u]) continue;
       const su = states[u];
       if (su.locked || su.rot !== 0) continue;
       const mu = getActiveMacro(su);
@@ -262,6 +267,7 @@ export function compactMacros2D(
       if (nx < su.x + mu.width + gap) return true;
     }
     for (const v of succs[idx]) {
+      if (bandByMacro && bandByMacro[idx] !== bandByMacro[v]) continue;
       const sv = states[v];
       if (sv.locked || sv.rot !== 0) continue;
       const mv = getActiveMacro(sv);

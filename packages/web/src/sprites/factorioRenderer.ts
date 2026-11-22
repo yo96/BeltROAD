@@ -882,15 +882,16 @@ export function renderFactorioScene(
     ctx.stroke();
   }
 
+  const gridStep = s < 3 ? 20 : 5;
   ctx.strokeStyle = 'rgba(255, 255, 255, 0.07)';
   ctx.lineWidth = 1;
   ctx.beginPath();
-  for (let x = 0; x <= W; x += 5) {
+  for (let x = 0; x <= W; x += gridStep) {
     const px = Math.round(ox + x * s) + 0.5;
     ctx.moveTo(px, oy);
     ctx.lineTo(px, oy + H * s);
   }
-  for (let y = 0; y <= H; y += 5) {
+  for (let y = 0; y <= H; y += gridStep) {
     const py = Math.round(oy + y * s) + 0.5;
     ctx.moveTo(ox, py);
     ctx.lineTo(ox + W * s, py);
@@ -957,7 +958,19 @@ export function renderFactorioScene(
     }
   }
 
-  // Classify entity draw order (belts -> machines -> inserters -> port markers -> poles & wires)
+  const isVis = (tx: number, ty: number, w = 1, h = 1, pad = 1) => {
+    const x0 = ox + tx * s;
+    const y0 = oy + ty * s;
+    return (
+      x0 + w * s >= -pad * s &&
+      x0 <= canvasW + pad * s &&
+      y0 + h * s >= -pad * s &&
+      y0 <= canvasH + pad * s
+    );
+  };
+  const fastLod = s < 4.5;
+
+  // Classify visible entity draw order (belts -> machines -> inserters -> port markers -> poles & wires)
   const belts: EntityInstance[] = [];
   const ugs: EntityInstance[] = [];
   const splitters: EntityInstance[] = [];
@@ -969,32 +982,45 @@ export function renderFactorioScene(
   const ugOutputs: EntityInstance[] = [];
 
   for (const e of entities) {
-    if (e.role === 'port-marker') {
+    if (isUndergroundName(e.name)) {
+      if (e.type === 'input') {
+        if (isVis(e.tx, e.ty, e.w, e.h, 10)) ugInputs.push(e);
+      } else {
+        if (isVis(e.tx, e.ty, e.w, e.h, 10)) ugOutputs.push(e);
+      }
+      if (isVis(e.tx, e.ty, e.w, e.h, 1)) ugs.push(e);
+    } else if (e.name in POLE_BY_ENTITY_NAME) {
+      if (isVis(e.tx, e.ty, e.w, e.h, 18)) poles.push(e);
+    } else if (!isVis(e.tx, e.ty, e.w, e.h, 1)) {
+      continue;
+    } else if (e.role === 'port-marker') {
       markers.push(e);
     } else if (isMachineName(e.name)) {
       machines.push(e);
     } else if (isSplitterName(e.name)) {
       splitters.push(e);
-    } else if (isUndergroundName(e.name)) {
-      ugs.push(e);
-      if (e.type === 'input') ugInputs.push(e);
-      else ugOutputs.push(e);
     } else if (beltTierFromEntityName(e.name)) {
       belts.push(e);
     } else if (e.name in INSERTER_BY_ENTITY_NAME) {
       inserters.push(e);
-    } else if (e.name in POLE_BY_ENTITY_NAME) {
-      poles.push(e);
     }
   }
 
-  const incomingMap = buildIncomingMap(entities);
+  const incomingMap = fastLod ? null : buildIncomingMap(entities);
 
   // Layer 1: Surface belts
   if (layers.belts) {
     for (const b of belts) {
       const tier = beltTierFromEntityName(b.name)!;
-      const shape = classifyBeltShape(b, incomingMap);
+      if (fastLod) {
+        ctx.fillStyle =
+          layers.heatmap && b.netId && netUtilMap.has(b.netId)
+            ? utilColorFn(netUtilMap.get(b.netId)!)
+            : BELT_SPECS[tier].color;
+        ctx.fillRect(ox + b.tx * s, oy + b.ty * s, Math.max(1.2, s), Math.max(1.2, s));
+        continue;
+      }
+      const shape = classifyBeltShape(b, incomingMap!);
       drawSurfaceBelt(ctx, b, shape, ox, oy, s, tier, layers.altMode);
       if (layers.heatmap && b.netId && netUtilMap.has(b.netId)) {
         ctx.fillStyle = utilColorFn(netUtilMap.get(b.netId)!);
@@ -1007,12 +1033,22 @@ export function renderFactorioScene(
   if (layers.belts) {
     for (const sp of splitters) {
       const tier = beltTierFromEntityName(sp.name) ?? 'yellow';
+      if (fastLod) {
+        ctx.fillStyle = BELT_SPECS[tier].color;
+        ctx.fillRect(ox + sp.tx * s, oy + sp.ty * s, Math.max(1.5, sp.w * s), Math.max(1.5, sp.h * s));
+        continue;
+      }
       drawSplitterEntity(ctx, sp, ox, oy, s, tier);
     }
   }
   if (layers.undergrounds) {
     for (const ug of ugs) {
       const tier = beltTierFromEntityName(ug.name) ?? 'yellow';
+      if (fastLod) {
+        ctx.fillStyle = BELT_SPECS[tier].color;
+        ctx.fillRect(ox + ug.tx * s, oy + ug.ty * s, Math.max(1.2, s), Math.max(1.2, s));
+        continue;
+      }
       drawUndergroundHood(ctx, ug, ox, oy, s, tier);
     }
   }
@@ -1023,16 +1059,37 @@ export function renderFactorioScene(
       layers.heatmap && m.macroId && macroUtilMap.has(m.macroId)
         ? utilColorFn(macroUtilMap.get(m.macroId)!)
         : null;
+    if (fastLod) {
+      const isFurnace = m.name === 'electric-furnace';
+      ctx.fillStyle = hColor ?? (isFurnace ? '#64748b' : '#2a5f82');
+      ctx.fillRect(
+        ox + m.tx * s + 0.3,
+        oy + m.ty * s + 0.3,
+        Math.max(1.5, m.w * s - 0.6),
+        Math.max(1.5, m.h * s - 0.6),
+      );
+      continue;
+    }
     drawMachineEntity(ctx, m, ox, oy, s, layers.altMode, hColor);
   }
 
   // Layer 4: Inserters
   for (const ins of inserters) {
+    if (fastLod) {
+      ctx.fillStyle = INSERTER_BY_ENTITY_NAME[ins.name].color;
+      ctx.fillRect(
+        ox + (ins.tx + 0.25) * s,
+        oy + (ins.ty + 0.25) * s,
+        Math.max(1.2, s * 0.5),
+        Math.max(1.2, s * 0.5),
+      );
+      continue;
+    }
     drawInserterEntity(ctx, ins, ox, oy, s);
   }
 
   // Layer 5: Port markers (Display Panels / Constant Combinators)
-  if (layers.pinLabels) {
+  if (layers.pinLabels && !fastLod) {
     for (const mk of markers) {
       const mx = ox + mk.tx * s;
       const my = oy + mk.ty * s;
@@ -1050,7 +1107,7 @@ export function renderFactorioScene(
     }
   }
 
-  // Layer 6: Power Poles + Sagging Copper Wires
+  // Layer 6: Power Poles + Spatial-Hashed Copper Wires
   const poleCenters: Array<{ ent: EntityInstance; cx: number; cy: number; wireReach: number }> = [];
   for (const pe of poles) {
     const ps = POLE_BY_ENTITY_NAME[pe.name];
@@ -1058,43 +1115,82 @@ export function renderFactorioScene(
     const cx = ox + (pe.tx + pe.w / 2) * s;
     const cy = oy + (pe.ty + pe.h / 2) * s;
     poleCenters.push({ ent: pe, cx, cy, wireReach: ps.wireReach });
-    if (layers.powerGrid) {
-      drawPoleEntity(ctx, pe, ox, oy, s);
+    if (layers.powerGrid && isVis(pe.tx, pe.ty, pe.w, pe.h, 1)) {
+      if (fastLod) {
+        ctx.fillStyle = ps.color;
+        ctx.fillRect(cx - 1.2, cy - 1.2, 2.4, 2.4);
+      } else {
+        drawPoleEntity(ctx, pe, ox, oy, s);
+      }
     }
   }
 
   if (layers.powerGrid && poleCenters.length > 1) {
+    const CELL = 18;
+    const poleGrid = new Map<string, number[]>();
+    for (let i = 0; i < poleCenters.length; i++) {
+      const pe = poleCenters[i].ent;
+      const key = `${Math.floor((pe.tx + pe.w / 2) / CELL)},${Math.floor((pe.ty + pe.h / 2) / CELL)}`;
+      let b = poleGrid.get(key);
+      if (!b) {
+        b = [];
+        poleGrid.set(key, b);
+      }
+      b.push(i);
+    }
+
+    const drawShadows = s >= 5;
     ctx.save();
     for (let i = 0; i < poleCenters.length; i++) {
-      for (let j = i + 1; j < poleCenters.length; j++) {
-        const a = poleCenters[i];
-        const b = poleCenters[j];
-        const reach = Math.min(a.wireReach, b.wireReach);
-        const dx = a.ent.tx + a.ent.w / 2 - (b.ent.tx + b.ent.w / 2);
-        const dy = a.ent.ty + a.ent.h / 2 - (b.ent.ty + b.ent.h / 2);
-        if (dx * dx + dy * dy <= reach * reach + 1e-6) {
-          const mx = (a.cx + b.cx) / 2;
-          const my = (a.cy + b.cy) / 2;
-          const dist = Math.hypot(b.cx - a.cx, b.cy - a.cy);
-          const sag = Math.min(s * 0.75, dist * 0.08);
-          const ay = a.cy - s * 0.14;
-          const by = b.cy - s * 0.14;
+      const a = poleCenters[i];
+      const ax = a.ent.tx + a.ent.w / 2;
+      const ayTile = a.ent.ty + a.ent.h / 2;
+      const gcx = Math.floor(ax / CELL);
+      const gcy = Math.floor(ayTile / CELL);
+      for (let ky = gcy - 1; ky <= gcy + 1; ky++) {
+        for (let kx = gcx - 1; kx <= gcx + 1; kx++) {
+          const bucket = poleGrid.get(`${kx},${ky}`);
+          if (!bucket) continue;
+          for (const j of bucket) {
+            if (j <= i) continue;
+            const b = poleCenters[j];
+            const reach = Math.min(a.wireReach, b.wireReach);
+            const dx = ax - (b.ent.tx + b.ent.w / 2);
+            const dy = ayTile - (b.ent.ty + b.ent.h / 2);
+            if (dx * dx + dy * dy <= reach * reach + 1e-6) {
+              if (!drawShadows) {
+                ctx.strokeStyle = 'rgba(217, 130, 62, 0.65)';
+                ctx.lineWidth = s < 3 ? 0.7 : 1;
+                ctx.beginPath();
+                ctx.moveTo(a.cx, a.cy);
+                ctx.lineTo(b.cx, b.cy);
+                ctx.stroke();
+              } else {
+                const mx = (a.cx + b.cx) / 2;
+                const my = (a.cy + b.cy) / 2;
+                const dist = Math.hypot(b.cx - a.cx, b.cy - a.cy);
+                const sag = Math.min(s * 0.75, dist * 0.08);
+                const ay = a.cy - s * 0.14;
+                const by = b.cy - s * 0.14;
 
-          // Wire shadow
-          ctx.strokeStyle = 'rgba(0, 0, 0, 0.26)';
-          ctx.lineWidth = 1.2;
-          ctx.beginPath();
-          ctx.moveTo(a.cx + 2, ay + 4);
-          ctx.quadraticCurveTo(mx + 2, my + 4 + sag, b.cx + 2, by + 4);
-          ctx.stroke();
+                // Wire shadow
+                ctx.strokeStyle = 'rgba(0, 0, 0, 0.26)';
+                ctx.lineWidth = 1.2;
+                ctx.beginPath();
+                ctx.moveTo(a.cx + 2, ay + 4);
+                ctx.quadraticCurveTo(mx + 2, my + 4 + sag, b.cx + 2, by + 4);
+                ctx.stroke();
 
-          // Warm Factorio copper wire
-          ctx.strokeStyle = 'rgba(217, 130, 62, 0.78)';
-          ctx.lineWidth = 1.15;
-          ctx.beginPath();
-          ctx.moveTo(a.cx, ay);
-          ctx.quadraticCurveTo(mx, my + sag, b.cx, by);
-          ctx.stroke();
+                // Warm Factorio copper wire
+                ctx.strokeStyle = 'rgba(217, 130, 62, 0.78)';
+                ctx.lineWidth = 1.15;
+                ctx.beginPath();
+                ctx.moveTo(a.cx, ay);
+                ctx.quadraticCurveTo(mx, my + sag, b.cx, by);
+                ctx.stroke();
+              }
+            }
+          }
         }
       }
     }

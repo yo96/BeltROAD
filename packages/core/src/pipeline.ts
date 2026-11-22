@@ -15,7 +15,7 @@ import {
   MACHINE_SPECS,
   POLE_BY_ENTITY_NAME,
 } from './data/entities.js';
-import { synthesizeDesign } from './synth/synthesize.js';
+import { synthesizeDesign, SynthesizeOptions } from './synth/synthesize.js';
 import { compileAllMacros } from './macro/compile.js';
 import { runFloorplanAndPlacement } from './floorplan/placer.js';
 import { routeGrid } from './router/pathfinder.js';
@@ -23,14 +23,18 @@ import { buildPowerGrid } from './pdn/powerGrid.js';
 import { runDrc } from './verify/drc.js';
 import { runSta } from './verify/sta.js';
 import { entitiesToBlueprintString } from './blueprint/codec.js';
+import { runTiledPipeline, shouldUseTiling } from './hierarchy/tiler.js';
 
 export interface PipelineOptions {
   onProgress?: (progress: PipelineProgress) => void;
   shouldCancel?: () => boolean;
 }
 
-export function runSynthesisStage(spec: DesignSpec): SynthesisResult {
-  return synthesizeDesign(spec);
+export function runSynthesisStage(
+  spec: DesignSpec,
+  synthOpts?: SynthesizeOptions,
+): SynthesisResult {
+  return synthesizeDesign(spec, synthOpts);
 }
 
 export function runFloorplanStage(
@@ -163,15 +167,20 @@ function computeActualBom(allEntities: EntityInstance[], synthBom: BomSummary): 
   };
 }
 
-export function runFullPipeline(
+export function runFlatPipeline(
   spec: DesignSpec,
   options: PipelineOptions = {},
+  synthOpts?: SynthesizeOptions,
+  precomputedSynth?: SynthesisResult,
 ): PipelineResult {
   const start = Date.now();
   const { onProgress, shouldCancel } = options;
 
-  onProgress?.({ stage: 'synth', message: 'Synthesizing netlist & machine sizing...' });
-  const synthesis = runSynthesisStage(spec);
+  let synthesis = precomputedSynth;
+  if (!synthesis) {
+    onProgress?.({ stage: 'synth', message: 'Synthesizing netlist & machine sizing...' });
+    synthesis = runSynthesisStage(spec, synthOpts);
+  }
 
   let effectiveSpec = spec;
   let floorplan = runFloorplanStage(synthesis, effectiveSpec);
@@ -264,6 +273,24 @@ export function runFullPipeline(
     blueprintString,
     elapsedMs,
   };
+}
+
+export function runFullPipeline(
+  spec: DesignSpec,
+  options: PipelineOptions = {},
+): PipelineResult {
+  const { onProgress } = options;
+  onProgress?.({ stage: 'synth', message: 'Synthesizing netlist & machine sizing...' });
+  const synthesis = runSynthesisStage(spec);
+
+  if (shouldUseTiling(spec, synthesis)) {
+    const tiled = runTiledPipeline(spec, synthesis, options, (uSpec, uOpts, sOpts) =>
+      runFlatPipeline(uSpec, uOpts, sOpts),
+    );
+    if (tiled) return tiled;
+  }
+
+  return runFlatPipeline(spec, options, undefined, synthesis);
 }
 
 export function runFromFloorplan(

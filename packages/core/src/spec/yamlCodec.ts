@@ -21,6 +21,8 @@ export function defaultOptimizationConfig(level: OptimizationLevel = 'compact'):
       busTaps: false,
       portSwap: true,
       allowFlipY: true,
+      tiling: 'auto',
+      tileLayout: 'auto',
     };
   }
   if (level === 'balanced') {
@@ -34,6 +36,8 @@ export function defaultOptimizationConfig(level: OptimizationLevel = 'compact'):
       busTaps: true,
       portSwap: true,
       allowFlipY: true,
+      tiling: 'auto',
+      tileLayout: 'auto',
     };
   }
   return {
@@ -46,6 +50,8 @@ export function defaultOptimizationConfig(level: OptimizationLevel = 'compact'):
     busTaps: true,
     portSwap: true,
     allowFlipY: true,
+    tiling: 'auto',
+    tileLayout: 'auto',
   };
 }
 
@@ -113,6 +119,19 @@ export function normalizeSpec(raw: Partial<DesignSpec>): DesignSpec {
   };
 
   const optDef = defaultOptimizationConfig(raw.optimization?.level ?? 'compact');
+  const rawTiling = raw.optimization?.tiling;
+  let tiling: OptimizationConfig['tiling'] = optDef.tiling;
+  if (rawTiling === 'auto' || rawTiling === 'off') {
+    tiling = rawTiling;
+  } else if (typeof rawTiling === 'number' && Number.isFinite(rawTiling) && rawTiling >= 2) {
+    tiling = Math.round(rawTiling);
+  }
+  const rawTileLayout = raw.optimization?.tileLayout;
+  const tileLayout: OptimizationConfig['tileLayout'] =
+    rawTileLayout === 'stack' || rawTileLayout === 'twin' || rawTileLayout === 'auto'
+      ? rawTileLayout
+      : optDef.tileLayout;
+
   const optimization: OptimizationConfig = {
     level: raw.optimization?.level ?? optDef.level,
     compactMacros: raw.optimization?.compactMacros ?? optDef.compactMacros,
@@ -123,6 +142,8 @@ export function normalizeSpec(raw: Partial<DesignSpec>): DesignSpec {
     busTaps: raw.optimization?.busTaps ?? optDef.busTaps,
     portSwap: raw.optimization?.portSwap ?? optDef.portSwap,
     allowFlipY: raw.optimization?.allowFlipY ?? optDef.allowFlipY,
+    tiling,
+    tileLayout,
   };
 
   const targets: TargetSpec[] = (raw.targets ?? []).map((t) => ({

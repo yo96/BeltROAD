@@ -25,4 +25,5 @@ export * from './spec/yamlCodec.js';
 export * from './spec/urlCodec.js';
 export * from './spec/presets.js';
 export * from './svg/exportSvg.js';
+export * from './hierarchy/tiler.js';
 export * from './pipeline.js';
