@@ -28,6 +28,7 @@ export function defaultOptimizationConfig(level: OptimizationLevel = 'compact'):
       allowFlipY: true,
       tiling: 'auto',
       tileLayout: 'auto',
+      directInsertion: false,
     };
   }
   if (level === 'balanced') {
@@ -43,6 +44,7 @@ export function defaultOptimizationConfig(level: OptimizationLevel = 'compact'):
       allowFlipY: true,
       tiling: 'auto',
       tileLayout: 'auto',
+      directInsertion: false,
     };
   }
   return {
@@ -57,6 +59,7 @@ export function defaultOptimizationConfig(level: OptimizationLevel = 'compact'):
     allowFlipY: true,
     tiling: 'auto',
     tileLayout: 'auto',
+    directInsertion: false,
   };
 }
 
@@ -191,6 +194,7 @@ export function normalizeSpec(raw: Partial<DesignSpec>): DesignSpec {
     allowFlipY: raw.optimization?.allowFlipY ?? optDef.allowFlipY,
     tiling,
     tileLayout,
+    directInsertion: raw.optimization?.directInsertion ?? optDef.directInsertion ?? false,
   };
 
   const targets: TargetSpec[] = (raw.targets ?? []).map((t) => ({

@@ -299,7 +299,10 @@ export function simulateMacroOutputLanes(
     }
   }
 
-  const perMachRate = rm.outputRatePerSec / Math.max(1, rm.machineCount);
+  const outputDenom = rm.directInsert
+    ? rm.directInsert.unitCount * rm.directInsert.consumerMachinesPerUnit
+    : Math.max(1, rm.machineCount);
+  const perMachRate = rm.outputRatePerSec / Math.max(1, outputDenom);
   const injected = new Map<string, LaneRates>();
   const dropSeeds: string[] = [];
 

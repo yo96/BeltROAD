@@ -214,7 +214,49 @@ export function synthesizeDesign(
     demandPerSec: number;
     ingredients: { item: string; ratePerSec: number }[];
     powerKwPerMachine: number;
+    directInsert?: {
+      ratio: '3:2' | '1:2' | '1:1';
+      producerRecipeId: string;
+      producerMachineName: MachineName;
+      producerModules: ModuleName[];
+      producerMachinesPerUnit: number;
+      consumerMachinesPerUnit: number;
+      unitCount: number;
+      intermediateItem: string;
+      intermediateRatePerSec: number;
+      producerInputs: { item: string; ratePerSec: number }[];
+      consumerExtraInputs: { item: string; ratePerSec: number }[];
+      producerPowerKwPerMachine: number;
+    };
   }
+
+  const directInsertEnabled =
+    Boolean(spec.optimization?.directInsertion) && (spec.pdk.beaconMode ?? 'none') === 'none';
+
+  const DIRECT_INSERT_PAIRS: Record<
+    string,
+    {
+      consumerRecipeId: string;
+      producerRecipeId: string;
+      producerItem: string;
+      ratio3x3?: { ratio: '3:2' | '1:2'; prodPerUnit: number; consPerUnit: number };
+      ratioEm?: { ratio: '1:1'; prodPerUnit: number; consPerUnit: number };
+    }
+  > = {
+    'electronic-circuit': {
+      consumerRecipeId: 'electronic-circuit',
+      producerRecipeId: 'copper-cable',
+      producerItem: 'copper-cable',
+      ratio3x3: { ratio: '3:2', prodPerUnit: 3, consPerUnit: 2 },
+      ratioEm: { ratio: '1:1', prodPerUnit: 1, consPerUnit: 1 },
+    },
+    rail: {
+      consumerRecipeId: 'rail',
+      producerRecipeId: 'iron-stick',
+      producerItem: 'iron-stick',
+      ratio3x3: { ratio: '1:2', prodPerUnit: 1, consPerUnit: 2 },
+    },
+  };
 
   const computedRecipes = new Map<string, ComputedRecipe>();
   const dag: DagSummaryNode[] = [];
@@ -256,6 +298,9 @@ export function synthesizeDesign(
     }
 
     const recipe = dec.recipe;
+    if (demand <= 1e-9 && !targetRates.has(item)) {
+      continue;
+    }
     const machineName: MachineName = selectMachineForRecipe(recipe, spec.pdk);
     const machineSpec = MACHINE_SPECS[machineName];
     const modules = resolveMachineModules(
@@ -280,12 +325,185 @@ export function synthesizeDesign(
       1 + baseProd + (recipe.allowProductivity ? prodBonus : 0);
 
     // Ingredient flow depends solely on demand & productivity, independent of machine speed
-    const ingredients: { item: string; ratePerSec: number }[] = [];
+    const rawIngredients: { item: string; ratePerSec: number }[] = [];
     for (const ing of recipe.ingredients) {
       if (ing.type === 'fluid') continue;
       const ingRate = demand * (ing.amount / (recipe.outputCount * effectiveProd));
-      ingredients.push({ item: ing.item, ratePerSec: ingRate });
-      demandPerSec.set(ing.item, (demandPerSec.get(ing.item) ?? 0) + ingRate);
+      rawIngredients.push({ item: ing.item, ratePerSec: ingRate });
+    }
+
+    // Attempt direct-insertion fusion with upstream producer when enabled
+    let fusedDirectInsert: ComputedRecipe['directInsert'] | undefined;
+    let fusedExactMachines: number | undefined;
+    let fusedMachineCount: number | undefined;
+
+    const diPair = directInsertEnabled ? DIRECT_INSERT_PAIRS[recipe.id] : undefined;
+    const diProdDec = diPair ? decisions.get(diPair.producerItem) : undefined;
+    if (
+      diPair &&
+      diProdDec?.mode === 'synthesize' &&
+      diProdDec.recipe?.id === diPair.producerRecipeId
+    ) {
+      const prodRecipe = diProdDec.recipe;
+      const prodMachineName = selectMachineForRecipe(prodRecipe, spec.pdk);
+      const prodMachineSpec = MACHINE_SPECS[prodMachineName];
+      const diRatioSpec =
+        machineName === 'electromagnetic-plant' &&
+        prodMachineName === 'electromagnetic-plant' &&
+        diPair.ratioEm
+          ? diPair.ratioEm
+          : machineSpec.size === 3 && prodMachineSpec.size === 3 && diPair.ratio3x3
+            ? diPair.ratio3x3
+            : undefined;
+
+      if (diRatioSpec) {
+        const tmpWarnings: string[] = [];
+        const prodModules = resolveMachineModules(
+          prodRecipe,
+          prodMachineSpec.moduleSlots,
+          spec.pdk,
+          tmpWarnings,
+        );
+        let pSpd = 0;
+        let pProd = 0;
+        let pCons = 0;
+        for (const m of prodModules) {
+          const mod = MODULE_SPECS[m];
+          pSpd += mod.speed;
+          pProd += mod.productivity;
+          pCons += mod.consumption;
+        }
+        const prodEffProd =
+          1 + (prodMachineSpec.baseProductivity ?? 0) + (prodRecipe.allowProductivity ? pProd : 0);
+        const prodEffSpeed =
+          prodMachineSpec.craftingSpeed * qualityMult * Math.max(0.2, 1 + pSpd);
+        const prodPowerMult = Math.max(0.2, 1 + pCons);
+
+        const interEntry = rawIngredients.find((i) => i.item === diPair.producerItem);
+        const consExtraInputs = rawIngredients.filter((i) => i.item !== diPair.producerItem);
+        const intermediateRate = interEntry?.ratePerSec ?? 0;
+        const prodInputs = prodRecipe.ingredients
+          .filter((ing) => ing.type !== 'fluid')
+          .map((ing) => ({
+            item: ing.item,
+            ratePerSec:
+              intermediateRate * (ing.amount / (prodRecipe.outputCount * prodEffProd)),
+          }));
+
+        const disjointOk = !prodInputs.some((pi) =>
+          consExtraInputs.some((ci) => ci.item === pi.item),
+        );
+
+        const consEffSpeedTmp =
+          machineSpec.craftingSpeed * qualityMult * Math.max(0.2, 1 + speedBonus);
+        const outPerConsMach =
+          (recipe.outputCount * effectiveProd * consEffSpeedTmp) / recipe.energyRequired;
+        const outPerProdMach =
+          (prodRecipe.outputCount * prodEffProd * prodEffSpeed) / prodRecipe.energyRequired;
+
+        const reach1PoolDi = spec.pdk.allowedInserterTiers.filter(
+          (t): t is InserterTier => t !== 'long',
+        );
+        const maxReach1Di = Math.max(
+          INSERTER_SPECS[spec.pdk.defaultInserterTier].itemsPerSec,
+          ...reach1PoolDi.map((t) => INSERTER_SPECS[t].itemsPerSec),
+        );
+        const maxLongDi = INSERTER_SPECS.long.itemsPerSec;
+
+        const nominalExtraPerCons =
+          consExtraInputs.reduce((a, b) => a + b.ratePerSec, 0) /
+          Math.max(1e-9, (demand / outPerConsMach));
+        const nominalFeasible32 =
+          diRatioSpec.ratio !== '3:2' || nominalExtraPerCons <= 2 * maxLongDi + 1e-4;
+
+        if (disjointOk && nominalFeasible32) {
+          const exactConsMach = demand / outPerConsMach;
+          const exactProdMach = intermediateRate / outPerProdMach;
+          let units = Math.max(
+            1,
+            Math.ceil(exactConsMach / diRatioSpec.consPerUnit),
+            Math.ceil(exactProdMach / diRatioSpec.prodPerUnit),
+          );
+
+          const consExtraTotal = consExtraInputs.reduce((a, b) => a + b.ratePerSec, 0);
+          const prodInTotal = prodInputs.reduce((a, b) => a + b.ratePerSec, 0);
+          let ioFeasible = false;
+          for (let guard = 0; guard < 16; guard++) {
+            const cCount = units * diRatioSpec.consPerUnit;
+            const pCount = units * diRatioSpec.prodPerUnit;
+            const outPerC = demand / cCount;
+            const extraPerC = consExtraTotal / cCount;
+            const prodInPerP = prodInTotal / pCount;
+
+            if (diRatioSpec.ratio === '3:2') {
+              const outSlots = Math.ceil(outPerC / maxReach1Di);
+              const ironSlots = extraPerC > 0 ? Math.ceil(extraPerC / maxLongDi) : 0;
+              const directPerSlot = intermediateRate / (units * 6);
+              if (
+                outSlots + ironSlots <= 3 &&
+                ironSlots <= 2 &&
+                directPerSlot <= maxReach1Di + 1e-4 &&
+                prodInPerP <= 2 * maxReach1Di + 1e-4
+              ) {
+                ioFeasible = true;
+                break;
+              }
+            } else if (diRatioSpec.ratio === '1:2') {
+              const outSlots = Math.ceil(outPerC / maxReach1Di);
+              const extraSlots = extraPerC > 0 ? Math.ceil(extraPerC / maxReach1Di) : 0;
+              const directPerC = intermediateRate / cCount;
+              if (
+                outSlots <= 2 &&
+                extraSlots <= 3 &&
+                directPerC <= maxReach1Di + 1e-4 &&
+                prodInPerP <= 2 * maxReach1Di + 1e-4
+              ) {
+                ioFeasible = true;
+                break;
+              }
+            } else {
+              // 1:1 EM Plant
+              const outSlots = Math.ceil(outPerC / maxReach1Di);
+              const extraSlots = extraPerC > 0 ? Math.ceil(extraPerC / maxReach1Di) : 0;
+              const directSlots = Math.ceil((intermediateRate / cCount) / maxReach1Di);
+              const prodInSlots = Math.ceil(prodInPerP / maxReach1Di);
+              if (outSlots <= 3 && extraSlots <= 2 && directSlots <= 3 && prodInSlots <= 3) {
+                ioFeasible = true;
+                break;
+              }
+            }
+            units++;
+          }
+
+          if (ioFeasible) {
+            warnings.push(...tmpWarnings);
+            fusedExactMachines = exactConsMach + exactProdMach;
+            fusedMachineCount = units * (diRatioSpec.prodPerUnit + diRatioSpec.consPerUnit);
+            fusedDirectInsert = {
+              ratio: diRatioSpec.ratio,
+              producerRecipeId: prodRecipe.id,
+              producerMachineName: prodMachineName,
+              producerModules: prodModules,
+              producerMachinesPerUnit: diRatioSpec.prodPerUnit,
+              consumerMachinesPerUnit: diRatioSpec.consPerUnit,
+              unitCount: units,
+              intermediateItem: diPair.producerItem,
+              intermediateRatePerSec: intermediateRate,
+              producerInputs: prodInputs,
+              consumerExtraInputs: consExtraInputs,
+              producerPowerKwPerMachine: prodMachineSpec.powerKw * prodPowerMult,
+            };
+          }
+        }
+      }
+    }
+
+    const ingredients = fusedDirectInsert
+      ? [...fusedDirectInsert.producerInputs, ...fusedDirectInsert.consumerExtraInputs]
+      : rawIngredients;
+
+    for (const ing of ingredients) {
+      demandPerSec.set(ing.item, (demandPerSec.get(ing.item) ?? 0) + ing.ratePerSec);
     }
 
     const fullTrackCount = ingredients.filter((i) => i.ratePerSec > 0.48 * defaultCap).length;
@@ -364,7 +582,9 @@ export function synthesizeDesign(
     };
 
     const minMachinesForIo = minSliceMachinesForIo(demand, totalIngRate, ingredients);
-    const machineCount = Math.max(1, Math.ceil(exactMachines), minMachinesForIo);
+    const finalExactMachines = fusedExactMachines ?? exactMachines;
+    const machineCount =
+      fusedMachineCount ?? Math.max(1, Math.ceil(exactMachines), minMachinesForIo);
 
     computedRecipes.set(item, {
       item,
@@ -376,11 +596,12 @@ export function synthesizeDesign(
       beaconModules: activeBeaconModules,
       effectiveSpeed,
       effectiveProd,
-      exactMachines,
+      exactMachines: finalExactMachines,
       machineCount,
       demandPerSec: demand,
       ingredients,
       powerKwPerMachine: machineSpec.powerKw * effectivePowerMult,
+      directInsert: fusedDirectInsert,
     });
 
     dag.push({
@@ -391,7 +612,7 @@ export function synthesizeDesign(
       mode: 'synthesize',
       recipeId: recipe.id,
       machineName,
-      exactMachines,
+      exactMachines: finalExactMachines,
       machineCount,
       beltCount: Math.max(1, Math.ceil(demand / defaultCap)),
       ingredients,
@@ -515,6 +736,118 @@ export function synthesizeDesign(
   // Recipe Macros (sliced so every output & input pin stays <= 1 belt)
   for (const comp of computedRecipes.values()) {
     const maxBeltCap = effectiveBeltCapacity(spec.pdk.defaultBeltTier, spec.pdk);
+    if (comp.directInsert) {
+      const di = comp.directInsert;
+      const machPerUnit = di.producerMachinesPerUnit + di.consumerMachinesPerUnit;
+      let sliceCount = Math.max(
+        1,
+        Math.ceil(comp.demandPerSec / maxBeltCap),
+        Math.ceil(comp.machineCount / MAX_MACHINES_PER_SLICE),
+      );
+      for (const ing of comp.ingredients) {
+        sliceCount = Math.max(sliceCount, Math.ceil(ing.ratePerSec / maxBeltCap));
+      }
+      sliceCount = Math.min(sliceCount, di.unitCount);
+
+      const equalFrac = 1 / sliceCount;
+      const baseUnits = Math.floor(di.unitCount / sliceCount);
+      const remUnits = di.unitCount % sliceCount;
+      const maxInputOrOut = Math.max(
+        comp.demandPerSec,
+        ...comp.ingredients.map((i) => i.ratePerSec),
+      );
+      const unbalancedMax =
+        di.unitCount > 0 && remUnits > 0
+          ? ((baseUnits + 1) / di.unitCount) * maxInputOrOut
+          : 0;
+      const useUniformCeil = sliceCount > 1 && unbalancedMax > maxBeltCap + 1e-4;
+
+      for (let s = 0; s < sliceCount; s++) {
+        let sliceUnits = useUniformCeil
+          ? Math.max(1, Math.ceil(di.unitCount / sliceCount))
+          : baseUnits + (s < remUnits ? 1 : 0);
+        const frac = sliceCount > 1 ? equalFrac : sliceUnits / di.unitCount;
+        const sliceOutRate = comp.demandPerSec * frac;
+        const sliceExactMachines = comp.exactMachines * frac;
+        const outTier = pickBeltTierForRate(sliceOutRate, spec.pdk);
+        const sliceBeltCap = effectiveBeltCapacity(outTier, spec.pdk);
+        if (sliceOutRate > sliceBeltCap * 0.5 + 1e-4 && sliceUnits % 2 === 1) {
+          const heavyLaneRate = (Math.ceil(sliceUnits / 2) / sliceUnits) * sliceOutRate;
+          if (heavyLaneRate > sliceBeltCap * 0.5 - 1e-4) {
+            sliceUnits += 1;
+          }
+        }
+        const forceBal = Boolean(opts?.forceBalancedOutputs) && targetRates.has(comp.item);
+        const mCount = sliceUnits * machPerUnit;
+        const macroId =
+          sliceCount === 1 ? `macro:${comp.recipe.id}` : `macro:${comp.recipe.id}:${s}`;
+        const override = spec.macroOverrides[macroId];
+
+        const prodInputs = di.producerInputs.map((ing) => {
+          const r = ing.ratePerSec * frac;
+          return { item: ing.item, ratePerSec: r, beltTier: pickBeltTierForRate(r, spec.pdk) };
+        });
+        const consExtraInputs = di.consumerExtraInputs.map((ing) => {
+          const r = ing.ratePerSec * frac;
+          return { item: ing.item, ratePerSec: r, beltTier: pickBeltTierForRate(r, spec.pdk) };
+        });
+        const ingRates = [...prodInputs, ...consExtraInputs];
+
+        const macroNode: RecipeMacroSpec = {
+          id: macroId,
+          kind: 'recipe-macro',
+          recipeId: comp.recipe.id,
+          outputItem: comp.item,
+          machineName: comp.machineName,
+          quality: comp.quality,
+          machineCount: mCount,
+          exactMachines: sliceExactMachines,
+          modules: comp.modules,
+          directInsert: {
+            ratio: di.ratio,
+            producerRecipeId: di.producerRecipeId,
+            producerMachineName: di.producerMachineName,
+            producerModules: di.producerModules,
+            producerMachinesPerUnit: di.producerMachinesPerUnit,
+            consumerMachinesPerUnit: di.consumerMachinesPerUnit,
+            unitCount: sliceUnits,
+            intermediateItem: di.intermediateItem,
+            intermediateRatePerSec: di.intermediateRatePerSec * frac,
+            producerInputs: prodInputs,
+            consumerExtraInputs: consExtraInputs,
+          },
+          effectiveSpeed: comp.effectiveSpeed,
+          effectiveProd: comp.effectiveProd,
+          outputRatePerSec: sliceOutRate,
+          beltTier: outTier,
+          ingredientRates: ingRates,
+          preferredRows: override?.rows,
+          balanceOutputLanes: forceBal || sliceOutRate > sliceBeltCap * 0.49,
+          sliceIndex: s,
+          sliceCount,
+        };
+        nodes.push(macroNode);
+        macroNodesById.set(macroId, macroNode);
+        macroOutputDepthById.set(macroId, itemDepth.get(comp.item) ?? 1);
+
+        addSource(comp.item, {
+          nodeId: macroId,
+          pinId: `out:${comp.item}`,
+          ratePerSec: sliceOutRate,
+          beltTier: outTier,
+        });
+        for (const ing of ingRates) {
+          addSink(ing.item, {
+            nodeId: macroId,
+            pinId: `in:${ing.item}`,
+            ratePerSec: ing.ratePerSec,
+            beltTier: ing.beltTier,
+          });
+        }
+      }
+      continue;
+    }
+
     let sliceCount = Math.max(
       1,
       Math.ceil(comp.demandPerSec / maxBeltCap),
@@ -810,7 +1143,14 @@ export function synthesizeDesign(
           const rm = macroNodesById.get(src.nodeId);
           if (rm) {
             rm.balanceOutputLanes = true;
-            if (rm.machineCount >= 3 && rm.machineCount % 2 === 1) {
+            if (rm.directInsert) {
+              const di = rm.directInsert;
+              if (di.unitCount >= 3 && di.unitCount % 2 === 1) {
+                di.unitCount += 1;
+                rm.machineCount =
+                  di.unitCount * (di.producerMachinesPerUnit + di.consumerMachinesPerUnit);
+              }
+            } else if (rm.machineCount >= 3 && rm.machineCount % 2 === 1) {
               rm.machineCount += 1;
             }
           }
@@ -879,6 +1219,7 @@ function computeSynthBom(
     {
       machineCount: number;
       powerKwPerMachine: number;
+      directInsert?: { producerPowerKwPerMachine: number };
     }
   >,
 ): BomSummary {
@@ -889,12 +1230,31 @@ function computeSynthBom(
 
   for (const n of nodes) {
     if (n.kind === 'recipe-macro') {
-      entities[n.machineName] = (entities[n.machineName] ?? 0) + n.machineCount;
-      totalMachines += n.machineCount;
-      const pKw = computedRecipes.get(n.outputItem)?.powerKwPerMachine ?? 150;
-      estimatedPowerKw += n.machineCount * pKw;
-      for (const m of n.modules) {
-        modules[m] = (modules[m] ?? 0) + n.machineCount;
+      if (n.directInsert) {
+        const di = n.directInsert;
+        const pCount = di.unitCount * di.producerMachinesPerUnit;
+        const cCount = di.unitCount * di.consumerMachinesPerUnit;
+        entities[di.producerMachineName] = (entities[di.producerMachineName] ?? 0) + pCount;
+        entities[n.machineName] = (entities[n.machineName] ?? 0) + cCount;
+        totalMachines += pCount + cCount;
+        const cr = computedRecipes.get(n.outputItem);
+        const cKw = cr?.powerKwPerMachine ?? 150;
+        const pKw = cr?.directInsert?.producerPowerKwPerMachine ?? cKw;
+        estimatedPowerKw += pCount * pKw + cCount * cKw;
+        for (const m of di.producerModules) {
+          modules[m] = (modules[m] ?? 0) + pCount;
+        }
+        for (const m of n.modules) {
+          modules[m] = (modules[m] ?? 0) + cCount;
+        }
+      } else {
+        entities[n.machineName] = (entities[n.machineName] ?? 0) + n.machineCount;
+        totalMachines += n.machineCount;
+        const pKw = computedRecipes.get(n.outputItem)?.powerKwPerMachine ?? 150;
+        estimatedPowerKw += n.machineCount * pKw;
+        for (const m of n.modules) {
+          modules[m] = (modules[m] ?? 0) + n.machineCount;
+        }
       }
     }
   }

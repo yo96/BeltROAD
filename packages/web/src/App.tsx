@@ -1644,6 +1644,8 @@ export default function App() {
                           ...nextOpt,
                           tiling: prev.optimization?.tiling ?? nextOpt.tiling,
                           tileLayout: prev.optimization?.tileLayout ?? nextOpt.tileLayout,
+                          directInsertion:
+                            prev.optimization?.directInsertion ?? nextOpt.directInsertion,
                         },
                       };
                     },
@@ -1715,6 +1717,39 @@ export default function App() {
                   }
                 />
                 Keep all pins on outer edge
+              </label>
+            </div>
+            <div style={{ marginTop: 6 }}>
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  cursor: 'pointer',
+                  fontSize: 11.5,
+                }}
+                title="Fuse 3:2 Copper Cable -> Electronic Circuit, 1:2 Iron Stick -> Rail, and 1:1 EM Plant stages into direct-insertion compound macros"
+              >
+                <input
+                  type="checkbox"
+                  checked={spec.optimization?.directInsertion ?? false}
+                  onChange={(e) =>
+                    updateSpec(
+                      (prev) => {
+                        const base = prev.optimization ?? defaultOptimizationConfig('compact');
+                        return {
+                          ...prev,
+                          optimization: {
+                            ...base,
+                            directInsertion: e.target.checked,
+                          },
+                        };
+                      },
+                      true,
+                    )
+                  }
+                />
+                Direct-insertion macros (3:2 / 1:2)
               </label>
             </div>
             {(spec.pins.length > 0 || Object.keys(spec.macroOverrides).length > 0) && (

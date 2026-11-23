@@ -8,6 +8,7 @@ export * from './blueprint/balancerImporter.js';
 export * from './synth/synthesize.js';
 export * from './macro/transform.js';
 export * from './macro/recipeMacro.js';
+export * from './macro/directInsertMacro.js';
 export * from './macro/balancerMacro.js';
 export * from './macro/compile.js';
 export * from './floorplan/pins.js';

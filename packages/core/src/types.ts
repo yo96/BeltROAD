@@ -156,6 +156,8 @@ export interface OptimizationConfig {
   allowFlipY?: boolean;
   tiling?: 'auto' | 'off' | number;
   tileLayout?: 'auto' | 'stack' | 'twin';
+  /** Enable direct-insertion compound macros (3:2 cable->circuit, 1:2 stick->rail, 1:1 EM plant) */
+  directInsertion?: boolean;
 }
 
 export interface DesignSpec {
@@ -206,6 +208,7 @@ export type EntityRole =
   | 'beacon-macro'
   | 'inserter-in'
   | 'inserter-out'
+  | 'inserter-direct'
   | 'belt-macro'
   | 'belt-route'
   | 'ug-macro'
@@ -279,6 +282,20 @@ export interface SynthOutputNode {
   pinId: string;
 }
 
+export interface DirectInsertMacroConfig {
+  ratio: '3:2' | '1:2' | '1:1';
+  producerRecipeId: string;
+  producerMachineName: MachineName;
+  producerModules: ModuleName[];
+  producerMachinesPerUnit: number;
+  consumerMachinesPerUnit: number;
+  unitCount: number;
+  intermediateItem: string;
+  intermediateRatePerSec: number;
+  producerInputs: { item: string; ratePerSec: number; beltTier: BeltTier }[];
+  consumerExtraInputs: { item: string; ratePerSec: number; beltTier: BeltTier }[];
+}
+
 export interface RecipeMacroSpec {
   id: string;
   kind: 'recipe-macro';
@@ -291,6 +308,7 @@ export interface RecipeMacroSpec {
   modules: ModuleName[];
   beaconsPerMachine?: number;
   beaconModules?: BeaconModuleName[];
+  directInsert?: DirectInsertMacroConfig;
   effectiveSpeed: number;
   effectiveProd: number;
   outputRatePerSec: number;

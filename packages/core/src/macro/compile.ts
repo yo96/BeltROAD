@@ -1,5 +1,6 @@
 import { CompiledMacro, DesignSpec, SynthesisResult } from '../types.js';
 import { compileRecipeMacroVariants } from './recipeMacro.js';
+import { compileDirectInsertMacro } from './directInsertMacro.js';
 import { compileBalancerMacro } from './balancerMacro.js';
 
 export interface MacroVariantSet {
@@ -17,7 +18,9 @@ export function compileAllMacros(
     if (node.kind === 'recipe-macro') {
       result.push({
         id: node.id,
-        variants: compileRecipeMacroVariants(node, spec.pdk, compactMacros),
+        variants: node.directInsert
+          ? compileDirectInsertMacro(node, spec.pdk)
+          : compileRecipeMacroVariants(node, spec.pdk, compactMacros),
       });
     } else if (node.kind === 'balancer-macro') {
       result.push({

@@ -110,6 +110,20 @@ export function runSta(
       );
     }
 
+    if (rm.directInsert) {
+      const directInserters = macroEnts.filter((e) => e.role === 'inserter-direct');
+      const totalDirectCap = directInserters.reduce(
+        (sum, e) => sum + (INSERTER_BY_ENTITY_NAME[e.name]?.itemsPerSec ?? 0),
+        0,
+      );
+      if (totalDirectCap + 1e-4 < rm.directInsert.intermediateRatePerSec) {
+        inserterOk = false;
+        issues.push(
+          `Direct inserters capacity ${totalDirectCap.toFixed(2)}/s < ${rm.directInsert.intermediateRatePerSec.toFixed(2)}/s (${rm.directInsert.intermediateItem})`,
+        );
+      }
+    }
+
     // Verify dual-lane belts don't exceed 0.5 belt per lane
     for (const e of macroEnts) {
       if (e.laneItems && e.laneItems.length === 2) {
