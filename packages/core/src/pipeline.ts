@@ -19,6 +19,7 @@ import {
 import { synthesizeDesign, SynthesizeOptions } from './synth/synthesize.js';
 import { compileAllMacros } from './macro/compile.js';
 import { runFloorplanAndPlacement } from './floorplan/placer.js';
+import { applyPerimeterHeader } from './floorplan/headers.js';
 import { routeGrid } from './router/pathfinder.js';
 import { buildPowerGrid } from './pdn/powerGrid.js';
 import { runDrc } from './verify/drc.js';
@@ -230,6 +231,10 @@ export function runFlatPipeline(
     route = runRouteStage(synthesis, floorplan, onProgress, shouldCancel, optimizeRoutes);
   }
   route.autoExpandedCount = autoExpandedCount;
+
+  if ((effectiveSpec.floorplan.headerMode ?? 'none') !== 'none') {
+    ({ floorplan, route } = applyPerimeterHeader(floorplan, route, effectiveSpec));
+  }
 
   // Build PDN on top of macro + route entities
   onProgress?.({ stage: 'pdn', message: 'Connecting Power Delivery Network (PDN)...' });

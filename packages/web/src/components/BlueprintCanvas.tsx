@@ -917,6 +917,63 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
           continue;
         }
 
+        if (e.name === 'straight-rail') {
+          if (fastLod) {
+            ctx.fillStyle = '#78716c';
+            ctx.fillRect(ex + 0.3, ey, Math.max(1.4, ew - 0.6), Math.max(1.4, eh));
+            continue;
+          }
+          ctx.fillStyle = '#1c1917';
+          ctx.fillRect(ex + s * 0.1, ey, ew - s * 0.2, eh);
+          ctx.fillStyle = '#57534e';
+          for (const frac of [0.2, 0.5, 0.8]) {
+            ctx.fillRect(ex + s * 0.16, ey + eh * frac - 1, ew - s * 0.32, 2);
+          }
+          ctx.fillStyle = '#cbd5e1';
+          ctx.fillRect(ex + ew * 0.25, ey, Math.max(1.2, s * 0.1), eh);
+          ctx.fillRect(ex + ew * 0.75 - Math.max(1.2, s * 0.1), ey, Math.max(1.2, s * 0.1), eh);
+          continue;
+        }
+
+        if (e.name === 'train-stop') {
+          if (fastLod) {
+            ctx.fillStyle = '#dc2626';
+            ctx.fillRect(ex + 0.3, ey + 0.3, Math.max(1.4, ew - 0.6), Math.max(1.4, eh - 0.6));
+            continue;
+          }
+          ctx.fillStyle = '#7f1d1d';
+          ctx.strokeStyle = '#f87171';
+          ctx.lineWidth = Math.max(1.2, s * 0.08);
+          ctx.fillRect(ex + 1, ey + 1, ew - 2, eh - 2);
+          ctx.strokeRect(ex + 1, ey + 1, ew - 2, eh - 2);
+          if (s >= 9) {
+            ctx.fillStyle = '#fef2f2';
+            ctx.font = `700 ${Math.max(8, s * 0.3)}px JetBrains Mono, monospace`;
+            ctx.textAlign = 'center';
+            ctx.fillText('STOP', ex + ew / 2, ey + eh / 2 + 3);
+          }
+          continue;
+        }
+
+        if (e.name === 'steel-chest') {
+          const cCol = e.item ? getItemMeta(e.item).color : '#cbd5e1';
+          if (fastLod) {
+            ctx.fillStyle = '#94a3b8';
+            ctx.fillRect(ex + 0.3, ey + 0.3, Math.max(1.2, ew - 0.6), Math.max(1.2, eh - 0.6));
+            continue;
+          }
+          ctx.fillStyle = '#475569';
+          ctx.strokeStyle = '#cbd5e1';
+          ctx.lineWidth = 1.2;
+          ctx.fillRect(ex + s * 0.14, ey + s * 0.14, ew - s * 0.28, eh - s * 0.28);
+          ctx.strokeRect(ex + s * 0.14, ey + s * 0.14, ew - s * 0.28, eh - s * 0.28);
+          ctx.fillStyle = cCol;
+          ctx.beginPath();
+          ctx.arc(ex + ew / 2, ey + eh / 2, Math.max(1.6, s * 0.14), 0, Math.PI * 2);
+          ctx.fill();
+          continue;
+        }
+
         if (e.name in INSERTER_BY_ENTITY_NAME) {
           const ins = INSERTER_BY_ENTITY_NAME[e.name];
           if (fastLod) {
@@ -1509,6 +1566,7 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
             : undefined,
       });
       if (hitEnt.recipe) lines.push({ text: `Recipe: ${hitEnt.recipe}` });
+      if (hitEnt.station) lines.push({ text: `Station: ${hitEnt.station}`, color: '#fca5a5' });
       if (hitEnt.name === 'beacon') {
         if (hitEnt.items && hitEnt.items.length > 0) {
           lines.push({ text: `Modules: ${hitEnt.items.join(', ')}`, color: '#67e8f9' });

@@ -293,7 +293,13 @@ export function runDrc(
     const dropEnts = tileOccupancy.get(`${reach.dropX},${reach.dropY}`) ?? [];
 
     const hasValidTarget = (list: EntityInstance[]) =>
-      list.some((t) => isMachineName(t.name) || isBeltLikeName(t.name));
+      list.some(
+        (t) =>
+          isMachineName(t.name) ||
+          isBeltLikeName(t.name) ||
+          t.name === 'steel-chest' ||
+          t.name === 'straight-rail',
+      );
 
     if (!hasValidTarget(pickupEnts) || !hasValidTarget(dropEnts)) {
       addV(

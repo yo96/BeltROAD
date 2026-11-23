@@ -168,6 +168,10 @@ export function normalizeSpec(raw: Partial<DesignSpec>): DesignSpec {
     margin: rawFloor.margin ?? 3,
     halo: rawFloor.halo ?? 2,
     requireEdgePins: rawFloor.requireEdgePins ?? true,
+    headerMode:
+      rawFloor.headerMode === 'bus-header' || rawFloor.headerMode === 'train-station'
+        ? rawFloor.headerMode
+        : 'none',
   };
 
   const optDef = defaultOptimizationConfig(raw.optimization?.level ?? 'compact');

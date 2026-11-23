@@ -12,6 +12,7 @@ export * from './macro/directInsertMacro.js';
 export * from './macro/balancerMacro.js';
 export * from './macro/compile.js';
 export * from './floorplan/pins.js';
+export * from './floorplan/headers.js';
 export * from './floorplan/portSwap.js';
 export * from './floorplan/compact.js';
 export * from './floorplan/layered.js';

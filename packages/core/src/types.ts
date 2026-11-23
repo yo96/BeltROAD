@@ -10,6 +10,7 @@ export enum Dir {
 
 export type Edge = 'N' | 'S' | 'E' | 'W';
 export type Rot90 = 0 | 1 | 2 | 3;
+export type PerimeterHeaderMode = 'none' | 'bus-header' | 'train-station';
 
 export type BeltTier = 'yellow' | 'red' | 'blue' | 'turbo';
 export type BeltStackSize = 1 | 2 | 4;
@@ -92,6 +93,8 @@ export interface FloorplanConfig {
   halo: number;
   /** Keep all pins strictly on the outer die perimeter (routes multi-bay interior trunks to the North edge). Default: true. */
   requireEdgePins?: boolean;
+  /** Optional perimeter header apron ('none' | 'bus-header' | 'train-station'). Default: 'none'. */
+  headerMode?: PerimeterHeaderMode;
 }
 
 export interface PinConstraint {
@@ -224,6 +227,7 @@ export type EntityRole =
   | 'pipe-route'
   | 'pipe-ug-macro'
   | 'pipe-ug-route'
+  | 'header'
   | 'port-marker';
 
 export interface EntityInstance {
@@ -248,6 +252,8 @@ export interface EntityInstance {
   intentionalSideLoad?: boolean;
   /** Crafting machine has an active fluidbox port that changes with machine orientation */
   hasFluidBox?: boolean;
+  /** Station name for train-stop header entities */
+  station?: string;
   markerText?: string;
   markerIcon?: string;
   markerRatePerMin?: number;

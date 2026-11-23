@@ -16,6 +16,7 @@ import {
   InserterTier,
   ModuleName,
   OptimizationLevel,
+  PerimeterHeaderMode,
   PipelineProgress,
   PipelineResult,
   PoleTier,
@@ -1708,6 +1709,27 @@ export default function App() {
                 <option value="twin">Twin-Wing (2×R Mirrored)</option>
                 <option value="stack">1D Bus Stack (1×K)</option>
                 <option value="off">Off (Flat P&amp;R)</option>
+              </select>
+            </div>
+            <div style={{ marginTop: 8 }}>
+              <label className="field-label">Perimeter Header</label>
+              <select
+                className="select"
+                value={spec.floorplan.headerMode ?? 'none'}
+                onChange={(e) => {
+                  const hm = e.target.value as PerimeterHeaderMode;
+                  updateSpec(
+                    (prev) => ({
+                      ...prev,
+                      floorplan: { ...prev.floorplan, headerMode: hm },
+                    }),
+                    true,
+                  );
+                }}
+              >
+                <option value="none">None (Direct Edge Pins)</option>
+                <option value="bus-header">Main Bus Header (Grouped)</option>
+                <option value="train-station">Train Station Bay (Rail + Chests)</option>
               </select>
             </div>
             <div style={{ marginTop: 8 }}>

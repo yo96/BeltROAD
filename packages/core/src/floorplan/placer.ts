@@ -918,8 +918,9 @@ export function runFloorplanAndPlacement(
     optimizePortAssignments(synth, placedMacros, finalPinsRes.pins);
   }
 
+  const groupByBus = (spec.floorplan.headerMode ?? 'none') !== 'none';
   const finalPins = doAlignPins
-    ? alignFloatingPinsToMacros(finalPinsRes.pins, synth, placedMacros, W, H)
+    ? alignFloatingPinsToMacros(finalPinsRes.pins, synth, placedMacros, W, H, groupByBus)
     : finalPinsRes.pins;
 
   if (doPortSwap && doAlignPins) {

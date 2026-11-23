@@ -258,6 +258,7 @@ export function alignFloatingPinsToMacros(
   macros: PlacedMacro[],
   width: number,
   height: number,
+  groupByBus = false,
 ): PerimeterPin[] {
   const macroById = new Map(macros.map((m) => [m.id, m]));
   const pinById = new Map(pins.map((p) => [p.id, p]));
@@ -316,6 +317,24 @@ export function alignFloatingPinsToMacros(
     const hasExplicitOrder = floating.some((p) => p.order < 10000);
     if (hasExplicitOrder) {
       floating.sort((a, b) => a.order - b.order || a.busIndex - b.busIndex);
+    } else if (groupByBus) {
+      const busSums = new Map<string, { sum: number; count: number }>();
+      for (const p of floating) {
+        const cur = busSums.get(p.busId) ?? { sum: 0, count: 0 };
+        cur.sum += idealOf(p);
+        cur.count += 1;
+        busSums.set(p.busId, cur);
+      }
+      const busAvg = (busId: string) => {
+        const b = busSums.get(busId);
+        return b && b.count > 0 ? b.sum / b.count : 0;
+      };
+      floating.sort(
+        (a, b) =>
+          busAvg(a.busId) - busAvg(b.busId) ||
+          a.busId.localeCompare(b.busId) ||
+          a.busIndex - b.busIndex,
+      );
     } else {
       floating.sort((a, b) => idealOf(a) - idealOf(b) || a.busIndex - b.busIndex);
     }

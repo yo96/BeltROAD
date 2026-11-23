@@ -1208,6 +1208,9 @@ export function renderFactorioScene(
   const belts: EntityInstance[] = [];
   const ugs: EntityInstance[] = [];
   const pipes: EntityInstance[] = [];
+  const rails: EntityInstance[] = [];
+  const trainStops: EntityInstance[] = [];
+  const chests: EntityInstance[] = [];
   const splitters: EntityInstance[] = [];
   const machines: EntityInstance[] = [];
   const beacons: EntityInstance[] = [];
@@ -1220,7 +1223,13 @@ export function renderFactorioScene(
   const pipeCoords = new Set<string>();
 
   for (const e of entities) {
-    if (isPipeName(e.name)) {
+    if (e.name === 'straight-rail') {
+      if (isVis(e.tx, e.ty, e.w, e.h, 1)) rails.push(e);
+    } else if (e.name === 'train-stop') {
+      if (isVis(e.tx, e.ty, e.w, e.h, 1)) trainStops.push(e);
+    } else if (e.name === 'steel-chest') {
+      if (isVis(e.tx, e.ty, e.w, e.h, 1)) chests.push(e);
+    } else if (isPipeName(e.name)) {
       pipeCoords.add(`${e.tx},${e.ty}`);
       if (isPipeUndergroundName(e.name) && isVis(e.tx, e.ty, e.w, e.h, 10)) {
         pipeUgs.push(e);
@@ -1253,6 +1262,30 @@ export function renderFactorioScene(
   }
 
   const incomingMap = fastLod ? null : buildIncomingMap(entities);
+
+  // Layer 0.5: Straight Rails (train header bays)
+  for (const r of rails) {
+    const rx = ox + r.tx * s;
+    const ry = oy + r.ty * s;
+    const rw = r.w * s;
+    const rh = r.h * s;
+    if (fastLod) {
+      ctx.fillStyle = '#78716c';
+      ctx.fillRect(rx + 0.3, ry, Math.max(1.5, rw - 0.6), Math.max(1.5, rh));
+      continue;
+    }
+    // Gravel ballast bed & wooden sleepers
+    ctx.fillStyle = 'rgba(41, 37, 36, 0.72)';
+    ctx.fillRect(rx + s * 0.08, ry, rw - s * 0.16, rh);
+    ctx.fillStyle = '#57534e';
+    for (const frac of [0.18, 0.52, 0.84]) {
+      ctx.fillRect(rx + s * 0.14, ry + rh * frac - Math.max(1, s * 0.08), rw - s * 0.28, Math.max(1.5, s * 0.16));
+    }
+    // Twin steel rails
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillRect(rx + rw * 0.24, ry, Math.max(1.4, s * 0.12), rh);
+    ctx.fillRect(rx + rw * 0.76 - Math.max(1.4, s * 0.12), ry, Math.max(1.4, s * 0.12), rh);
+  }
 
   // Layer 1: Surface belts
   if (layers.belts) {
@@ -1419,6 +1452,54 @@ export function renderFactorioScene(
       continue;
     }
     drawBeaconEntity(ctx, b, ox, oy, s, layers.altMode);
+  }
+
+  // Layer 3c: Steel Chests & Train Stops
+  for (const c of chests) {
+    const cx = ox + c.tx * s;
+    const cy = oy + c.ty * s;
+    if (fastLod) {
+      ctx.fillStyle = '#94a3b8';
+      ctx.fillRect(cx + 0.3, cy + 0.3, Math.max(1.2, s - 0.6), Math.max(1.2, s - 0.6));
+      continue;
+    }
+    ctx.fillStyle = '#475569';
+    ctx.strokeStyle = '#cbd5e1';
+    ctx.lineWidth = Math.max(1, s * 0.08);
+    ctx.fillRect(cx + s * 0.12, cy + s * 0.12, s * 0.76, s * 0.76);
+    ctx.strokeRect(cx + s * 0.12, cy + s * 0.12, s * 0.76, s * 0.76);
+    if (c.item) {
+      ctx.fillStyle = getItemMeta(c.item).color;
+      ctx.beginPath();
+      ctx.arc(cx + s * 0.5, cy + s * 0.5, Math.max(1.8, s * 0.16), 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  for (const ts of trainStops) {
+    const tx0 = ox + ts.tx * s;
+    const ty0 = oy + ts.ty * s;
+    const tw = ts.w * s;
+    const th = ts.h * s;
+    if (fastLod) {
+      ctx.fillStyle = '#dc2626';
+      ctx.fillRect(tx0 + 0.3, ty0 + 0.3, Math.max(1.5, tw - 0.6), Math.max(1.5, th - 0.6));
+      continue;
+    }
+    ctx.fillStyle = '#7f1d1d';
+    ctx.strokeStyle = '#f87171';
+    ctx.lineWidth = Math.max(1.4, s * 0.09);
+    ctx.fillRect(tx0 + s * 0.1, ty0 + s * 0.1, tw - s * 0.2, th - s * 0.2);
+    ctx.strokeRect(tx0 + s * 0.1, ty0 + s * 0.1, tw - s * 0.2, th - s * 0.2);
+    ctx.fillStyle = '#facc15';
+    ctx.beginPath();
+    ctx.arc(tx0 + tw * 0.5, ty0 + th * 0.38, Math.max(2, s * 0.18), 0, Math.PI * 2);
+    ctx.fill();
+    if (s >= 9) {
+      ctx.fillStyle = '#fef2f2';
+      ctx.font = `700 ${Math.max(8, s * 0.3)}px JetBrains Mono, monospace`;
+      ctx.textAlign = 'center';
+      ctx.fillText('STOP', tx0 + tw * 0.5, ty0 + th * 0.78);
+    }
   }
 
   // Layer 4: Inserters

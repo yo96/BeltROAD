@@ -38,6 +38,7 @@ export interface BlueprintEntity {
   always_show?: boolean;
   show_in_chart?: boolean;
   icon?: BlueprintSignalId;
+  station?: string;
   control_behavior?: Record<string, unknown>;
 }
 
@@ -210,7 +211,8 @@ export function entitiesToFactorio2BlueprintData(
       ent.role !== 'pole-pdn' &&
       (ent.role !== 'machine' || Boolean(ent.hasFluidBox)) &&
       ent.role !== 'beacon-macro' &&
-      ent.role !== 'port-marker';
+      ent.role !== 'port-marker' &&
+      ent.name !== 'steel-chest';
 
     if (isDirectional && ent.direction !== Dir.NORTH) {
       bpEnt.direction = ent.direction;
@@ -230,6 +232,10 @@ export function entitiesToFactorio2BlueprintData(
 
     if (ent.items && ent.items.length > 0) {
       bpEnt.items = encodeModulesFor20(ent.items, ent.name === 'beacon' ? 1 : 4);
+    }
+
+    if (ent.station) {
+      bpEnt.station = ent.station;
     }
 
     if (ent.name === 'display-panel') {

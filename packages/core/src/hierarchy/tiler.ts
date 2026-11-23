@@ -2787,6 +2787,7 @@ export function runTiledPipeline(
       width: undefined,
       height: undefined,
       aspectRatio: gridPlan.desiredUnitAr,
+      headerMode: 'none',
     };
     const unitStart = Date.now();
     const unitRes = runFlatFn(

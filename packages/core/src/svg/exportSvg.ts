@@ -204,6 +204,40 @@ export function renderLayoutToSvg(result: PipelineResult, tilePx = 18): string {
       continue;
     }
 
+    if (e.name === 'straight-rail') {
+      parts.push(
+        `<rect x="${ex + 1}" y="${ey}" width="${ew - 2}" height="${eh}" fill="#292524" stroke="#78716c" stroke-width="0.9" />`,
+      );
+      parts.push(
+        `<line x1="${ex + ew * 0.28}" y1="${ey}" x2="${ex + ew * 0.28}" y2="${ey + eh}" stroke="#cbd5e1" stroke-width="1.6" />`,
+      );
+      parts.push(
+        `<line x1="${ex + ew * 0.72}" y1="${ey}" x2="${ex + ew * 0.72}" y2="${ey + eh}" stroke="#cbd5e1" stroke-width="1.6" />`,
+      );
+      continue;
+    }
+
+    if (e.name === 'train-stop') {
+      parts.push(
+        `<rect x="${ex + 1}" y="${ey + 1}" width="${ew - 2}" height="${eh - 2}" fill="#7f1d1d" stroke="#f87171" stroke-width="1.5" rx="3" />`,
+      );
+      parts.push(
+        `<text x="${ex + ew / 2}" y="${ey + eh / 2 + 3}" fill="#fef2f2" font-size="8" font-weight="700" text-anchor="middle">STOP</text>`,
+      );
+      continue;
+    }
+
+    if (e.name === 'steel-chest') {
+      const fCol = e.item ? getItemMeta(e.item).color : '#cbd5e1';
+      parts.push(
+        `<rect x="${ex + 2}" y="${ey + 2}" width="${ew - 4}" height="${eh - 4}" fill="#475569" stroke="#cbd5e1" stroke-width="1.2" rx="2" />`,
+      );
+      parts.push(
+        `<circle cx="${ex + ew / 2}" cy="${ey + eh / 2}" r="${Math.max(1.8, tilePx * 0.16)}" fill="${fCol}" />`,
+      );
+      continue;
+    }
+
     if (e.name in POLE_BY_ENTITY_NAME) {
       const p = POLE_BY_ENTITY_NAME[e.name];
       parts.push(
