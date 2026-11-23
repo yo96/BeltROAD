@@ -12,6 +12,7 @@ import {
   SynthesisResult,
 } from './types.js';
 import {
+  BEACON_SPEC,
   MACHINE_SPECS,
   POLE_BY_ENTITY_NAME,
 } from './data/entities.js';
@@ -148,11 +149,15 @@ function computeActualBom(allEntities: EntityInstance[], synthBom: BomSummary): 
   const modules: Record<string, number> = {};
   let totalMachines = 0;
   let totalPoles = 0;
+  let beaconCount = 0;
 
   for (const e of allEntities) {
     entities[e.name] = (entities[e.name] ?? 0) + 1;
     if (e.role === 'machine' && e.name in MACHINE_SPECS) {
       totalMachines++;
+    }
+    if (e.name === 'beacon') {
+      beaconCount++;
     }
     if (e.name in POLE_BY_ENTITY_NAME) {
       totalPoles++;
@@ -168,7 +173,7 @@ function computeActualBom(allEntities: EntityInstance[], synthBom: BomSummary): 
   return {
     entities,
     modules,
-    estimatedPowerKw: synthBom.estimatedPowerKw,
+    estimatedPowerKw: synthBom.estimatedPowerKw + beaconCount * BEACON_SPEC.powerKw,
     totalMachines,
   };
 }

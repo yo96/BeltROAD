@@ -118,6 +118,16 @@ export function renderLayoutToSvg(result: PipelineResult, tilePx = 18): string {
       continue;
     }
 
+    if (e.name === 'beacon') {
+      parts.push(
+        `<rect x="${ex + 1}" y="${ey + 1}" width="${ew - 2}" height="${eh - 2}" fill="#0f3548" stroke="#22d3ee" stroke-width="1.5" rx="3" />`,
+      );
+      parts.push(
+        `<circle cx="${ex + ew / 2}" cy="${ey + eh / 2}" r="${Math.min(ew, eh) * 0.24}" fill="#0891b2" stroke="#67e8f9" stroke-width="1" />`,
+      );
+      continue;
+    }
+
     if (isSplitterName(e.name)) {
       const tier = beltTierFromEntityName(e.name) ?? 'yellow';
       const col = BELT_SPECS[tier].color;

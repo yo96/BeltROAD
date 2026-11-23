@@ -721,6 +721,86 @@ function drawMachineEntity(
   }
 }
 
+function drawBeaconEntity(
+  ctx: CanvasRenderingContext2D,
+  e: EntityInstance,
+  ox: number,
+  oy: number,
+  s: number,
+  altMode: boolean,
+): void {
+  const ex = ox + e.tx * s;
+  const ey = oy + e.ty * s;
+  const ew = e.w * s;
+  const eh = e.h * s;
+  const cx = ex + ew / 2;
+  const cy = ey + eh / 2;
+  const margin = Math.max(1.5, s * 0.08);
+  const bx = ex + margin;
+  const by = ey + margin;
+  const bw = ew - margin * 2;
+  const bh = eh - margin * 2;
+
+  ctx.fillStyle = 'rgba(0,0,0,0.36)';
+  ctx.fillRect(ex + s * 0.12, ey + s * 0.16, ew - s * 0.06, eh - s * 0.06);
+
+  ctx.fillStyle = '#153243';
+  ctx.fillRect(bx, by, bw, bh);
+  ctx.strokeStyle = '#22d3ee';
+  ctx.lineWidth = Math.max(1.4, s * 0.08);
+  ctx.strokeRect(bx, by, bw, bh);
+
+  // Inner magnetic emitter rings
+  ctx.fillStyle = '#0c2330';
+  ctx.beginPath();
+  ctx.arc(cx, cy, bw * 0.34, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#67e8f9';
+  ctx.lineWidth = Math.max(1.1, s * 0.06);
+  ctx.stroke();
+
+  const glow = ctx.createRadialGradient(cx, cy, bw * 0.03, cx, cy, bw * 0.24);
+  glow.addColorStop(0, '#cffafe');
+  glow.addColorStop(0.55, '#06b6d4');
+  glow.addColorStop(1, 'rgba(6,182,212,0.1)');
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(cx, cy, bw * 0.22, 0, Math.PI * 2);
+  ctx.fill();
+
+  if (e.quality && e.quality !== 'normal' && s >= 7) {
+    const qSpec = QUALITY_SPECS[e.quality];
+    const pip = Math.max(2.5, s * 0.2);
+    for (let qi = 0; qi < qSpec.level; qi++) {
+      ctx.fillStyle = qSpec.color;
+      ctx.fillRect(ex + ew - 3 - pip - qi * (pip + 1.5), ey + 3, pip, pip);
+    }
+  }
+
+  if (altMode && e.items && e.items.length > 0 && s >= 9) {
+    const slotSize = Math.max(5, Math.min(12, s * 0.42));
+    const totalW = e.items.length * (slotSize + 2) - 2;
+    const startX = cx - totalW / 2;
+    const modY = ey + eh - slotSize - Math.max(2, s * 0.12);
+    e.items.forEach((mod, idx) => {
+      const mx = startX + idx * (slotSize + 2);
+      ctx.fillStyle = 'rgba(10, 14, 20, 0.85)';
+      ctx.fillRect(mx - 1, modY - 1, slotSize + 2, slotSize + 2);
+      const img = getIcon(mod);
+      if (img && s >= 12) {
+        drawCroppedIcon(ctx, img, mx, modY, slotSize, slotSize);
+      } else {
+        ctx.fillStyle = mod.startsWith('speed')
+          ? '#38bdf8'
+          : mod.startsWith('efficiency')
+            ? '#22c55e'
+            : '#ef4444';
+        ctx.fillRect(mx, modY, slotSize, slotSize);
+      }
+    });
+  }
+}
+
 function drawInserterEntity(
   ctx: CanvasRenderingContext2D,
   e: EntityInstance,
@@ -1041,6 +1121,7 @@ export function renderFactorioScene(
   const ugs: EntityInstance[] = [];
   const splitters: EntityInstance[] = [];
   const machines: EntityInstance[] = [];
+  const beacons: EntityInstance[] = [];
   const inserters: EntityInstance[] = [];
   const poles: EntityInstance[] = [];
   const markers: EntityInstance[] = [];
@@ -1063,6 +1144,8 @@ export function renderFactorioScene(
       markers.push(e);
     } else if (isMachineName(e.name)) {
       machines.push(e);
+    } else if (e.name === 'beacon') {
+      beacons.push(e);
     } else if (isSplitterName(e.name)) {
       splitters.push(e);
     } else if (beltTierFromEntityName(e.name)) {
@@ -1187,6 +1270,21 @@ export function renderFactorioScene(
       continue;
     }
     drawMachineEntity(ctx, m, ox, oy, s, layers.altMode, hColor);
+  }
+
+  // Layer 3b: Beacons
+  for (const b of beacons) {
+    if (fastLod) {
+      ctx.fillStyle = '#0891b2';
+      ctx.fillRect(
+        ox + b.tx * s + 0.3,
+        oy + b.ty * s + 0.3,
+        Math.max(1.5, b.w * s - 0.6),
+        Math.max(1.5, b.h * s - 0.6),
+      );
+      continue;
+    }
+    drawBeaconEntity(ctx, b, ox, oy, s, layers.altMode);
   }
 
   // Layer 4: Inserters

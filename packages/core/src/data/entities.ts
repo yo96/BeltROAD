@@ -351,6 +351,56 @@ export const POLE_BY_ENTITY_NAME: Record<string, PoleSpec> = {
   substation: POLE_SPECS.substation,
 };
 
+export const BEACON_SPEC = {
+  name: 'beacon' as const,
+  size: 3,
+  supplyDistance: 3,
+  moduleSlots: 2,
+  powerKw: 480,
+  baseEffectivity: 1.5,
+};
+
+export const BEACON_QUALITY_EFFECTIVITY: Record<QualityTier, number> = {
+  normal: 1.5,
+  uncommon: 1.7,
+  rare: 1.9,
+  epic: 2.1,
+  legendary: 2.5,
+};
+
+/** Factorio 2.0 beacon transmission efficiency: effectivity * sqrt(N) */
+export function beaconTransmissionMultiplier(
+  beaconCount: number,
+  quality: QualityTier = 'normal',
+): number {
+  if (beaconCount <= 0) return 0;
+  return BEACON_QUALITY_EFFECTIVITY[quality] * Math.sqrt(beaconCount);
+}
+
+export function doesBeaconAffectEntity(
+  beacon: { tx: number; ty: number; w: number; h: number },
+  target: { tx: number; ty: number; w: number; h: number },
+): boolean {
+  const d = BEACON_SPEC.supplyDistance;
+  return (
+    target.tx + target.w > beacon.tx - d &&
+    target.tx < beacon.tx + beacon.w + d &&
+    target.ty + target.h > beacon.ty - d &&
+    target.ty < beacon.ty + beacon.h + d
+  );
+}
+
+export function countBeaconsAffectingMachine(
+  machine: { tx: number; ty: number; w: number; h: number },
+  beacons: Array<{ tx: number; ty: number; w: number; h: number }>,
+): number {
+  let count = 0;
+  for (const b of beacons) {
+    if (doesBeaconAffectEntity(b, machine)) count++;
+  }
+  return count;
+}
+
 export interface ModuleModifier {
   name: ModuleName;
   label: string;
@@ -406,7 +456,7 @@ export function isMachineName(name: string): boolean {
 }
 
 export function requiresPower(name: string): boolean {
-  return isMachineName(name) || name in INSERTER_BY_ENTITY_NAME;
+  return isMachineName(name) || name === 'beacon' || name in INSERTER_BY_ENTITY_NAME;
 }
 
 export function splitterFootprint(direction: Dir): { w: number; h: number } {

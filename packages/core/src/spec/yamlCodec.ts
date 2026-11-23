@@ -1,5 +1,7 @@
 import yaml from 'js-yaml';
 import {
+  BeaconMode,
+  BeaconModuleName,
   BeltStackSize,
   DesignSpec,
   OptimizationConfig,
@@ -71,6 +73,8 @@ export function defaultPdkConfig(): PdkConfig {
     defaultPoleTier: 'medium',
     machineQuality: 'normal',
     spaceAgeBuildings: false,
+    beaconMode: 'none',
+    beaconModules: ['speed-module-3', 'speed-module-3'],
     modules: {
       global: [],
       byRecipe: {},
@@ -79,6 +83,15 @@ export function defaultPdkConfig(): PdkConfig {
     portMarkers: 'display-panel',
   };
 }
+
+const VALID_BEACON_MODULES = new Set<BeaconModuleName>([
+  'speed-module',
+  'speed-module-2',
+  'speed-module-3',
+  'efficiency-module',
+  'efficiency-module-2',
+  'efficiency-module-3',
+]);
 
 export function normalizeSpec(raw: Partial<DesignSpec>): DesignSpec {
   const defPdk = defaultPdkConfig();
@@ -89,6 +102,16 @@ export function normalizeSpec(raw: Partial<DesignSpec>): DesignSpec {
   const rawQuality = rawPdk.machineQuality;
   const machineQuality: QualityTier =
     rawQuality && rawQuality in QUALITY_SPECS ? rawQuality : 'normal';
+  const rawBeaconMode = rawPdk.beaconMode;
+  const beaconMode: BeaconMode =
+    rawBeaconMode === 'row-4' || rawBeaconMode === 'row-8' ? rawBeaconMode : 'none';
+  const rawBeaconMods = Array.isArray(rawPdk.beaconModules)
+    ? rawPdk.beaconModules.filter((m): m is BeaconModuleName => VALID_BEACON_MODULES.has(m))
+    : undefined;
+  const beaconModules: BeaconModuleName[] =
+    rawBeaconMods && rawBeaconMods.length > 0
+      ? rawBeaconMods.slice(0, 2)
+      : [...(defPdk.beaconModules ?? ['speed-module-3', 'speed-module-3'])];
 
   const pdk: PdkConfig = {
     defaultBeltTier: rawPdk.defaultBeltTier ?? defPdk.defaultBeltTier,
@@ -111,6 +134,8 @@ export function normalizeSpec(raw: Partial<DesignSpec>): DesignSpec {
     defaultPoleTier: rawPdk.defaultPoleTier ?? defPdk.defaultPoleTier,
     machineQuality,
     spaceAgeBuildings: Boolean(rawPdk.spaceAgeBuildings),
+    beaconMode,
+    beaconModules,
     modules: {
       global: rawPdk.modules?.global ?? [],
       byRecipe: rawPdk.modules?.byRecipe ?? {},

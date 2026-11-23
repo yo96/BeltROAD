@@ -739,6 +739,53 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
           continue;
         }
 
+        if (e.name === 'beacon') {
+          if (fastLod) {
+            ctx.fillStyle = '#0891b2';
+            ctx.fillRect(ex + 0.4, ey + 0.4, Math.max(1.5, ew - 0.8), Math.max(1.5, eh - 0.8));
+            continue;
+          }
+          ctx.fillStyle = '#133a4f';
+          ctx.fillRect(ex + 1, ey + 1, ew - 2, eh - 2);
+          ctx.strokeStyle = '#22d3ee';
+          ctx.lineWidth = Math.max(1, s * 0.08);
+          ctx.strokeRect(ex + 1, ey + 1, ew - 2, eh - 2);
+
+          const cx = ex + ew / 2;
+          const cy = ey + eh / 2;
+          ctx.strokeStyle = 'rgba(103, 232, 249, 0.55)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.arc(cx, cy, Math.min(ew, eh) * 0.3, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.fillStyle = '#06b6d4';
+          ctx.beginPath();
+          ctx.arc(cx, cy, Math.max(2, Math.min(ew, eh) * 0.14), 0, Math.PI * 2);
+          ctx.fill();
+
+          if (s >= 10) {
+            ctx.fillStyle = '#a5f3fc';
+            ctx.font = `700 ${Math.max(8, s * 0.32)}px JetBrains Mono, monospace`;
+            ctx.textAlign = 'left';
+            ctx.fillText('BCN', ex + 3, ey + Math.max(10, s * 0.36));
+            if (e.items && e.items.length > 0) {
+              e.items.forEach((mod, mi) => {
+                ctx.fillStyle = mod.startsWith('speed') ? '#38bdf8' : '#22c55e';
+                ctx.fillRect(ex + 3 + mi * (s * 0.24), ey + eh - s * 0.28, s * 0.18, s * 0.18);
+              });
+            }
+            if (e.quality && e.quality !== 'normal') {
+              const qSpec = QUALITY_SPECS[e.quality];
+              const pip = Math.max(2.5, s * 0.18);
+              for (let qi = 0; qi < qSpec.level; qi++) {
+                ctx.fillStyle = qSpec.color;
+                ctx.fillRect(ex + ew - 3 - pip - qi * (pip + 1.5), ey + eh - pip - 3, pip, pip);
+              }
+            }
+          }
+          continue;
+        }
+
         if (isSplitterName(e.name)) {
           if (!layers.belts) continue;
           const tier = beltTierFromEntityName(e.name) ?? 'yellow';
@@ -1420,6 +1467,12 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
             : undefined,
       });
       if (hitEnt.recipe) lines.push({ text: `Recipe: ${hitEnt.recipe}` });
+      if (hitEnt.name === 'beacon') {
+        if (hitEnt.items && hitEnt.items.length > 0) {
+          lines.push({ text: `Modules: ${hitEnt.items.join(', ')}`, color: '#67e8f9' });
+        }
+        lines.push({ text: 'Supply Area: 9×9 (3-tile reach)', color: '#a5f3fc' });
+      }
 
       const netSt = hitEnt.netId ? staNetMap.get(hitEnt.netId) : undefined;
       const entLane = !netSt ? sta?.entityLanes?.[hitEnt.id] : undefined;

@@ -39,6 +39,14 @@ export type ModuleName =
 
 export type PortMarkerMode = 'none' | 'display-panel' | 'constant-combinator';
 export type InputPreset = 'plates' | 'bus' | 'raw';
+export type BeaconMode = 'none' | 'row-4' | 'row-8';
+export type BeaconModuleName =
+  | 'speed-module'
+  | 'speed-module-2'
+  | 'speed-module-3'
+  | 'efficiency-module'
+  | 'efficiency-module-2'
+  | 'efficiency-module-3';
 
 export interface PdkConfig {
   defaultBeltTier: BeltTier;
@@ -55,6 +63,10 @@ export interface PdkConfig {
   machineQuality?: QualityTier;
   /** Prefer Space Age specialized buildings (Foundry / Electromagnetic Plant / Cryogenic Plant) */
   spaceAgeBuildings?: boolean;
+  /** Factorio 2.0 beaconed row architecture ('none' | 'row-4' | 'row-8') */
+  beaconMode?: BeaconMode;
+  /** Up to 2 speed or efficiency modules inserted per beacon */
+  beaconModules?: BeaconModuleName[];
   modules: {
     global: ModuleName[];
     byRecipe: Record<string, ModuleName[]>;
@@ -191,6 +203,7 @@ export interface ItemMeta {
 
 export type EntityRole =
   | 'machine'
+  | 'beacon-macro'
   | 'inserter-in'
   | 'inserter-out'
   | 'belt-macro'
@@ -276,6 +289,8 @@ export interface RecipeMacroSpec {
   machineCount: number;
   exactMachines: number;
   modules: ModuleName[];
+  beaconsPerMachine?: number;
+  beaconModules?: BeaconModuleName[];
   effectiveSpeed: number;
   effectiveProd: number;
   outputRatePerSec: number;

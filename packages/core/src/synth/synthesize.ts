@@ -17,10 +17,12 @@ import {
   SynthesisResult,
 } from '../types.js';
 import {
+  BEACON_SPEC,
   INSERTER_SPECS,
   MACHINE_SPECS,
   MODULE_SPECS,
   QUALITY_SPECS,
+  beaconTransmissionMultiplier,
   effectiveBeltCapacity,
   selectMachineForRecipe,
 } from '../data/entities.js';
@@ -203,6 +205,8 @@ export function synthesizeDesign(
     machineName: MachineName;
     quality?: PdkConfig['machineQuality'];
     modules: ModuleName[];
+    beaconsPerMachine: number;
+    beaconModules: NonNullable<PdkConfig['beaconModules']>;
     effectiveSpeed: number;
     effectiveProd: number;
     exactMachines: number;
@@ -217,6 +221,18 @@ export function synthesizeDesign(
   const defaultCap = effectiveBeltCapacity(spec.pdk.defaultBeltTier, spec.pdk);
   const qualityTier = spec.pdk.machineQuality ?? 'normal';
   const qualityMult = QUALITY_SPECS[qualityTier].speedMultiplier;
+  const beaconMode = spec.pdk.beaconMode ?? 'none';
+  const activeBeaconModules = (
+    spec.pdk.beaconModules ?? ['speed-module-3', 'speed-module-3']
+  )
+    .filter((m) => !m.startsWith('productivity-module'))
+    .slice(0, BEACON_SPEC.moduleSlots);
+  let beaconSpeedPerUnit = 0;
+  let beaconConsPerUnit = 0;
+  for (const bm of activeBeaconModules) {
+    beaconSpeedPerUnit += MODULE_SPECS[bm].speed;
+    beaconConsPerUnit += MODULE_SPECS[bm].consumption;
+  }
 
   for (const item of topoOrder) {
     const demand = demandPerSec.get(item) ?? 0;
@@ -259,26 +275,48 @@ export function synthesizeDesign(
       consBonus += mod.consumption;
     }
 
-    const effectiveSpeed =
-      machineSpec.craftingSpeed * qualityMult * Math.max(0.2, 1 + speedBonus);
     const baseProd = machineSpec.baseProductivity ?? 0;
     const effectiveProd =
       1 + baseProd + (recipe.allowProductivity ? prodBonus : 0);
-    const effectivePowerMult = Math.max(0.2, 1 + consBonus);
+
+    // Ingredient flow depends solely on demand & productivity, independent of machine speed
+    const ingredients: { item: string; ratePerSec: number }[] = [];
+    for (const ing of recipe.ingredients) {
+      if (ing.type === 'fluid') continue;
+      const ingRate = demand * (ing.amount / (recipe.outputCount * effectiveProd));
+      ingredients.push({ item: ing.item, ratePerSec: ingRate });
+      demandPerSec.set(ing.item, (demandPerSec.get(ing.item) ?? 0) + ingRate);
+    }
+
+    const fullTrackCount = ingredients.filter((i) => i.ratePerSec > 0.48 * defaultCap).length;
+    const halfTrackCount = ingredients.length - fullTrackCount;
+    const neededTracks = fullTrackCount + Math.ceil(halfTrackCount / 2);
+
+    let beaconsPerMachine = 0;
+    if (beaconMode !== 'none' && activeBeaconModules.length > 0 && neededTracks <= 2) {
+      if (beaconMode === 'row-8') {
+        const canSingleNorthTrack =
+          ingredients.length <= 1 ||
+          (ingredients.length === 2 && ingredients.every((r) => r.ratePerSec <= 0.48 * defaultCap));
+        beaconsPerMachine = canSingleNorthTrack ? 8 : 4;
+      } else {
+        beaconsPerMachine = 4;
+      }
+    }
+
+    const beaconMult = beaconTransmissionMultiplier(beaconsPerMachine, qualityTier);
+    const effectiveSpeed =
+      machineSpec.craftingSpeed *
+      qualityMult *
+      Math.max(0.2, 1 + speedBonus + beaconMult * beaconSpeedPerUnit);
+    const effectivePowerMult = Math.max(
+      0.2,
+      1 + consBonus + beaconMult * beaconConsPerUnit,
+    );
 
     const outPerMachinePerSec =
       (recipe.outputCount * effectiveProd * effectiveSpeed) / recipe.energyRequired;
     const exactMachines = demand / outPerMachinePerSec;
-
-    const ingredients: { item: string; ratePerSec: number }[] = [];
-    for (const ing of recipe.ingredients) {
-      if (ing.type === 'fluid') continue;
-      // Productivity adds bonus output without consuming extra ingredients
-      const ingRate =
-        exactMachines * ((ing.amount * effectiveSpeed) / recipe.energyRequired);
-      ingredients.push({ item: ing.item, ratePerSec: ingRate });
-      demandPerSec.set(ing.item, (demandPerSec.get(ing.item) ?? 0) + ingRate);
-    }
 
     const reach1Pool = spec.pdk.allowedInserterTiers.filter(
       (t): t is InserterTier => t !== 'long',
@@ -304,17 +342,16 @@ export function synthesizeDesign(
         Math.ceil(outRate / Math.max(0.1, maxOutPerMach)),
         Math.ceil(totalIng / Math.max(0.1, maxInPerMach)),
       );
-      // When using Space Age features (ms >= 4, quality, or stack inserters), verify actual placed
-      // per-machine inserter count meets STA input & output throughput cleanly.
+      // When using Space Age or beaconed high-rate builds, verify actual placed per-machine inserter count meets STA.
       const isV2HighIo =
-        ms >= 4 || qualityTier !== 'normal' || maxReach1 > 10;
+        ms >= 4 || qualityTier !== 'normal' || maxReach1 > 10 || beaconsPerMachine > 0;
       if (isV2HighIo && ingList.length > 0 && ingList.length <= 2) {
         const sorted = [...ingList].sort((a, b) => b.ratePerSec - a.ratePerSec);
         while (mReq < 64) {
           const rNear = sorted[0].ratePerSec / mReq;
           const cNear = Math.min(ms, Math.max(1, Math.ceil(rNear / maxReach1)));
           let capPerMach = cNear * maxReach1;
-          if (sorted.length === 2) {
+          if (sorted.length === 2 && beaconsPerMachine < 8) {
             const cNearBounded = Math.min(Math.max(1, ms - 1), cNear);
             const cFar = Math.min(2, Math.max(1, ms - cNearBounded));
             capPerMach = cNearBounded * maxReach1 + cFar * maxReach2;
@@ -335,6 +372,8 @@ export function synthesizeDesign(
       machineName,
       quality: qualityTier !== 'normal' ? qualityTier : undefined,
       modules,
+      beaconsPerMachine,
+      beaconModules: activeBeaconModules,
       effectiveSpeed,
       effectiveProd,
       exactMachines,
@@ -510,7 +549,10 @@ export function synthesizeDesign(
     const maxReach2Slice = INSERTER_SPECS.long.itemsPerSec;
     const msSlice = MACHINE_SPECS[comp.machineName].size;
     const isV2HighIoSlice =
-      msSlice >= 4 || (spec.pdk.machineQuality ?? 'normal') !== 'normal' || maxReach1Slice > 10;
+      msSlice >= 4 ||
+      (spec.pdk.machineQuality ?? 'normal') !== 'normal' ||
+      maxReach1Slice > 10 ||
+      comp.beaconsPerMachine > 0;
 
     for (let s = 0; s < sliceCount; s++) {
       let mCount = useUniformCeil
@@ -532,7 +574,7 @@ export function synthesizeDesign(
           const rNear = sortedSlice[0] / mCount;
           const cNear = Math.min(msSlice, Math.max(1, Math.ceil(rNear / maxReach1Slice)));
           let capPerMach = cNear * maxReach1Slice;
-          if (sortedSlice.length === 2) {
+          if (sortedSlice.length === 2 && comp.beaconsPerMachine < 8) {
             const cNearBounded = Math.min(Math.max(1, msSlice - 1), cNear);
             const cFar = Math.min(2, Math.max(1, msSlice - cNearBounded));
             capPerMach = cNearBounded * maxReach1Slice + cFar * maxReach2Slice;
@@ -576,12 +618,15 @@ export function synthesizeDesign(
         machineCount: mCount,
         exactMachines: sliceExactMachines,
         modules: comp.modules,
+        beaconsPerMachine: comp.beaconsPerMachine > 0 ? comp.beaconsPerMachine : undefined,
+        beaconModules: comp.beaconsPerMachine > 0 ? comp.beaconModules : undefined,
         effectiveSpeed: comp.effectiveSpeed,
         effectiveProd: comp.effectiveProd,
         outputRatePerSec: sliceOutRate,
         beltTier: outTier,
         ingredientRates: ingRates,
-        preferredRows: override?.rows,
+        preferredRows:
+          override?.rows ?? (comp.beaconsPerMachine >= 8 ? 1 : undefined),
         balanceOutputLanes: forceBal || sliceOutRate > sliceBeltCap * 0.49,
         sliceIndex: s,
         sliceCount,

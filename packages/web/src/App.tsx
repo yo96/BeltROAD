@@ -3,6 +3,8 @@ import {
   BELT_SPECS,
   BUILTIN_PRESETS,
   BalancerTemplate,
+  BeaconMode,
+  BeaconModuleName,
   BeltStackSize,
   BeltTier,
   DesignSpec,
@@ -1361,6 +1363,57 @@ export default function App() {
                   </option>
                 ))}
               </select>
+            </div>
+
+            <div className="field-grid" style={{ marginTop: 8 }}>
+              <div>
+                <label className="field-label">Beacon Rows (2.0)</label>
+                <select
+                  className="select"
+                  value={spec.pdk.beaconMode ?? 'none'}
+                  onChange={(e) => {
+                    const bm = e.target.value as BeaconMode;
+                    updateSpec((prev) => ({
+                      ...prev,
+                      pdk: {
+                        ...prev.pdk,
+                        beaconMode: bm,
+                        beaconModules:
+                          prev.pdk.beaconModules && prev.pdk.beaconModules.length > 0
+                            ? prev.pdk.beaconModules
+                            : ['speed-module-3', 'speed-module-3'],
+                      },
+                    }));
+                  }}
+                >
+                  <option value="none">None (Unbeaconed)</option>
+                  <option value="row-4">4-Beacon Rows</option>
+                  <option value="row-8">8-Beacon Sandwich</option>
+                </select>
+              </div>
+              <div>
+                <label className="field-label">Beacon Modules (2×)</label>
+                <select
+                  className="select"
+                  disabled={(spec.pdk.beaconMode ?? 'none') === 'none'}
+                  value={spec.pdk.beaconModules?.[0] ?? 'speed-module-3'}
+                  onChange={(e) => {
+                    const mod = e.target.value as BeaconModuleName;
+                    updateSpec((prev) => ({
+                      ...prev,
+                      pdk: {
+                        ...prev.pdk,
+                        beaconModules: [mod, mod],
+                      },
+                    }));
+                  }}
+                >
+                  <option value="speed-module-3">Speed 3 (+100%)</option>
+                  <option value="speed-module-2">Speed 2 (+60%)</option>
+                  <option value="speed-module">Speed 1 (+40%)</option>
+                  <option value="efficiency-module-3">Eff 3 (-100% pwr)</option>
+                </select>
+              </div>
             </div>
 
             <div className="field-grid" style={{ marginTop: 8 }}>

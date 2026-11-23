@@ -95,6 +95,22 @@ function assignTracks(
   // Sort highest throughput ingredients first so they sit on reach-1 (northNear) tracks
   const ings = [...spec.ingredientRates].sort((a, b) => b.ratePerSec - a.ratePerSec);
   const cap = effectiveBeltCapacity(spec.beltTier, pdk);
+
+  if (
+    (spec.beaconsPerMachine ?? 0) >= 8 &&
+    ings.length === 2 &&
+    ings.every((ing) => ing.ratePerSec <= 0.48 * cap)
+  ) {
+    return {
+      northFar: null,
+      northNear: {
+        items: ings.map((ing) => ({ item: ing.item, ratePerSec: ing.ratePerSec })),
+        isDualLane: true,
+      },
+      southFar: null,
+    };
+  }
+
   const tracks: IngredientTrack[] = [];
 
   if (ings.length <= 2) {
@@ -154,18 +170,121 @@ interface MachineRowGeometry {
   laneFlipX?: number;
 }
 
+function computeBeaconStripXs(
+  machineXs: number[],
+  ms: number,
+  minStartX = 0,
+): number[] {
+  if (machineXs.length === 0) return [];
+  const firstMx = machineXs[0];
+  const lastMx = machineXs[machineXs.length - 1];
+  const bx0 = Math.max(minStartX, firstMx - 4);
+  const maxBx = lastMx + ms + 2;
+  const xs: number[] = [];
+  for (let bx = bx0; bx <= maxBx; bx += 3) {
+    xs.push(bx);
+  }
+  return xs;
+}
+
+function ensureExtraBeaconPoles(
+  beaconXs: number[],
+  existingPoleXs: number[],
+  existingSubXs: number[],
+  yBeacon: number,
+  yPoleStrip: number,
+  ySubStrip: number,
+  poleSpec: PoleSpec,
+  blockedXs: Set<number>,
+): { extraPoles: number[]; extraSubs: number[] } {
+  const extraPoles: number[] = [];
+  const extraSubs: number[] = [];
+  if (beaconXs.length === 0) return { extraPoles, extraSubs };
+
+  if (poleSpec.tier === 'substation') {
+    const allSubs = [...existingSubXs];
+    for (const bx of beaconXs) {
+      const covered = allSubs.some((sx) =>
+        doesPoleSupplyEntity(sx, ySubStrip, poleSpec, bx, yBeacon, 3, 3),
+      );
+      if (covered) continue;
+      // Place substation in empty gap at ySubStrip avoiding blockedXs
+      const candX = Math.max(0, bx);
+      allSubs.push(candX);
+      extraSubs.push(candX);
+    }
+    return { extraPoles, extraSubs };
+  }
+
+  const allPoles = [...existingPoleXs];
+  for (const bx of beaconXs) {
+    const covered = allPoles.some((px) =>
+      doesPoleSupplyEntity(px, yPoleStrip, poleSpec, bx, yBeacon, 3, 3),
+    );
+    if (covered) continue;
+
+    const cands = [bx + 2, bx + 1, bx, bx + 3, Math.max(0, bx - 1)];
+    let chosen: number | undefined;
+    for (const px of cands) {
+      if (px < 0 || blockedXs.has(px) || allPoles.includes(px)) continue;
+      if (doesPoleSupplyEntity(px, yPoleStrip, poleSpec, bx, yBeacon, 3, 3)) {
+        chosen = px;
+        break;
+      }
+    }
+    if (chosen === undefined) continue;
+
+    // Ensure horizontal wire connectivity back to nearest pole on this strip
+    if (allPoles.length > 0) {
+      let nearest = allPoles[0];
+      for (const p of allPoles) {
+        if (Math.abs(p - chosen) < Math.abs(nearest - chosen)) nearest = p;
+      }
+      const stepDir = nearest > chosen ? 1 : -1;
+      let cur = chosen;
+      while (Math.abs(nearest - cur) > poleSpec.wireReach - 0.1) {
+        const ideal = cur + stepDir * Math.floor(poleSpec.wireReach - 1);
+        let bridge: number | undefined;
+        for (let off = 0; off <= 3; off++) {
+          const cx = ideal - stepDir * off;
+          if (cx >= 0 && !blockedXs.has(cx) && !allPoles.includes(cx) && Math.abs(cx - cur) <= poleSpec.wireReach - 0.1) {
+            bridge = cx;
+            break;
+          }
+        }
+        if (bridge === undefined) break;
+        allPoles.push(bridge);
+        extraPoles.push(bridge);
+        cur = bridge;
+      }
+    }
+
+    allPoles.push(chosen);
+    extraPoles.push(chosen);
+  }
+
+  return { extraPoles, extraSubs };
+}
+
 function layoutSegmentSubstations(
   startX: number,
   count: number,
   poleSpec: PoleSpec,
   existingLastSub: number | undefined,
   ms: number,
+  beaconAligned = false,
+  existingBeaconBaseX?: number,
 ): { machineXs: number[]; substationXs: number[]; endX: number } {
   const machineXs: number[] = [];
   const substationXs: number[] = [];
   let x = startX;
   let lastSub = existingLastSub;
-  const firstSubIdx = count <= 4 ? Math.floor(count / 2) : 2;
+  const firstSubIdx = beaconAligned
+    ? Math.min(1, Math.floor(count / 2))
+    : count <= 4
+      ? Math.floor(count / 2)
+      : 2;
+  let bx0: number | undefined = existingBeaconBaseX;
 
   for (let i = 0; i < count; i++) {
     const needWireBridge =
@@ -185,7 +304,11 @@ function layoutSegmentSubstations(
       lastSub = x;
       x += 2;
     }
+    if (beaconAligned && ms === 3 && bx0 !== undefined && ((x - bx0) % 3 + 3) % 3 === 0) {
+      x += 1;
+    }
     machineXs.push(x);
+    if (bx0 === undefined) bx0 = Math.max(0, x - 4);
     x += ms;
   }
 
@@ -197,7 +320,8 @@ function layoutSegmentSubstations(
     const lastMx = machineXs[count - 1];
     if (
       !doesPoleSupplyEntity(lastSub, 0, poleSpec, lastMx, 0, ms, 1) ||
-      !doesPoleSupplyEntity(lastSub, 0, poleSpec, lastMx + ms - 1, 0, 1, 1)
+      !doesPoleSupplyEntity(lastSub, 0, poleSpec, lastMx + ms - 1, 0, 1, 1) ||
+      (beaconAligned && !doesPoleSupplyEntity(lastSub, 0, poleSpec, lastMx + ms, 0, 3, 1))
     ) {
       substationXs.push(x);
       x += 2;
@@ -215,6 +339,7 @@ function layoutMachineRow(
   pdk: PdkConfig,
   ms: number,
   laneFlipAfterIdx?: number,
+  beaconAligned = false,
 ): MachineRowGeometry {
   const poleSpec = POLE_SPECS[pdk.defaultPoleTier];
   const hasSplit =
@@ -224,7 +349,14 @@ function layoutMachineRow(
 
   if (poleSpec.tier === 'substation') {
     if (!hasSplit) {
-      const seg = layoutSegmentSubstations(startX, machineCount, poleSpec, undefined, ms);
+      const seg = layoutSegmentSubstations(
+        startX,
+        machineCount,
+        poleSpec,
+        undefined,
+        ms,
+        beaconAligned,
+      );
       return {
         machineXs: seg.machineXs,
         poleXs: [],
@@ -235,15 +367,26 @@ function layoutMachineRow(
 
     const leftCount = laneFlipAfterIdx + 1;
     const rightCount = machineCount - leftCount;
-    const leftSeg = layoutSegmentSubstations(startX, leftCount, poleSpec, undefined, ms);
+    const leftSeg = layoutSegmentSubstations(
+      startX,
+      leftCount,
+      poleSpec,
+      undefined,
+      ms,
+      beaconAligned,
+    );
     const laneFlipX = leftSeg.endX;
     const lastLeftSub = leftSeg.substationXs[leftSeg.substationXs.length - 1];
+    const leftBx0 =
+      leftSeg.machineXs.length > 0 ? Math.max(0, leftSeg.machineXs[0] - 4) : undefined;
     const rightSeg = layoutSegmentSubstations(
       laneFlipX + 3,
       rightCount,
       poleSpec,
       lastLeftSub,
       ms,
+      beaconAligned,
+      leftBx0,
     );
 
     return {
@@ -263,14 +406,22 @@ function layoutMachineRow(
   const step = poleSpec.tier === 'small' || ms >= 4 ? 1 : 2;
   const needSmallStarter = needsGap && poleSpec.tier === 'small' && machineCount > 0;
   const leftMachineStartX = needSmallStarter ? startX + 1 : startX;
+  const alignBx0 = Math.max(0, leftMachineStartX - 4);
 
   if (!hasSplit) {
     const machineXs: number[] = [];
+    let curX = leftMachineStartX;
     for (let i = 0; i < machineCount; i++) {
-      machineXs.push(leftMachineStartX + i * stride);
+      if (i > 0) {
+        curX = machineXs[i - 1] + stride;
+        if (beaconAligned && ms === 3 && ((curX - alignBx0) % 3 + 3) % 3 === 0) {
+          curX += 1;
+        }
+      }
+      machineXs.push(curX);
     }
     const endX =
-      leftMachineStartX + (machineCount > 0 ? (machineCount - 1) * stride + ms : 0);
+      machineCount > 0 ? machineXs[machineCount - 1] + ms : leftMachineStartX;
 
     const poleXs: number[] = [];
     if (needSmallStarter) {
@@ -303,8 +454,15 @@ function layoutMachineRow(
     poleXs.push(startX);
   }
 
+  let curLeftX = leftMachineStartX;
   for (let i = 0; i < leftCount; i++) {
-    machineXs.push(leftMachineStartX + i * stride);
+    if (i > 0) {
+      curLeftX = machineXs[i - 1] + stride;
+      if (beaconAligned && ms === 3 && ((curLeftX - alignBx0) % 3 + 3) % 3 === 0) {
+        curLeftX += 1;
+      }
+    }
+    machineXs.push(curLeftX);
   }
   for (let i = 0; i < leftCount; i += step) {
     poleXs.push(machineXs[i] + poleOffset);
@@ -326,6 +484,9 @@ function layoutMachineRow(
     poleXs.push(laneFlipX + 3);
     rightStartX = laneFlipX + 4;
   }
+  if (beaconAligned && ms === 3 && ((rightStartX - alignBx0) % 3 + 3) % 3 === 0) {
+    rightStartX += 1;
+  }
 
   const firstRightPole = rightStartX + poleOffset;
   const lastLeftPole = poleXs[poleXs.length - 1];
@@ -336,8 +497,15 @@ function layoutMachineRow(
     }
   }
 
+  let curRightX = rightStartX;
   for (let j = 0; j < rightCount; j++) {
-    machineXs.push(rightStartX + j * stride);
+    if (j > 0) {
+      curRightX = machineXs[leftCount + j - 1] + stride;
+      if (beaconAligned && ms === 3 && ((curRightX - alignBx0) % 3 + 3) % 3 === 0) {
+        curRightX += 1;
+      }
+    }
+    machineXs.push(curRightX);
   }
   for (let j = 0; j < rightCount; j += step) {
     poleXs.push(machineXs[leftCount + j] + poleOffset);
@@ -665,25 +833,51 @@ function buildSingleRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledMac
   const catalog = getCatalog();
   const recipe = catalog.recipesById[spec.recipeId];
   const beltSpec = BELT_SPECS[spec.beltTier];
+  const poleSpec = POLE_SPECS[pdk.defaultPoleTier];
   const beltCap = effectiveBeltCapacity(spec.beltTier, pdk);
   const ms = MACHINE_SPECS[spec.machineName].size;
   const preferStackOut = (pdk.beltStackSize ?? 1) > 1;
   const { northFar, northNear, southFar } = assignTracks(spec, pdk);
 
+  const targetBeacons = spec.beaconsPerMachine ?? 0;
+  const beaconMods = spec.beaconModules ?? [];
+  const hasBeacons = targetBeacons > 0 && beaconMods.length > 0 && !southFar;
+  const hasSouthBeacons = hasBeacons;
+  const hasNorthBeacons = hasBeacons && targetBeacons >= 8 && !northFar;
+
+  const isCompactDualNorthNear = hasNorthBeacons && (northNear?.isDualLane ?? false);
   const hasDualNorth =
-    (northFar?.isDualLane ?? false) || (northNear?.isDualLane ?? false);
+    !isCompactDualNorthNear &&
+    ((northFar?.isDualLane ?? false) || (northNear?.isDualLane ?? false));
   const hasDualSouth = southFar?.isDualLane ?? false;
 
-  const headerW = hasDualNorth ? 5 : hasDualSouth ? 2 : 0;
+  const headerW = isCompactDualNorthNear
+    ? 2
+    : hasDualNorth
+      ? 5
+      : hasDualSouth
+        ? 2
+        : 0;
+  const xStart = hasBeacons ? Math.max(headerW, 4) : headerW;
+  const beaconTopH = hasNorthBeacons ? 3 : 0;
   const topPad = hasDualNorth ? 1 : 0;
   const northTrackRows = (northFar ? 1 : 0) + (northNear ? 1 : 0);
-  const yMachine = topPad + northTrackRows + 1; // +1 for North inserter strip
+  const yBeaconN = 0;
+  const yMachine = beaconTopH + topPad + northTrackRows + 1; // +1 for North inserter strip
   const yFarN = yMachine - 3;
   const yNearN = yMachine - 2;
+  const yInsN = yMachine - 1;
+  const yInsS = yMachine + ms;
   const yOut = yMachine + ms + 1;
   const yFarS = yMachine + ms + 2;
+  const yBeaconS = yOut + 1;
   const bottomPad = hasDualSouth ? 1 : 0;
-  const height = (southFar ? yFarS + 1 : yOut + 1) + bottomPad;
+  const height =
+    (hasSouthBeacons
+      ? yBeaconS + 3
+      : southFar
+        ? yFarS + 1
+        : yOut + 1) + bottomPad;
 
   const M = spec.machineCount;
   const northFarIns = northFar
@@ -728,8 +922,20 @@ function buildSingleRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledMac
     needsLaneBalance && M >= 2 ? Math.floor(M / 2) - 1 : undefined;
   const tailW = needsLaneBalance && M === 1 ? 2 : 0;
 
-  const geom = layoutMachineRow(headerW, M, nNeeded, sNeeded, pdk, ms, laneFlipAfterIdx);
-  const width = geom.endX + tailW;
+  const geom = layoutMachineRow(
+    xStart,
+    M,
+    nNeeded,
+    sNeeded,
+    pdk,
+    ms,
+    laneFlipAfterIdx,
+    hasBeacons,
+  );
+  const beaconXs = hasBeacons ? computeBeaconStripXs(geom.machineXs, ms, 0) : [];
+  const beaconEndX =
+    beaconXs.length > 0 ? beaconXs[beaconXs.length - 1] + 3 : 0;
+  const width = Math.max(geom.endX + tailW, beaconEndX);
 
   const entities: EntityInstance[] = [];
   const pins: MacroPin[] = [];
@@ -772,7 +978,26 @@ function buildSingleRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledMac
     });
   };
 
-  if (hasDualNorth) {
+  if (isCompactDualNorthNear && northNear) {
+    // 2-tile compact merge header clear of yBeaconN (y=0..2) and aligned with yNearN
+    const [a1, a2] = northNear.items;
+    entities.push(mkBelt(0, yNearN, Dir.EAST, a1.item));
+    addInPin(a1.item, a1.ratePerSec, 0, yNearN, Dir.EAST);
+    entities.push(
+      mkBelt(1, yNearN, Dir.EAST, undefined, true, [a1.item, a2.item]),
+    );
+
+    entities.push(mkBelt(0, yMachine, Dir.EAST, a2.item));
+    addInPin(a2.item, a2.ratePerSec, 0, yMachine, Dir.EAST);
+    entities.push(mkBelt(1, yMachine, Dir.NORTH, a2.item));
+    entities.push(mkBelt(1, yInsN, Dir.NORTH, a2.item));
+
+    for (let x = 2; x < xStart; x++) {
+      entities.push(
+        mkBelt(x, yNearN, Dir.EAST, undefined, false, [a1.item, a2.item]),
+      );
+    }
+  } else if (hasDualNorth) {
     // North header occupies x=0..4, y=0..4 (topPad=1, yFarN=1, yNearN=2, yInsN=3, yMachine=4)
     if (northFar) {
       if (northFar.isDualLane) {
@@ -847,14 +1072,14 @@ function buildSingleRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledMac
     // Simple direct West-edge inputs (single-item tracks)
     if (northFar) {
       const [a1] = northFar.items;
-      for (let x = 0; x < headerW; x++) {
+      for (let x = 0; x < xStart; x++) {
         entities.push(mkBelt(x, yFarN, Dir.EAST, a1.item));
       }
       addInPin(a1.item, a1.ratePerSec, 0, yFarN, Dir.EAST);
     }
     if (northNear) {
       const [b1] = northNear.items;
-      for (let x = 0; x < headerW; x++) {
+      for (let x = 0; x < xStart; x++) {
         entities.push(mkBelt(x, yNearN, Dir.EAST, b1.item));
       }
       addInPin(b1.item, b1.ratePerSec, 0, yNearN, Dir.EAST);
@@ -874,12 +1099,12 @@ function buildSingleRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledMac
       entities.push(mkBelt(1, yFarS + 1, Dir.NORTH, c2.item));
 
       entities.push(mkBelt(1, yFarS, Dir.EAST, undefined, true, [c1.item, c2.item]));
-      for (let x = 2; x < headerW; x++) {
+      for (let x = 2; x < xStart; x++) {
         entities.push(mkBelt(x, yFarS, Dir.EAST, undefined, false, [c1.item, c2.item]));
       }
     } else {
       const [c1] = southFar.items;
-      for (let x = 0; x < headerW; x++) {
+      for (let x = 0; x < xStart; x++) {
         entities.push(mkBelt(x, yFarS, Dir.EAST, c1.item));
       }
       addInPin(c1.item, c1.ratePerSec, 0, yFarS, Dir.EAST);
@@ -892,7 +1117,7 @@ function buildSingleRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledMac
     spec,
     pdk,
     0,
-    headerW,
+    xStart,
     yMachine,
     M,
     northFar,
@@ -922,6 +1147,134 @@ function buildSingleRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledMac
     entities.push(mkBelt(geom.endX + 1, yOut, Dir.EAST, spec.outputItem, true));
   }
 
+  // Extend output belt East if rightmost beacon extends past geom.endX + tailW
+  const curOutEnd = geom.endX + tailW;
+  for (let x = curOutEnd; x < width; x++) {
+    entities.push(mkBelt(x, yOut, Dir.EAST, spec.outputItem));
+  }
+
+  // Emit 3x3 beacons and overhang power poles
+  if (hasNorthBeacons) {
+    for (const bx of beaconXs) {
+      entities.push({
+        id: `${spec.id}:bn:${bx}`,
+        name: 'beacon',
+        tx: bx,
+        ty: yBeaconN,
+        w: 3,
+        h: 3,
+        direction: Dir.NORTH,
+        items: [...beaconMods],
+        quality: spec.quality,
+        macroId: spec.id,
+        role: 'beacon-macro',
+      });
+    }
+    const blockedNorth = new Set<number>();
+    if (isCompactDualNorthNear) blockedNorth.add(1);
+    for (const e of entities) {
+      if (e.ty === yInsN && (e.role === 'inserter-in' || e.role === 'pole-macro')) {
+        blockedNorth.add(e.tx);
+      }
+    }
+    const nExtra = ensureExtraBeaconPoles(
+      beaconXs,
+      geom.poleXs,
+      geom.substationXs,
+      yBeaconN,
+      yInsN,
+      yMachine,
+      poleSpec,
+      blockedNorth,
+    );
+    for (const px of nExtra.extraPoles) {
+      entities.push({
+        id: `${spec.id}:bpn:${px}`,
+        name: poleSpec.name,
+        tx: px,
+        ty: yInsN,
+        w: 1,
+        h: 1,
+        direction: Dir.NORTH,
+        macroId: spec.id,
+        role: 'pole-macro',
+      });
+    }
+    for (const sx of nExtra.extraSubs) {
+      entities.push({
+        id: `${spec.id}:bsn:${sx}`,
+        name: poleSpec.name,
+        tx: sx,
+        ty: yMachine,
+        w: 2,
+        h: 2,
+        direction: Dir.NORTH,
+        macroId: spec.id,
+        role: 'pole-macro',
+      });
+    }
+  }
+
+  if (hasSouthBeacons) {
+    for (const bx of beaconXs) {
+      entities.push({
+        id: `${spec.id}:bs:${bx}`,
+        name: 'beacon',
+        tx: bx,
+        ty: yBeaconS,
+        w: 3,
+        h: 3,
+        direction: Dir.NORTH,
+        items: [...beaconMods],
+        quality: spec.quality,
+        macroId: spec.id,
+        role: 'beacon-macro',
+      });
+    }
+    const blockedSouth = new Set<number>();
+    for (const e of entities) {
+      if (e.ty === yInsS || (e.ty <= yInsS && e.ty + e.h > yInsS)) {
+        for (let dx = 0; dx < e.w; dx++) blockedSouth.add(e.tx + dx);
+      }
+    }
+    const sExtra = ensureExtraBeaconPoles(
+      beaconXs,
+      geom.poleXs,
+      geom.substationXs,
+      yBeaconS,
+      yInsS,
+      yMachine,
+      poleSpec,
+      blockedSouth,
+    );
+    for (const px of sExtra.extraPoles) {
+      entities.push({
+        id: `${spec.id}:bps:${px}`,
+        name: poleSpec.name,
+        tx: px,
+        ty: yInsS,
+        w: 1,
+        h: 1,
+        direction: Dir.NORTH,
+        macroId: spec.id,
+        role: 'pole-macro',
+      });
+    }
+    for (const sx of sExtra.extraSubs) {
+      entities.push({
+        id: `${spec.id}:bss:${sx}`,
+        name: poleSpec.name,
+        tx: sx,
+        ty: yMachine,
+        w: 2,
+        h: 2,
+        direction: Dir.NORTH,
+        macroId: spec.id,
+        role: 'pole-macro',
+      });
+    }
+  }
+
   // Output pin on East edge
   const outPort = pinOutsideOffset(width - 1, yOut, Dir.EAST, 'output');
   pins.push({
@@ -938,10 +1291,18 @@ function buildSingleRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledMac
   });
 
   const powerTargets = entities
-    .filter((e) => e.role === 'machine' || e.role === 'inserter-in' || e.role === 'inserter-out')
+    .filter(
+      (e) =>
+        e.role === 'machine' ||
+        e.role === 'beacon-macro' ||
+        e.role === 'inserter-in' ||
+        e.role === 'inserter-out',
+    )
     .map((e) => ({ tx: e.tx, ty: e.ty, w: e.w, h: e.h }));
 
-  const sublabel = `${spec.machineCount}× ${machineShortLabel(spec.machineName, spec.quality)}`;
+  const actualBeaconsPerMach = hasNorthBeacons ? 8 : hasSouthBeacons ? 4 : 0;
+  const beaconTag = actualBeaconsPerMach > 0 ? ` (${actualBeaconsPerMach}B)` : '';
+  const sublabel = `${spec.machineCount}× ${machineShortLabel(spec.machineName, spec.quality)}${beaconTag}`;
 
   return {
     id: spec.id,
@@ -965,10 +1326,15 @@ function buildSingleRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledMac
  * Cuts height and internal belt length dramatically compared to duplicated 2-row layouts.
  */
 function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledMacro | null {
+  const targetBeacons = spec.beaconsPerMachine ?? 0;
+  const beaconMods = spec.beaconModules ?? [];
+  if (targetBeacons >= 8) return null;
+
   const { northFar, northNear, southFar } = assignTracks(spec, pdk);
   if (southFar !== null) return null;
   if (spec.machineCount < 4 || !northNear) return null;
 
+  const hasRow4Beacons = targetBeacons === 4 && beaconMods.length > 0;
   const M = spec.machineCount;
   const mTop = Math.ceil(M / 2);
   const mBot = Math.floor(M / 2);
@@ -995,19 +1361,21 @@ function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): Compil
   const poleSpec = POLE_SPECS[pdk.defaultPoleTier];
   const ms = MACHINE_SPECS[spec.machineName].size;
   const preferStackOut = (pdk.beltStackSize ?? 1) > 1;
+  const beaconTopH = hasRow4Beacons ? 3 : 0;
 
-  // Vertical coordinates (parameterized by ms x ms machine footprint)
-  const yOutTop = 0;
-  const yInsOutTop = 1;
-  const yMachTop = 2; // 2 .. 2+ms-1
-  const yInsInTop = 2 + ms;
-  const yTrack1 = 3 + ms;
-  const yTrack2 = hasTwoInputs ? 4 + ms : -1;
-  const yInsInBot = hasTwoInputs ? 5 + ms : 4 + ms;
-  const yMachBot = hasTwoInputs ? 6 + ms : 5 + ms;
+  // Vertical coordinates (parameterized by ms x ms machine footprint + outer beacon rows)
+  const yOutTop = beaconTopH + 0;
+  const yInsOutTop = beaconTopH + 1;
+  const yMachTop = beaconTopH + 2; // .. +ms-1
+  const yInsInTop = beaconTopH + 2 + ms;
+  const yTrack1 = beaconTopH + 3 + ms;
+  const yTrack2 = hasTwoInputs ? beaconTopH + 4 + ms : -1;
+  const yInsInBot = hasTwoInputs ? beaconTopH + 5 + ms : beaconTopH + 4 + ms;
+  const yMachBot = hasTwoInputs ? beaconTopH + 6 + ms : beaconTopH + 5 + ms;
   const yInsOutBot = yMachBot + ms;
   const yOutBot = yMachBot + ms + 1;
-  const height = yOutBot + 1;
+  const yBeaconBot = yOutBot + 1;
+  const height = hasRow4Beacons ? yBeaconBot + 3 : yOutBot + 1;
   const dy = yTrack1 - 6;
 
   // Inserter requirements for top and bottom strips
@@ -1030,8 +1398,9 @@ function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): Compil
   const sNeeded = outIns.count;
 
   const headerW = hasDual ? 5 : 0;
-  const geomTop = layoutMachineRow(headerW, mTop, nNeeded, sNeeded, pdk, ms);
-  const geomBot = layoutMachineRow(headerW, mBot, nNeeded, sNeeded, pdk, ms);
+  const xStart = hasRow4Beacons ? Math.max(headerW, 4) : headerW;
+  const geomTop = layoutMachineRow(xStart, mTop, nNeeded, sNeeded, pdk, ms, undefined, hasRow4Beacons);
+  const geomBot = layoutMachineRow(xStart, mBot, nNeeded, sNeeded, pdk, ms, undefined, hasRow4Beacons);
   const stripEndX = Math.max(geomTop.endX, geomBot.endX);
 
   const entities: EntityInstance[] = [];
@@ -1308,7 +1677,14 @@ function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): Compil
   const inBeltEnd = Math.min(stripEndX, maxInX + 1);
   // Keep at least 1 empty tile between input belt end and output drop column
   const dropX = Math.max(stripEndX, inBeltEnd + 1);
-  const width = dropX + 3;
+  const topBeaconXs = hasRow4Beacons ? computeBeaconStripXs(geomTop.machineXs, ms, 0) : [];
+  const botBeaconXs = hasRow4Beacons ? computeBeaconStripXs(geomBot.machineXs, ms, 0) : [];
+  const maxBeaconEnd = Math.max(
+    0,
+    ...topBeaconXs.map((bx) => bx + 3),
+    ...botBeaconXs.map((bx) => bx + 3),
+  );
+  const width = Math.max(dropX + 3, maxBeaconEnd);
 
   const trackMeta = (t: typeof northNear) =>
     t.items.length === 2
@@ -1432,7 +1808,7 @@ function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): Compil
   }
 
   // Top & Bottom Output belts merging into splitter at (dropX + 1, yOutBot - 1)
-  for (let x = headerW; x < dropX; x++) {
+  for (let x = xStart; x < dropX; x++) {
     entities.push(mkBelt(x, yOutTop, Dir.EAST, spec.outputItem));
   }
   for (let y = yOutTop; y < yOutBot - 1; y++) {
@@ -1440,7 +1816,7 @@ function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): Compil
   }
   entities.push(mkBelt(dropX, yOutBot - 1, Dir.EAST, spec.outputItem));
 
-  for (let x = headerW; x <= dropX; x++) {
+  for (let x = xStart; x <= dropX; x++) {
     entities.push(mkBelt(x, yOutBot, Dir.EAST, spec.outputItem));
   }
 
@@ -1456,6 +1832,124 @@ function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): Compil
     role: 'splitter-macro',
   });
   entities.push(mkBelt(dropX + 2, yOutBot, Dir.EAST, spec.outputItem));
+  for (let x = dropX + 3; x < width; x++) {
+    entities.push(mkBelt(x, yOutBot, Dir.EAST, spec.outputItem));
+  }
+
+  if (hasRow4Beacons) {
+    for (const bx of topBeaconXs) {
+      entities.push({
+        id: eid(`bt:${bx}`),
+        name: 'beacon',
+        tx: bx,
+        ty: 0,
+        w: 3,
+        h: 3,
+        direction: Dir.NORTH,
+        items: [...beaconMods],
+        quality: spec.quality,
+        macroId: spec.id,
+        role: 'beacon-macro',
+      });
+    }
+    for (const bx of botBeaconXs) {
+      entities.push({
+        id: eid(`bb:${bx}`),
+        name: 'beacon',
+        tx: bx,
+        ty: yBeaconBot,
+        w: 3,
+        h: 3,
+        direction: Dir.NORTH,
+        items: [...beaconMods],
+        quality: spec.quality,
+        macroId: spec.id,
+        role: 'beacon-macro',
+      });
+    }
+
+    const blockedTop = new Set<number>([dropX, dropX + 1]);
+    for (const e of entities) {
+      if (e.ty === yInsOutTop) blockedTop.add(e.tx);
+    }
+    const topExtra = ensureExtraBeaconPoles(
+      topBeaconXs,
+      geomTop.poleXs,
+      geomTop.substationXs,
+      0,
+      yInsOutTop,
+      yMachTop,
+      poleSpec,
+      blockedTop,
+    );
+    for (const px of topExtra.extraPoles) {
+      entities.push({
+        id: eid(`bpt:${px}`),
+        name: poleSpec.name,
+        tx: px,
+        ty: yInsOutTop,
+        w: 1,
+        h: 1,
+        direction: Dir.NORTH,
+        macroId: spec.id,
+        role: 'pole-macro',
+      });
+    }
+    for (const sx of topExtra.extraSubs) {
+      entities.push({
+        id: eid(`bst:${sx}`),
+        name: poleSpec.name,
+        tx: sx,
+        ty: yMachTop,
+        w: 2,
+        h: 2,
+        direction: Dir.NORTH,
+        macroId: spec.id,
+        role: 'pole-macro',
+      });
+    }
+
+    const blockedBot = new Set<number>([dropX, dropX + 1]);
+    for (const e of entities) {
+      if (e.ty === yInsOutBot) blockedBot.add(e.tx);
+    }
+    const botExtra = ensureExtraBeaconPoles(
+      botBeaconXs,
+      geomBot.poleXs,
+      geomBot.substationXs,
+      yBeaconBot,
+      yInsOutBot,
+      yMachBot,
+      poleSpec,
+      blockedBot,
+    );
+    for (const px of botExtra.extraPoles) {
+      entities.push({
+        id: eid(`bpb:${px}`),
+        name: poleSpec.name,
+        tx: px,
+        ty: yInsOutBot,
+        w: 1,
+        h: 1,
+        direction: Dir.NORTH,
+        macroId: spec.id,
+        role: 'pole-macro',
+      });
+    }
+    for (const sx of botExtra.extraSubs) {
+      entities.push({
+        id: eid(`bsb:${sx}`),
+        name: poleSpec.name,
+        tx: sx,
+        ty: yMachBot,
+        w: 2,
+        h: 2,
+        direction: Dir.NORTH,
+        macroId: spec.id,
+        role: 'pole-macro',
+      });
+    }
+  }
 
   const outPort = pinOutsideOffset(width - 1, yOutBot, Dir.EAST, 'output');
   pins.push({
@@ -1472,10 +1966,16 @@ function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): Compil
   });
 
   const powerTargets = entities
-    .filter((e) => e.role === 'machine' || e.role === 'inserter-in' || e.role === 'inserter-out')
+    .filter(
+      (e) =>
+        e.role === 'machine' ||
+        e.role === 'beacon-macro' ||
+        e.role === 'inserter-in' ||
+        e.role === 'inserter-out',
+    )
     .map((e) => ({ tx: e.tx, ty: e.ty, w: e.w, h: e.h }));
 
-  const sublabel = `${spec.machineCount}× ${machineShortLabel(spec.machineName, spec.quality)}`;
+  const sublabel = `${spec.machineCount}× ${machineShortLabel(spec.machineName, spec.quality)}${hasRow4Beacons ? ' (4B)' : ''}`;
 
   return {
     id: spec.id,

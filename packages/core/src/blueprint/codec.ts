@@ -144,7 +144,10 @@ export function decodeBlueprintWrapper(bpStr: string): BlueprintWrapper {
   return JSON.parse(json) as BlueprintWrapper;
 }
 
-function encodeModulesFor20(modules: string[]): BlueprintInsertPlan[] | undefined {
+function encodeModulesFor20(
+  modules: string[],
+  inventoryId = 4,
+): BlueprintInsertPlan[] | undefined {
   if (!modules || modules.length === 0) return undefined;
   const byName = new Map<string, number[]>();
   modules.forEach((mod, stackIdx) => {
@@ -162,8 +165,8 @@ function encodeModulesFor20(modules: string[]): BlueprintInsertPlan[] | undefine
       id: { name: modName },
       items: {
         in_inventory: stacks.map((stack) => ({
-          // defines.inventory.crafter_modules = 4 in Factorio 2.0
-          inventory: 4,
+          // defines.inventory.crafter_modules = 4, beacon_modules = 1 in Factorio 2.0
+          inventory: inventoryId,
           stack,
           count: 1,
         })),
@@ -205,6 +208,7 @@ export function entitiesToFactorio2BlueprintData(
       ent.role !== 'pole-macro' &&
       ent.role !== 'pole-pdn' &&
       ent.role !== 'machine' &&
+      ent.role !== 'beacon-macro' &&
       ent.role !== 'port-marker';
 
     if (isDirectional && ent.direction !== Dir.NORTH) {
@@ -224,7 +228,7 @@ export function entitiesToFactorio2BlueprintData(
     }
 
     if (ent.items && ent.items.length > 0) {
-      bpEnt.items = encodeModulesFor20(ent.items);
+      bpEnt.items = encodeModulesFor20(ent.items, ent.name === 'beacon' ? 1 : 4);
     }
 
     if (ent.name === 'display-panel') {

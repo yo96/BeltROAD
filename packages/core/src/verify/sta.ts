@@ -10,6 +10,7 @@ import {
 import {
   BELT_SPECS,
   INSERTER_BY_ENTITY_NAME,
+  countBeaconsAffectingMachine,
   effectiveBeltCapacity,
 } from '../data/entities.js';
 import { analyzeNetworkLaneFlow } from './laneFlow.js';
@@ -137,6 +138,22 @@ export function runSta(
       issues.push(
         `Output belt lane overflow: L=${ml.peakLeft.toFixed(2)}/s, R=${ml.peakRight.toFixed(2)}/s > ${(beltCap * 0.5).toFixed(2)}/s (half-${rm.beltTier} belt)`,
       );
+    }
+
+    if ((rm.beaconsPerMachine ?? 0) > 0) {
+      const targetBeacons = rm.beaconsPerMachine!;
+      const beacons = macroEnts.filter((e) => e.name === 'beacon');
+      const machines = macroEnts.filter((e) => e.role === 'machine');
+      for (const m of machines) {
+        const hit = countBeaconsAffectingMachine(m, beacons);
+        if (hit < targetBeacons) {
+          laneOk = false;
+          issues.push(
+            `Beacon coverage shortfall: machine at (${m.tx},${m.ty}) receives ${hit} < ${targetBeacons} beacons`,
+          );
+          break;
+        }
+      }
     }
 
     for (const iss of issues) {
