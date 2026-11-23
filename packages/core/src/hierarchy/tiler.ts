@@ -2757,6 +2757,7 @@ export function runTiledPipeline(
 
   let bestResult: PipelineResult | null = null;
   let bestScore = Infinity;
+  let validCandidates = 0;
 
   for (const K of candidates) {
     if (options.shouldCancel?.()) break;
@@ -2783,7 +2784,7 @@ export function runTiledPipeline(
       unitSpec,
       {
         shouldCancel: () =>
-          Boolean(options.shouldCancel?.()) || Date.now() - unitStart > 5000,
+          Boolean(options.shouldCancel?.()) || Date.now() - unitStart > 12000,
       },
       { forceBalancedOutputs: true },
     );
@@ -2808,6 +2809,7 @@ export function runTiledPipeline(
     if (!stitched) continue;
 
     if (stitched.drc.passed && stitched.sta.passed) {
+      validCandidates++;
       const realAr = stitched.floorplan.width / Math.max(1, stitched.floorplan.height);
       const arErr = Math.abs(Math.log(Math.max(0.05, realAr / reqAr)));
       const overhead = Math.max(0, (stitched.bom.totalMachines - fullMachines) / fullMachines);
@@ -2820,7 +2822,7 @@ export function runTiledPipeline(
         bestScore = score;
         bestResult = stitched;
       }
-      if ((overflow === 0 && arErr < 0.28) || Date.now() - start > 1400) {
+      if ((overflow === 0 && arErr < 0.28) || validCandidates >= 2) {
         break;
       }
     }

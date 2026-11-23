@@ -196,7 +196,8 @@ export function runFlatPipeline(
   // Auto-die expansion fallback if auto-mode placement had unresolvable routing congestion
   while (
     route.conflictsRemaining > 0 &&
-    route.elapsedMs <= 2500 &&
+    (route.elapsedMs <= 2500 ||
+      (floorplan.width * floorplan.height <= 25000 && synthesis.nets.length <= 60)) &&
     spec.floorplan.mode === 'auto' &&
     autoExpandedCount < 2 &&
     !shouldCancel?.()
