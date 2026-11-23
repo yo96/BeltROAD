@@ -24,6 +24,11 @@ import { ArrowUpDown, HelpCircle, Maximize2, RotateCw, X, ZoomIn, ZoomOut } from
 import { subscribeAssets } from '../sprites/factorioAssets';
 import { renderFactorioScene } from '../sprites/factorioRenderer';
 import { drawSmartPinLabels } from './pinLabels';
+import {
+  drawBeltLaneHeatmap,
+  laneUtilColor,
+  resolveEntityLaneUtils,
+} from './laneHeatmap';
 
 export type RenderMode = 'eda' | 'factorio';
 
@@ -358,8 +363,12 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
     // Utilization lookup for Heatmap
     const netUtilMap = new Map<string, number>();
     const macroUtilMap = new Map<string, number>();
+    const staNetMap = new Map<string, StaNetReport>();
     if (sta) {
-      for (const n of sta.nets) netUtilMap.set(n.netId, n.utilization);
+      for (const n of sta.nets) {
+        netUtilMap.set(n.netId, Math.max(n.utilization, n.laneUtilization ?? 0));
+        staNetMap.set(n.netId, n);
+      }
       for (const m of sta.macros) macroUtilMap.set(m.macroId, m.utilization);
     }
 
@@ -397,6 +406,8 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
         macroUtilMap,
         utilColor,
         highlightedPinIds,
+        sta?.entityLanes,
+        staNetMap,
       );
       ugInputs = res.ugInputs;
     } else {
@@ -528,13 +539,23 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
 
           const tier = beltTierFromEntityName(e.name) ?? 'yellow';
           const col = BELT_SPECS[tier].color;
+          const laneUtils = layers.heatmap
+            ? resolveEntityLaneUtils(e, sta?.entityLanes, staNetMap)
+            : null;
           if (fastLod) {
-            ctx.fillStyle = e.type === 'input' ? '#f59e0b' : '#38bdf8';
+            ctx.fillStyle = laneUtils
+              ? laneUtilColor(Math.max(laneUtils.leftUtil, laneUtils.rightUtil))
+              : e.type === 'input'
+                ? '#f59e0b'
+                : '#38bdf8';
             ctx.fillRect(ex, ey, Math.max(1.2, ew), Math.max(1.2, eh));
             continue;
           }
           ctx.fillStyle = e.type === 'input' ? '#0b1320' : '#1e293b';
           ctx.fillRect(ex + s * 0.08, ey + s * 0.08, ew - s * 0.16, eh - s * 0.16);
+          if (laneUtils) {
+            drawBeltLaneHeatmap(ctx, ex, ey, s, e.direction, laneUtils.leftUtil, laneUtils.rightUtil, s * 0.08);
+          }
           ctx.strokeStyle = col;
           ctx.lineWidth = 1.6;
           ctx.strokeRect(ex + s * 0.08, ey + s * 0.08, ew - s * 0.16, eh - s * 0.16);
@@ -672,13 +693,22 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
           if (!layers.belts) continue;
           const tier = beltTierFromEntityName(e.name) ?? 'yellow';
           const col = BELT_SPECS[tier].color;
+          const laneUtils = layers.heatmap
+            ? resolveEntityLaneUtils(e, sta?.entityLanes, staNetMap)
+            : null;
           if (fastLod) {
-            ctx.fillStyle = col;
+            ctx.fillStyle = laneUtils
+              ? laneUtilColor(Math.max(laneUtils.leftUtil, laneUtils.rightUtil))
+              : col;
             ctx.fillRect(ex + 0.3, ey + 0.3, Math.max(1.5, ew - 0.6), Math.max(1.5, eh - 0.6));
             continue;
           }
           ctx.fillStyle = '#1e293b';
           ctx.fillRect(ex + 1, ey + 1, ew - 2, eh - 2);
+          if (laneUtils) {
+            ctx.fillStyle = laneUtilColor(Math.max(laneUtils.leftUtil, laneUtils.rightUtil));
+            ctx.fillRect(ex + 1, ey + 1, ew - 2, eh - 2);
+          }
           ctx.strokeStyle = col;
           ctx.lineWidth = 1.6;
           ctx.strokeRect(ex + 1, ey + 1, ew - 2, eh - 2);
@@ -703,9 +733,13 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
           if (!layers.belts) continue;
           const tier = beltTierFromEntityName(e.name)!;
           const col = BELT_SPECS[tier].color;
+          const laneUtils = layers.heatmap
+            ? resolveEntityLaneUtils(e, sta?.entityLanes, staNetMap)
+            : null;
           if (fastLod) {
-            ctx.fillStyle =
-              layers.heatmap && e.netId && netUtilMap.has(e.netId)
+            ctx.fillStyle = laneUtils
+              ? laneUtilColor(Math.max(laneUtils.leftUtil, laneUtils.rightUtil))
+              : layers.heatmap && e.netId && netUtilMap.has(e.netId)
                 ? utilColor(netUtilMap.get(e.netId)!)
                 : e.item
                   ? getItemMeta(e.item).color
@@ -719,7 +753,9 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
           ctx.lineWidth = Math.max(1, s * 0.08);
           ctx.strokeRect(ex + s * 0.08, ey + s * 0.08, ew - s * 0.16, eh - s * 0.16);
 
-          if (layers.heatmap && e.netId && netUtilMap.has(e.netId)) {
+          if (laneUtils) {
+            drawBeltLaneHeatmap(ctx, ex, ey, s, e.direction, laneUtils.leftUtil, laneUtils.rightUtil, s * 0.08);
+          } else if (layers.heatmap && e.netId && netUtilMap.has(e.netId)) {
             ctx.fillStyle = utilColor(netUtilMap.get(e.netId)!);
             ctx.fillRect(ex + s * 0.08, ey + s * 0.08, ew - s * 0.16, eh - s * 0.16);
           }
@@ -1449,13 +1485,16 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
         }}
       />
 
-      {/* Bottom-left Help & Shortcuts toggle */}
+      {/* Bottom-left Help & Lane Heatmap Legend */}
       <div
         style={{
           position: 'absolute',
           bottom: 12,
           left: 12,
           zIndex: 15,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
         }}
       >
         <button
@@ -1467,6 +1506,45 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
         >
           <HelpCircle size={13} /> Help
         </button>
+
+        {layers.heatmap && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              background: 'rgba(9, 24, 40, 0.92)',
+              border: '1px solid var(--bp-border)',
+              borderRadius: 6,
+              padding: '4px 9px',
+              fontSize: 10.5,
+              color: '#cbd5e1',
+            }}
+            title="Left and Right half-belt lane utilization heatmap"
+          >
+            <span style={{ fontWeight: 700, color: 'var(--bp-cyan)' }}>L/R Lane Heatmap</span>
+            {[
+              ['Idle', 'rgba(148, 163, 184, 0.35)'],
+              ['<40%', 'rgba(56, 189, 248, 0.65)'],
+              ['40–80%', 'rgba(74, 222, 128, 0.75)'],
+              ['80–100%', 'rgba(245, 158, 11, 0.85)'],
+              ['>100%', 'rgba(239, 68, 68, 0.9)'],
+            ].map(([label, color]) => (
+              <span key={label} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                <span
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: 2,
+                    background: color,
+                    display: 'inline-block',
+                  }}
+                />
+                <span>{label}</span>
+              </span>
+            ))}
+          </div>
+        )}
 
         {helpOpen && (
           <div className="canvas-help-card">

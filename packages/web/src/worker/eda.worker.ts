@@ -3,7 +3,10 @@ import {
   FloorplanResult,
   PipelineProgress,
   PipelineResult,
+  RawCatalog,
   SynthesisResult,
+  loadCustomCatalog,
+  resetDefaultCatalog,
   runFloorplanStage,
   runFromFloorplan,
   runFullPipeline,
@@ -11,6 +14,7 @@ import {
 } from '@factorio-eda/core';
 
 export type WorkerRequest =
+  | { type: 'set-catalog'; raw: RawCatalog | null }
   | { type: 'run-full'; jobId: number; spec: DesignSpec }
   | { type: 'run-synth'; jobId: number; spec: DesignSpec }
   | { type: 'run-place'; jobId: number; spec: DesignSpec }
@@ -39,6 +43,23 @@ let latestJobId = 0;
 
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const msg = event.data;
+  if (msg.type === 'set-catalog') {
+    try {
+      if (msg.raw === null) {
+        resetDefaultCatalog();
+      } else {
+        loadCustomCatalog(msg.raw);
+      }
+    } catch (err) {
+      self.postMessage({
+        type: 'error',
+        jobId: latestJobId,
+        message: err instanceof Error ? err.message : String(err),
+      } satisfies WorkerResponse);
+    }
+    return;
+  }
+
   if (msg.type === 'cancel') {
     if (msg.jobId >= latestJobId) latestJobId = msg.jobId + 1;
     return;

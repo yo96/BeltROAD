@@ -15,6 +15,7 @@ import {
   PipelineResult,
   PoleTier,
   PortMarkerMode,
+  RawCatalog,
   Rot90,
   RouteResult,
   StaReport,
@@ -26,14 +27,19 @@ import {
   edgeToOutwardDir,
   encodeSpecToUrlHash,
   getCatalog,
+  getDefaultCatalogRaw,
   getItemMeta,
+  loadCustomCatalog,
   mirrorMacroY,
+  pipelineResultToBlueprintBookString,
   renderLayoutToSvg,
+  resetDefaultCatalog,
   rotateMacro,
 } from '@factorio-eda/core';
 import {
   AlertTriangle,
   ArrowUpDown,
+  BookOpen,
   CheckCircle2,
   ChevronDown,
   ClipboardCopy,
@@ -52,12 +58,14 @@ import {
   Play,
   Plus,
   Redo2,
+  RotateCcw,
   RotateCw,
   Share2,
   SlidersHorizontal,
   Trash2,
   Undo2,
   Unlock,
+  Upload,
   Wrench,
   X,
 } from 'lucide-react';
@@ -128,7 +136,16 @@ function resolveNetEndpointInfo(
 }
 
 export default function App() {
-  const catalog = useMemo(() => getCatalog(), []);
+  const [catalogVersion, setCatalogVersion] = useState(0);
+  const [customCatalogInfo, setCustomCatalogInfo] = useState<{
+    filename: string;
+    items: number;
+    recipes: number;
+  } | null>(null);
+  const customCatalogRawRef = useRef<RawCatalog | null>(null);
+  const catalogInputRef = useRef<HTMLInputElement | null>(null);
+
+  const catalog = useMemo(() => getCatalog(), [catalogVersion]);
   const targetOptions = useMemo(
     () => [...catalog.solidTargets].sort((a, b) => a.name.localeCompare(b.name)),
     [catalog],
@@ -180,6 +197,7 @@ export default function App() {
 
   const [activeTab, setActiveTab] = useState<'layout' | 'netlist' | 'yaml'>('layout');
   const [balancerModalOpen, setBalancerModalOpen] = useState(false);
+  const [staListTab, setStaListTab] = useState<'nets' | 'macros'>('nets');
 
   const [synthesis, setSynthesis] = useState<SynthesisResult | null>(null);
   const [floorplan, setFloorplan] = useState<FloorplanResult | null>(null);
@@ -375,6 +393,12 @@ export default function App() {
     const worker = new Worker(new URL('./worker/eda.worker.ts', import.meta.url), {
       type: 'module',
     });
+    if (customCatalogRawRef.current) {
+      worker.postMessage({
+        type: 'set-catalog',
+        raw: customCatalogRawRef.current,
+      } satisfies WorkerRequest);
+    }
     worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
       const msg = event.data;
       if (msg.jobId !== jobIdRef.current) return;
@@ -646,6 +670,48 @@ export default function App() {
     );
   };
 
+  const handleCopyBook = async () => {
+    if (!fullResult?.blueprintString) return;
+    const { bookString, labels } = pipelineResultToBlueprintBookString(fullResult);
+    await navigator.clipboard.writeText(bookString);
+    showToast(`Copied Factorio 2.0 Blueprint Book (${labels.length} blueprints)!`);
+  };
+
+  const focusOnNet = useCallback(
+    (netId: string) => {
+      setSelection({ kind: 'net', netId });
+      setActiveTab('layout');
+      const routed = route?.routedNets.find((r) => r.netId === netId);
+      if (routed && routed.tiles.length > 0) {
+        const mid = routed.tiles[Math.floor(routed.tiles.length / 2)];
+        setFocusTile({ tx: mid.tx, ty: mid.ty, nonce: Date.now() });
+        return;
+      }
+      const net = synthesis?.nets.find((n) => n.id === netId);
+      if (net && floorplan) {
+        const info = resolveNetEndpointInfo(net.source, floorplan);
+        setFocusTile({ tx: info.tx, ty: info.ty, nonce: Date.now() });
+      }
+    },
+    [route, synthesis, floorplan],
+  );
+
+  const focusOnMacro = useCallback(
+    (macroId: string) => {
+      setSelection({ kind: 'macro', macroId });
+      setActiveTab('layout');
+      const pm = floorplan?.macros.find((m) => m.id === macroId);
+      if (pm) {
+        setFocusTile({
+          tx: Math.round(pm.x + pm.macro.width / 2),
+          ty: Math.round(pm.y + pm.macro.height / 2),
+          nonce: Date.now(),
+        });
+      }
+    },
+    [floorplan],
+  );
+
   const handleCopyUnitTile = async () => {
     const t = fullResult?.tiling;
     if (!t?.unitBlueprintString) return;
@@ -905,6 +971,15 @@ export default function App() {
             onClick={handleCopyBlueprint}
           >
             <ClipboardCopy size={13} /> Copy Blueprint
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={!fullResult?.blueprintString}
+            onClick={handleCopyBook}
+            title="Copy multi-entry Factorio 2.0 Blueprint Book (Full + 1x Tile + No-Markers)"
+          >
+            <BookOpen size={13} /> Copy Book
           </button>
           <button type="button" className="btn btn-sm" onClick={handleShareUrl}>
             <Share2 size={13} /> Share URL
@@ -1521,6 +1596,159 @@ export default function App() {
                 }}
               >
                 Reset Pin &amp; Macro Overrides
+              </button>
+            )}
+          </div>
+
+          {/* Recipe Catalog Import / Template */}
+          <div className="panel-section">
+            <div className="section-title">
+              <span>Recipe Catalog</span>
+              <span
+                className="mono"
+                style={{
+                  fontSize: 10,
+                  color: customCatalogInfo ? 'var(--bp-amber)' : 'var(--bp-text-muted)',
+                }}
+              >
+                {customCatalogInfo ? 'Custom JSON' : `v${catalog.version}`}
+              </span>
+            </div>
+
+            {customCatalogInfo ? (
+              <div
+                style={{
+                  fontSize: 11,
+                  color: '#fde68a',
+                  background: 'rgba(245, 158, 11, 0.1)',
+                  border: '1px solid rgba(245, 158, 11, 0.35)',
+                  borderRadius: 5,
+                  padding: '5px 7px',
+                  marginBottom: 7,
+                }}
+              >
+                {customCatalogInfo.filename} ({customCatalogInfo.items} items ·{' '}
+                {customCatalogInfo.recipes} recipes)
+              </div>
+            ) : (
+              <div style={{ fontSize: 11, color: 'var(--bp-text-muted)', marginBottom: 7 }}>
+                Built-in Factorio 2.0 ({Object.keys(catalog.items).length} items ·{' '}
+                {Object.keys(catalog.recipesById).length} recipes)
+              </div>
+            )}
+
+            <input
+              ref={catalogInputRef}
+              type="file"
+              accept=".json,application/json"
+              style={{ display: 'none' }}
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                e.target.value = '';
+                if (!file) return;
+                try {
+                  const text = await file.text();
+                  const parsed = JSON.parse(text) as RawCatalog;
+                  const loaded = loadCustomCatalog(parsed);
+                  customCatalogRawRef.current = parsed;
+                  workerRef.current?.postMessage({
+                    type: 'set-catalog',
+                    raw: parsed,
+                  } satisfies WorkerRequest);
+                  setCatalogVersion((v) => v + 1);
+                  setCustomCatalogInfo({
+                    filename: file.name,
+                    items: Object.keys(loaded.items).length,
+                    recipes: Object.keys(loaded.recipesById).length,
+                  });
+                  setErrorMsg(null);
+                  showToast(
+                    `Loaded "${file.name}" (${Object.keys(loaded.recipesById).length} recipes)!`,
+                  );
+                  const allTargetsValid = spec.targets.every(
+                    (t) => (loaded.recipesByOutput[t.item]?.length ?? 0) > 0,
+                  );
+                  if (allTargetsValid) {
+                    runFull(spec);
+                  } else if (loaded.solidTargets.length > 0) {
+                    const fallbackItem = loaded.solidTargets[0].outputItem;
+                    const nextSpec: DesignSpec = {
+                      ...spec,
+                      targets: [{ item: fallbackItem, ratePerMin: spec.targets[0]?.ratePerMin ?? 60 }],
+                      pins: [],
+                      macroOverrides: {},
+                    };
+                    setSpec(nextSpec);
+                    setActivePresetId('custom');
+                    runFull(nextSpec);
+                  }
+                } catch (err) {
+                  setErrorMsg(
+                    `Custom catalog import failed: ${err instanceof Error ? err.message : String(err)}`,
+                  );
+                }
+              }}
+            />
+
+            <div className="field-grid">
+              <button
+                type="button"
+                className="btn btn-sm"
+                style={{ justifyContent: 'center' }}
+                onClick={() => catalogInputRef.current?.click()}
+                title="Import custom Factorio or modded recipe catalog JSON"
+              >
+                <Upload size={12} /> Import JSON
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm"
+                style={{ justifyContent: 'center' }}
+                onClick={() => {
+                  const raw = getDefaultCatalogRaw();
+                  const blob = new Blob([JSON.stringify(raw, null, 2)], {
+                    type: 'application/json;charset=utf-8',
+                  });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = 'beltroad-recipes-template.json';
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
+                title="Download built-in recipe catalog as editable JSON template"
+              >
+                <Download size={12} /> Template
+              </button>
+            </div>
+
+            {customCatalogInfo && (
+              <button
+                type="button"
+                className="btn btn-sm"
+                style={{ width: '100%', marginTop: 6, justifyContent: 'center' }}
+                onClick={() => {
+                  const restored = resetDefaultCatalog();
+                  customCatalogRawRef.current = null;
+                  workerRef.current?.postMessage({
+                    type: 'set-catalog',
+                    raw: null,
+                  } satisfies WorkerRequest);
+                  setCatalogVersion((v) => v + 1);
+                  setCustomCatalogInfo(null);
+                  setErrorMsg(null);
+                  showToast('Restored built-in Factorio 2.0 recipe catalog.');
+                  if (spec.targets.every((t) => (restored.recipesByOutput[t.item]?.length ?? 0) > 0)) {
+                    runFull(spec);
+                  } else {
+                    const presetSpec = structuredClone(BUILTIN_PRESETS[1].spec);
+                    setSpec(presetSpec);
+                    setActivePresetId(BUILTIN_PRESETS[1].id);
+                    runFull(presetSpec);
+                  }
+                }}
+              >
+                <RotateCcw size={12} /> Reset Default Catalog
               </button>
             )}
           </div>
@@ -2161,68 +2389,212 @@ export default function App() {
                   </strong>
                 </div>
                 {sta.bottlenecks.length > 0 && (
-                  <div style={{ fontSize: 11, color: 'var(--bp-red)' }}>
-                    {sta.bottlenecks.map((b, i) => (
-                      <div key={i}>• {b}</div>
-                    ))}
-                  </div>
-                )}
-                <div style={{ maxHeight: 165, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 3 }}>
-                  {sta.nets.slice(0, 14).map((n) => {
-                    const isNetActive =
-                      selection?.kind === 'net' && selection.netId === n.netId;
-                    return (
-                      <button
-                        type="button"
-                        key={n.netId}
-                        className={`sta-net-row ${isNetActive ? 'active' : ''}`}
-                        onClick={() => {
-                          setSelection({ kind: 'net', netId: n.netId });
-                          setActiveTab('layout');
-                        }}
-                        title={`Highlight net ${n.netId} on canvas`}
-                      >
-                        <div className="row" style={{ justifyContent: 'space-between', width: '100%' }}>
-                          <span className="row" style={{ gap: 5, minWidth: 0 }}>
-                            <ItemIcon itemId={n.item} size={14} />
-                            <span
-                              style={{
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                whiteSpace: 'nowrap',
-                              }}
-                            >
-                              {getItemMeta(n.item).name}
-                            </span>
-                          </span>
-                          <span className="mono">{(n.utilization * 100).toFixed(0)}%</span>
-                        </div>
-                        <div
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                    {sta.bottlenecks.map((b, i) => {
+                      const netMatch = /Net "([^"]+)"/.exec(b);
+                      const prefixMatch = /^([^:\s]+):/.exec(b);
+                      const macroIdMatch =
+                        prefixMatch && sta.macros.some((m) => m.macroId === prefixMatch[1])
+                          ? prefixMatch[1]
+                          : null;
+                      return (
+                        <button
+                          key={i}
+                          type="button"
+                          className="btn btn-sm"
                           style={{
-                            width: '100%',
-                            height: 4,
-                            background: '#091a2c',
-                            borderRadius: 2,
-                            overflow: 'hidden',
+                            justifyContent: 'flex-start',
+                            textAlign: 'left',
+                            fontSize: 11,
+                            color: 'var(--bp-red)',
+                            borderColor: 'rgba(248,113,113,0.4)',
+                            background: 'rgba(248,113,113,0.08)',
+                          }}
+                          title="Click to focus canvas on bottleneck"
+                          onClick={() => {
+                            if (netMatch) {
+                              focusOnNet(netMatch[1]);
+                            } else if (macroIdMatch) {
+                              focusOnMacro(macroIdMatch);
+                            } else {
+                              setLayers((l) => ({ ...l, heatmap: true }));
+                              setActiveTab('layout');
+                            }
                           }}
                         >
-                          <div
-                            style={{
-                              width: `${Math.min(100, n.utilization * 100)}%`,
-                              height: '100%',
-                              background:
-                                n.utilization > 1
-                                  ? '#ef4444'
-                                  : n.utilization > 0.8
-                                    ? '#f59e0b'
-                                    : '#4ade80',
-                            }}
-                          />
-                        </div>
-                      </button>
-                    );
-                  })}
+                          <Crosshair size={11} style={{ flexShrink: 0 }} />
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {b}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                <div className="unit-toggle" role="tablist" aria-label="STA view" style={{ width: '100%' }}>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={staListTab === 'nets'}
+                    className={`unit-btn ${staListTab === 'nets' ? 'active' : ''}`}
+                    style={{ flex: 1 }}
+                    onClick={() => setStaListTab('nets')}
+                  >
+                    Nets ({sta.nets.length})
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={staListTab === 'macros'}
+                    className={`unit-btn ${staListTab === 'macros' ? 'active' : ''}`}
+                    style={{ flex: 1 }}
+                    onClick={() => setStaListTab('macros')}
+                  >
+                    Macros ({sta.macros.length})
+                  </button>
                 </div>
+
+                {staListTab === 'nets' ? (
+                  <div style={{ maxHeight: 175, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 3 }}>
+                    {[...sta.nets]
+                      .sort(
+                        (a, b) =>
+                          Math.max(b.utilization, b.laneUtilization ?? 0) -
+                          Math.max(a.utilization, a.laneUtilization ?? 0),
+                      )
+                      .slice(0, 18)
+                      .map((n) => {
+                        const isNetActive =
+                          selection?.kind === 'net' && selection.netId === n.netId;
+                        const halfCap = Math.max(0.01, n.capacityPerSec * 0.5);
+                        const lUtil = (n.leftRatePerSec ?? n.ratePerSec * 0.5) / halfCap;
+                        const rUtil = (n.rightRatePerSec ?? n.ratePerSec * 0.5) / halfCap;
+                        const effUtil = Math.max(n.utilization, n.laneUtilization ?? 0);
+                        return (
+                          <button
+                            type="button"
+                            key={n.netId}
+                            className={`sta-net-row ${isNetActive ? 'active' : ''}`}
+                            onClick={() => focusOnNet(n.netId)}
+                            title={`Focus net ${n.netId} (L ${(lUtil * 100).toFixed(0)}% / R ${(rUtil * 100).toFixed(0)}%)`}
+                          >
+                            <div className="row" style={{ justifyContent: 'space-between', width: '100%' }}>
+                              <span className="row" style={{ gap: 5, minWidth: 0 }}>
+                                <ItemIcon itemId={n.item} size={14} />
+                                <span
+                                  style={{
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap',
+                                  }}
+                                >
+                                  {getItemMeta(n.item).name}
+                                </span>
+                              </span>
+                              <span
+                                className="mono"
+                                style={{
+                                  color: effUtil > 1 ? 'var(--bp-red)' : effUtil > 0.8 ? 'var(--bp-amber)' : undefined,
+                                }}
+                              >
+                                {(effUtil * 100).toFixed(0)}%
+                              </span>
+                            </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 1, width: '100%' }}>
+                              {[lUtil, rUtil].map((lu, li) => (
+                                <div
+                                  key={li}
+                                  style={{
+                                    width: '100%',
+                                    height: 2.5,
+                                    background: '#091a2c',
+                                    borderRadius: 2,
+                                    overflow: 'hidden',
+                                  }}
+                                >
+                                  <div
+                                    style={{
+                                      width: `${Math.min(100, lu * 100)}%`,
+                                      height: '100%',
+                                      background:
+                                        lu > 1
+                                          ? '#ef4444'
+                                          : lu > 0.8
+                                            ? '#f59e0b'
+                                            : lu > 0.001
+                                              ? '#4ade80'
+                                              : 'transparent',
+                                    }}
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                          </button>
+                        );
+                      })}
+                  </div>
+                ) : (
+                  <div style={{ maxHeight: 175, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 3 }}>
+                    {[...sta.macros]
+                      .sort((a, b) => {
+                        const aFail = a.inserterOk && a.laneOk ? 0 : 1;
+                        const bFail = b.inserterOk && b.laneOk ? 0 : 1;
+                        if (aFail !== bFail) return bFail - aFail;
+                        return b.utilization - a.utilization;
+                      })
+                      .slice(0, 18)
+                      .map((m) => {
+                        const isMacroActive =
+                          selection?.kind === 'macro' && selection.macroId === m.macroId;
+                        const ok = m.inserterOk && m.laneOk;
+                        return (
+                          <button
+                            type="button"
+                            key={m.macroId}
+                            className={`sta-net-row ${isMacroActive ? 'active' : ''}`}
+                            onClick={() => focusOnMacro(m.macroId)}
+                            title={`Focus macro ${m.macroId} (${m.exactMachines.toFixed(2)}/${m.machineCount} machines)`}
+                          >
+                            <div className="row" style={{ justifyContent: 'space-between', width: '100%' }}>
+                              <span
+                                style={{
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                  color: !ok ? 'var(--bp-red)' : undefined,
+                                }}
+                              >
+                                {m.macroId} ({m.machineCount}m)
+                              </span>
+                              <span className="mono">{(m.utilization * 100).toFixed(0)}%</span>
+                            </div>
+                            <div
+                              style={{
+                                width: '100%',
+                                height: 4,
+                                background: '#091a2c',
+                                borderRadius: 2,
+                                overflow: 'hidden',
+                              }}
+                            >
+                              <div
+                                style={{
+                                  width: `${Math.min(100, m.utilization * 100)}%`,
+                                  height: '100%',
+                                  background: !ok
+                                    ? '#ef4444'
+                                    : m.utilization > 0.9
+                                      ? '#f59e0b'
+                                      : '#4ade80',
+                                }}
+                              />
+                            </div>
+                          </button>
+                        );
+                      })}
+                  </div>
+                )}
               </div>
             )}
           </div>

@@ -1,11 +1,13 @@
 import {
   BELT_SPECS,
+  BeltLaneFlowInfo,
   BeltTier,
   Dir,
   EntityInstance,
   FloorplanResult,
   INSERTER_BY_ENTITY_NAME,
   POLE_BY_ENTITY_NAME,
+  StaNetReport,
   beltTierFromEntityName,
   dirDelta,
   getItemMeta,
@@ -19,6 +21,11 @@ import {
   getLocalEntitySprite,
 } from './factorioAssets';
 import { drawSmartPinLabels } from '../components/pinLabels';
+import {
+  drawBeltLaneHeatmap,
+  laneUtilColor,
+  resolveEntityLaneUtils,
+} from '../components/laneHeatmap';
 
 export interface FactorioRenderLayerOpts {
   macros: boolean;
@@ -854,7 +861,10 @@ export function renderFactorioScene(
   macroUtilMap: Map<string, number>,
   utilColorFn: (u: number) => string,
   highlightedPinIds?: Set<string>,
+  entityLanes?: Record<string, BeltLaneFlowInfo>,
+  staNetMap?: Map<string, StaNetReport>,
 ): { ugInputs: EntityInstance[]; ugOutputs: EntityInstance[] } {
+  const emptyStaNetMap = staNetMap ?? new Map<string, StaNetReport>();
   const W = floorplan.width;
   const H = floorplan.height;
 
@@ -1012,9 +1022,13 @@ export function renderFactorioScene(
   if (layers.belts) {
     for (const b of belts) {
       const tier = beltTierFromEntityName(b.name)!;
+      const laneUtils = layers.heatmap
+        ? resolveEntityLaneUtils(b, entityLanes, emptyStaNetMap)
+        : null;
       if (fastLod) {
-        ctx.fillStyle =
-          layers.heatmap && b.netId && netUtilMap.has(b.netId)
+        ctx.fillStyle = laneUtils
+          ? laneUtilColor(Math.max(laneUtils.leftUtil, laneUtils.rightUtil))
+          : layers.heatmap && b.netId && netUtilMap.has(b.netId)
             ? utilColorFn(netUtilMap.get(b.netId)!)
             : BELT_SPECS[tier].color;
         ctx.fillRect(ox + b.tx * s, oy + b.ty * s, Math.max(1.2, s), Math.max(1.2, s));
@@ -1022,7 +1036,18 @@ export function renderFactorioScene(
       }
       const shape = classifyBeltShape(b, incomingMap!);
       drawSurfaceBelt(ctx, b, shape, ox, oy, s, tier, layers.altMode);
-      if (layers.heatmap && b.netId && netUtilMap.has(b.netId)) {
+      if (laneUtils) {
+        drawBeltLaneHeatmap(
+          ctx,
+          ox + b.tx * s,
+          oy + b.ty * s,
+          s,
+          b.direction,
+          laneUtils.leftUtil,
+          laneUtils.rightUtil,
+          0,
+        );
+      } else if (layers.heatmap && b.netId && netUtilMap.has(b.netId)) {
         ctx.fillStyle = utilColorFn(netUtilMap.get(b.netId)!);
         ctx.fillRect(ox + b.tx * s, oy + b.ty * s, s, s);
       }
@@ -1033,23 +1058,49 @@ export function renderFactorioScene(
   if (layers.belts) {
     for (const sp of splitters) {
       const tier = beltTierFromEntityName(sp.name) ?? 'yellow';
+      const laneUtils = layers.heatmap
+        ? resolveEntityLaneUtils(sp, entityLanes, emptyStaNetMap)
+        : null;
       if (fastLod) {
-        ctx.fillStyle = BELT_SPECS[tier].color;
+        ctx.fillStyle = laneUtils
+          ? laneUtilColor(Math.max(laneUtils.leftUtil, laneUtils.rightUtil))
+          : BELT_SPECS[tier].color;
         ctx.fillRect(ox + sp.tx * s, oy + sp.ty * s, Math.max(1.5, sp.w * s), Math.max(1.5, sp.h * s));
         continue;
       }
       drawSplitterEntity(ctx, sp, ox, oy, s, tier);
+      if (laneUtils) {
+        ctx.fillStyle = laneUtilColor(Math.max(laneUtils.leftUtil, laneUtils.rightUtil));
+        ctx.fillRect(ox + sp.tx * s, oy + sp.ty * s, sp.w * s, sp.h * s);
+      }
     }
   }
   if (layers.undergrounds) {
     for (const ug of ugs) {
       const tier = beltTierFromEntityName(ug.name) ?? 'yellow';
+      const laneUtils = layers.heatmap
+        ? resolveEntityLaneUtils(ug, entityLanes, emptyStaNetMap)
+        : null;
       if (fastLod) {
-        ctx.fillStyle = BELT_SPECS[tier].color;
+        ctx.fillStyle = laneUtils
+          ? laneUtilColor(Math.max(laneUtils.leftUtil, laneUtils.rightUtil))
+          : BELT_SPECS[tier].color;
         ctx.fillRect(ox + ug.tx * s, oy + ug.ty * s, Math.max(1.2, s), Math.max(1.2, s));
         continue;
       }
       drawUndergroundHood(ctx, ug, ox, oy, s, tier);
+      if (laneUtils) {
+        drawBeltLaneHeatmap(
+          ctx,
+          ox + ug.tx * s,
+          oy + ug.ty * s,
+          s,
+          ug.direction,
+          laneUtils.leftUtil,
+          laneUtils.rightUtil,
+          0,
+        );
+      }
     }
   }
 

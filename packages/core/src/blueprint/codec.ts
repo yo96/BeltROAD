@@ -48,9 +48,13 @@ export interface BlueprintData {
   entities: BlueprintEntity[];
 }
 
+export type Factorio2BlueprintData = BlueprintData;
+
 export interface BlueprintBookData {
   item: 'blueprint-book';
   label?: string;
+  description?: string;
+  icons?: Array<{ signal: BlueprintSignalId; index: number }>;
   version?: number;
   active_index?: number;
   blueprints: Array<{
@@ -58,6 +62,13 @@ export interface BlueprintBookData {
     blueprint?: BlueprintData;
     blueprint_book?: BlueprintBookData;
   }>;
+}
+
+export interface ExportBlueprintBookOptions {
+  label: string;
+  description?: string;
+  activeIndex?: number;
+  icons?: string[];
 }
 
 export interface BlueprintWrapper {
@@ -270,4 +281,53 @@ export function entitiesToBlueprintString(
 ): string {
   const blueprint = entitiesToFactorio2BlueprintData(entities, options);
   return encodeBlueprintWrapper({ blueprint });
+}
+
+export function createBlueprintBookData(
+  entries: BlueprintData[],
+  options: ExportBlueprintBookOptions,
+): BlueprintBookData {
+  const icons = (options.icons ?? []).slice(0, 4).map((name, i) => ({
+    signal: { type: 'item' as const, name },
+    index: i + 1,
+  }));
+  const activeIdx =
+    options.activeIndex !== undefined
+      ? Math.max(0, Math.min(Math.max(0, entries.length - 1), options.activeIndex))
+      : 0;
+
+  return {
+    item: 'blueprint-book',
+    label: options.label,
+    description: options.description,
+    icons: icons.length > 0 ? icons : undefined,
+    active_index: activeIdx,
+    version: FACTORIO_2_0_VERSION,
+    blueprints: entries.map((blueprint, index) => ({
+      index,
+      blueprint,
+    })),
+  };
+}
+
+export function createBlueprintBookString(
+  entries: BlueprintData[],
+  options: ExportBlueprintBookOptions,
+): string {
+  const blueprint_book = createBlueprintBookData(entries, options);
+  return encodeBlueprintWrapper({ blueprint_book });
+}
+
+export function createBlueprintBookFromStrings(
+  bpStrings: string[],
+  options: ExportBlueprintBookOptions,
+): string {
+  const entries = bpStrings.map((str, i) => {
+    const decoded = decodeBlueprintWrapper(str);
+    if (!decoded.blueprint) {
+      throw new Error(`Blueprint entry #${i + 1} is not a single blueprint string.`);
+    }
+    return decoded.blueprint;
+  });
+  return createBlueprintBookString(entries, options);
 }
