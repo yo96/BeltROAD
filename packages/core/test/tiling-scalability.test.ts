@@ -219,4 +219,78 @@ describe('Hierarchical Tiling & Scalability Benchmarks', () => {
     expect(res.tiling).toBeUndefined();
     expect(Date.now() - t0).toBeLessThan(7000 * CI_TIME_MULT);
   });
+
+  it('routes multi-bay interior trunks to North outer edge when requireEdgePins is true (default), even with small poles & fixed die', () => {
+    const assertAllPinsOnOuterEdge = (
+      pins: ReturnType<typeof runFullPipeline>['floorplan']['pins'],
+      W: number,
+      H: number,
+    ) => {
+      for (const p of pins) {
+        const onEdge =
+          (p.edge === 'W' && p.x === 0) ||
+          (p.edge === 'E' && p.x === W - 1) ||
+          (p.edge === 'N' && p.y === 0) ||
+          (p.edge === 'S' && p.y === H - 1);
+        expect(onEdge, `pin ${p.id} (${p.edge} at ${p.x},${p.y}) vs ${W}x${H}`).toBe(true);
+      }
+    };
+
+    const sm3Default = makeSpec(
+      'SM3 60/min Edge Pins Default',
+      [{ item: 'speed-module-3', ratePerMin: 60 }],
+      { belt: 'blue', asm: 3, ins: 'bulk' },
+    );
+    sm3Default.pdk.defaultPoleTier = 'small';
+    const resDef = runFullPipeline(sm3Default);
+    expect(resDef.tiling).toBeDefined();
+    expect(resDef.tiling!.cols).toBeGreaterThanOrEqual(4); // multi-bay (2+ twin bays)
+    expect(resDef.drc.violations).toEqual([]);
+    expect(resDef.drc.passed).toBe(true);
+    expect(resDef.sta.passed).toBe(true);
+    assertAllPinsOnOuterEdge(resDef.floorplan.pins, resDef.floorplan.width, resDef.floorplan.height);
+    expect(resDef.floorplan.pins.some((p) => p.edge === 'N' && p.y === 0)).toBe(true);
+
+    // Also verify Fixed W x H preserves N/W/E/S outer perimeter pins cleanly
+    const sm3Fixed = structuredClone(sm3Default);
+    sm3Fixed.floorplan = {
+      mode: 'fixed',
+      width: resDef.floorplan.width + 20,
+      height: resDef.floorplan.height + 20,
+      aspectRatio: 1.5,
+      margin: 3,
+      halo: 2,
+      requireEdgePins: true,
+    };
+    const resFixed = runFullPipeline(sm3Fixed);
+    expect(resFixed.drc.violations).toEqual([]);
+    expect(resFixed.sta.passed).toBe(true);
+    expect(resFixed.floorplan.width).toBe(resDef.floorplan.width + 20);
+    expect(resFixed.floorplan.height).toBe(resDef.floorplan.height + 20);
+    assertAllPinsOnOuterEdge(
+      resFixed.floorplan.pins,
+      resFixed.floorplan.width,
+      resFixed.floorplan.height,
+    );
+  });
+
+  it('allows compact interior multi-bay pins when requireEdgePins is false', () => {
+    const specEdge = makeSpec(
+      'SM3 60/min Edge Pins On',
+      [{ item: 'speed-module-3', ratePerMin: 60 }],
+      { belt: 'blue', asm: 3, ins: 'bulk', tiling: 14 },
+    );
+    const resEdge = runFullPipeline(specEdge);
+
+    const specInterior = structuredClone(specEdge);
+    specInterior.floorplan.requireEdgePins = false;
+    const resInt = runFullPipeline(specInterior);
+
+    expect(resInt.tiling).toBeDefined();
+    expect(resInt.tiling!.cols).toBeGreaterThanOrEqual(4);
+    expect(resInt.drc.violations).toEqual([]);
+    expect(resInt.sta.passed).toBe(true);
+    expect(resInt.floorplan.pins.some((p) => p.x > 0 && p.x < resInt.floorplan.width - 1 && (p.edge === 'W' || p.edge === 'E'))).toBe(true);
+    expect(resInt.floorplan.width).toBeLessThan(resEdge.floorplan.width);
+  });
 });

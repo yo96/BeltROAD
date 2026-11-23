@@ -116,6 +116,7 @@ export function normalizeSpec(raw: Partial<DesignSpec>): DesignSpec {
     aspectRatio: rawFloor.aspectRatio ?? 1.35,
     margin: rawFloor.margin ?? 3,
     halo: rawFloor.halo ?? 2,
+    requireEdgePins: rawFloor.requireEdgePins ?? true,
   };
 
   const optDef = defaultOptimizationConfig(raw.optimization?.level ?? 'compact');

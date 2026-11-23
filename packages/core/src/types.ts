@@ -59,6 +59,8 @@ export interface FloorplanConfig {
   aspectRatio: number;
   margin: number;
   halo: number;
+  /** Keep all pins strictly on the outer die perimeter (routes multi-bay interior trunks to the North edge). Default: true. */
+  requireEdgePins?: boolean;
 }
 
 export interface PinConstraint {

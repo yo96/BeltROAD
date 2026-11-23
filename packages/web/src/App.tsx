@@ -1481,6 +1481,33 @@ export default function App() {
                 <option value="off">Off (Flat P&amp;R)</option>
               </select>
             </div>
+            <div style={{ marginTop: 8 }}>
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  cursor: 'pointer',
+                  fontSize: 11.5,
+                }}
+                title="Route multi-bay interior trunks to the North outer edge so every pin sits on the die boundary"
+              >
+                <input
+                  type="checkbox"
+                  checked={spec.floorplan.requireEdgePins ?? true}
+                  onChange={(e) =>
+                    updateSpec(
+                      (prev) => ({
+                        ...prev,
+                        floorplan: { ...prev.floorplan, requireEdgePins: e.target.checked },
+                      }),
+                      true,
+                    )
+                  }
+                />
+                Keep all pins on outer edge
+              </label>
+            </div>
             {(spec.pins.length > 0 || Object.keys(spec.macroOverrides).length > 0) && (
               <button
                 className="btn btn-sm"

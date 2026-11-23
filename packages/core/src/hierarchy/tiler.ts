@@ -1130,7 +1130,7 @@ function planTiledGridGeometry(
     cols: number,
     rows: number,
   ) => {
-    const busFactor = layout === 'twin' ? 0.38 : 0.16;
+    const busFactor = layout === 'twin' ? (bayCount > 1 ? 0.48 : 0.38) : 0.16;
     const rawUnitAr =
       layout === 'twin'
         ? (reqAr * (rows / bayCount) - busFactor) / 2
@@ -1166,6 +1166,48 @@ function planTiledGridGeometry(
   return best;
 }
 
+interface InteriorChannelPlan {
+  gapWidth: number;
+  leftOffsets: number[];
+  rightOffsets: number[];
+}
+
+function planInteriorChannelColumns(
+  leftCount: number,
+  rightCount: number,
+): InteriorChannelPlan {
+  const leftOffsets: number[] = [];
+  let cursor = 0;
+  for (let i = 0; i < leftCount; i++) {
+    if (i > 0 && i % 4 === 0) cursor++;
+    leftOffsets.push(cursor++);
+  }
+
+  const rightFromBayR: number[] = [];
+  let rCursor = 0;
+  for (let j = 0; j < rightCount; j++) {
+    if (j > 0 && j % 4 === 0) rCursor++;
+    rightFromBayR.push(rCursor++);
+  }
+
+  const centerAisle = 2;
+  const gapWidth = Math.max(6, cursor + centerAisle + rCursor);
+  const rightOffsets = rightFromBayR.map((off) => gapWidth - 1 - off);
+  return { gapWidth, leftOffsets, rightOffsets };
+}
+
+function estimateColumnInputPinCount(
+  unitInPins: PerimeterPin[],
+  rowsInWing: number,
+): number {
+  if (rowsInWing <= 0) return 0;
+  const plan = planTrunksForColumnPins(unitInPins, rowsInWing);
+  let count = 0;
+  for (const t of plan.trunks) count += t.groups.length;
+  const unconsolidated = unitInPins.length - plan.consolidatedIds.size;
+  return count + unconsolidated * rowsInWing;
+}
+
 function pickBestBayCountForCompiledUnit(
   K: number,
   uW: number,
@@ -1175,6 +1217,7 @@ function pickBestBayCountForCompiledUnit(
   maxRowCapOut: number,
   reqArRaw: number,
   prefLayout: 'auto' | 'stack' | 'twin',
+  requireEdgePins = true,
 ): { bayCount: number; layout: 'stack' | 'twin' } {
   const reqAr = clampNum(reqArRaw || 1.35, 0.2, 5.0);
   if (prefLayout === 'stack' || K < 2) {
@@ -1205,7 +1248,7 @@ function pickBestBayCountForCompiledUnit(
     const spW = layout === 'twin' ? 8 * unitOutPins.length : 4 * unitOutPins.length;
     const w = layout === 'twin' ? westW + 2 * uW + spW + eastW : westW + uW + spW;
     const h = rL * uH + (layout === 'twin' ? 7 : 4);
-    return { w, h };
+    return { w, h, rL, rR };
   };
 
   if (prefLayout === 'auto') {
@@ -1226,15 +1269,28 @@ function pickBestBayCountForCompiledUnit(
     const maxBayRows = Math.ceil(maxBayK / 2);
     if (maxBayRows > maxRowCapOut) continue;
 
-    let sumW = (G - 1) * 6;
+    let sumW = 0;
     let maxH = 1;
     const base = Math.floor(K / G);
     const rem = K % G;
+    const bayFootprints: Array<{ w: number; h: number; rL: number; rR: number }> = [];
     for (let g = 0; g < G; g++) {
       const kBay = base + (g < rem ? 1 : 0);
       const f = estBayFootprint(kBay, 'twin');
+      bayFootprints.push(f);
       sumW += f.w;
       maxH = Math.max(maxH, f.h);
+    }
+    if (G > 1) {
+      if (!requireEdgePins) {
+        sumW += (G - 1) * 6;
+      } else {
+        for (let g = 0; g < G - 1; g++) {
+          const leftPinsEst = estimateColumnInputPinCount(unitInPins, bayFootprints[g].rR);
+          const rightPinsEst = estimateColumnInputPinCount(unitInPins, bayFootprints[g + 1].rL);
+          sumW += planInteriorChannelColumns(leftPinsEst, rightPinsEst).gapWidth;
+        }
+      }
     }
     const ar = sumW / Math.max(1, maxH);
     const err = Math.abs(Math.log(Math.max(0.05, ar / reqAr)));
@@ -2068,6 +2124,7 @@ function offsetAndPrefixBay(
   targetH: number,
   bayIdx: number,
   prefixEnabled: boolean,
+  yOff = 0,
 ): BuiltBayLayout {
   const mapNodeId = (id: string): string => {
     if (!prefixEnabled) return id;
@@ -2099,6 +2156,7 @@ function offsetAndPrefixBay(
       ...pm,
       id: newId,
       x: pm.x + xOff,
+      y: pm.y + yOff,
       macro: {
         ...pm.macro,
         id: newId,
@@ -2114,6 +2172,7 @@ function offsetAndPrefixBay(
     ...e,
     id: mapEntId(e.id),
     tx: e.tx + xOff,
+    ty: e.ty + yOff,
     netId: e.netId ? mapNetId(e.netId) : undefined,
     macroId: e.macroId ? mapNodeId(e.macroId) : undefined,
   }));
@@ -2121,22 +2180,23 @@ function offsetAndPrefixBay(
   const routedNets: RoutedNetSegment[] = bay.routedNets.map((rn) => ({
     ...rn,
     netId: mapNetId(rn.netId),
-    tiles: rn.tiles.map((t) => ({ ...t, tx: t.tx + xOff })),
+    tiles: rn.tiles.map((t) => ({ ...t, tx: t.tx + xOff, ty: t.ty + yOff })),
   }));
 
   const pdnEntities: EntityInstance[] = bay.pdnEntities.map((pe) => ({
     ...pe,
     id: mapEntId(pe.id),
     tx: pe.tx + xOff,
+    ty: pe.ty + yOff,
   }));
 
   let extCounter = 0;
   const outerPins: PerimeterPin[] = bay.outerPins.map((pin) => {
     const nx = pin.x + xOff;
     const nextNetId = pin.netId ? mapNetId(pin.netId) : undefined;
-    let ny = pin.y;
-    if (bay.H < targetH && pin.edge === 'S') {
-      for (let y = bay.H; y < targetH; y++) {
+    let ny = pin.y + yOff;
+    if (yOff + bay.H < targetH && pin.edge === 'S') {
+      for (let y = yOff + bay.H; y < targetH; y++) {
         addBeltEntity(
           routeEntities,
           `b${bayIdx}:ext:${extCounter++}`,
@@ -2155,7 +2215,7 @@ function offsetAndPrefixBay(
       id: mapNodeId(pin.id),
       x: nx,
       y: ny,
-      offset: pin.edge === 'N' || pin.edge === 'S' ? nx : pin.offset,
+      offset: pin.edge === 'N' || pin.edge === 'S' ? nx : ny,
       netId: nextNetId,
     };
   });
@@ -2205,6 +2265,7 @@ function assembleTiledBlueprint(
     Infinity,
   );
   const prefLayout = spec.optimization?.tileLayout ?? 'auto';
+  const requireEdgePins = spec.floorplan.requireEdgePins ?? true;
   const reqAr =
     spec.floorplan.mode === 'fixed' && spec.floorplan.width && spec.floorplan.height
       ? clampNum(spec.floorplan.width / Math.max(1, spec.floorplan.height), 0.2, 5.0)
@@ -2218,6 +2279,7 @@ function assembleTiledBlueprint(
     maxRowCapOut,
     reqAr,
     prefLayout,
+    requireEdgePins,
   );
 
   const mirroredUnit = layout === 'twin' ? mirrorUnitTileX(unit) : null;
@@ -2231,10 +2293,32 @@ function assembleTiledBlueprint(
     );
   }
 
-  const BAY_GAP = 6;
+  const gapPlans: InteriorChannelPlan[] = [];
+  let topShift = 0;
+  for (let g = 0; g < bayCount - 1; g++) {
+    const leftRawPins = rawBays[g].outerPins.filter(
+      (p) => p.edge === 'E' && p.kind === 'input',
+    );
+    const rightRawPins = rawBays[g + 1].outerPins.filter(
+      (p) => p.edge === 'W' && p.kind === 'input',
+    );
+    if (requireEdgePins) {
+      for (const p of leftRawPins) {
+        if (p.y < 1) topShift = 1;
+      }
+      for (const p of rightRawPins) {
+        if (p.y < 1) topShift = 1;
+      }
+      gapPlans.push(planInteriorChannelColumns(leftRawPins.length, rightRawPins.length));
+    } else {
+      gapPlans.push({ gapWidth: 6, leftOffsets: [], rightOffsets: [] });
+    }
+  }
+
   let W =
-    rawBays.reduce((sum, b) => sum + b.W, 0) + Math.max(0, bayCount - 1) * BAY_GAP;
-  let H = rawBays.reduce((mx, b) => Math.max(mx, b.H), 1);
+    rawBays.reduce((sum, b) => sum + b.W, 0) +
+    gapPlans.reduce((sum, gp) => sum + gp.gapWidth, 0);
+  let H = rawBays.reduce((mx, b) => Math.max(mx, b.H), 1) + topShift;
 
   const allNodes: SynthNode[] = [];
   const allNets: SynthNet[] = [];
@@ -2244,11 +2328,15 @@ function assembleTiledBlueprint(
   const stampedPdnEntities: EntityInstance[] = [];
   const allOuterPins: PerimeterPin[] = [];
 
+  const bayXStarts: number[] = [];
+  const shiftedBays: BuiltBayLayout[] = [];
   let xOff = 0;
   let totalCols = 0;
   let maxRows = 0;
   for (let g = 0; g < rawBays.length; g++) {
-    const shifted = offsetAndPrefixBay(rawBays[g], xOff, H, g, bayCount > 1);
+    bayXStarts.push(xOff);
+    const shifted = offsetAndPrefixBay(rawBays[g], xOff, H, g, bayCount > 1, topShift);
+    shiftedBays.push(shifted);
     allNodes.push(...shifted.nodes);
     allNets.push(...shifted.nets);
     stampedMacros.push(...shifted.macros);
@@ -2258,7 +2346,119 @@ function assembleTiledBlueprint(
     allOuterPins.push(...shifted.outerPins);
     totalCols += rawBays[g].cols;
     maxRows = Math.max(maxRows, rawBays[g].rows);
-    xOff += rawBays[g].W + BAY_GAP;
+    xOff += rawBays[g].W + (g < gapPlans.length ? gapPlans[g].gapWidth : 0);
+  }
+
+  if (bayCount > 1 && requireEdgePins) {
+    let chanExtCounter = 0;
+    const routedByNetId = new Map<string, RoutedNetSegment>();
+    for (const rn of stampedRoutedNets) routedByNetId.set(rn.netId, rn);
+
+    for (let g = 0; g < bayCount - 1; g++) {
+      const gp = gapPlans[g];
+      const gapX0 = bayXStarts[g] + rawBays[g].W;
+      const bayREdgeX = bayXStarts[g + 1];
+
+      const leftPins = shiftedBays[g].outerPins
+        .filter((p) => p.edge === 'E' && p.kind === 'input')
+        .sort((a, b) => a.y - b.y);
+      for (let i = 0; i < leftPins.length; i++) {
+        const pin = leftPins[i];
+        const colX = gapX0 + gp.leftOffsets[i];
+        const py = pin.y;
+        const addedTiles: Array<{ tx: number; ty: number; dir: Dir; kind: 'belt' }> = [];
+
+        for (let y = 0; y < py; y++) {
+          addBeltEntity(
+            allRouteEntities,
+            `bus:nchan:${chanExtCounter++}`,
+            pin.beltTier,
+            colX,
+            y,
+            Dir.SOUTH,
+            pin.netId,
+            pin.item,
+          );
+          addedTiles.push({ tx: colX, ty: y, dir: Dir.SOUTH, kind: 'belt' });
+        }
+        for (let x = colX; x >= gapX0; x--) {
+          addBeltEntity(
+            allRouteEntities,
+            `bus:nchan:${chanExtCounter++}`,
+            pin.beltTier,
+            x,
+            py,
+            Dir.WEST,
+            pin.netId,
+            pin.item,
+          );
+          addedTiles.push({ tx: x, ty: py, dir: Dir.WEST, kind: 'belt' });
+        }
+
+        if (pin.netId) {
+          const rn = routedByNetId.get(pin.netId);
+          if (rn) {
+            rn.tiles.unshift(...addedTiles);
+            rn.length = rn.tiles.length;
+          }
+        }
+        pin.edge = 'N';
+        pin.x = colX;
+        pin.y = 0;
+        pin.offset = colX;
+        pin.dir = Dir.SOUTH;
+      }
+
+      const rightPins = shiftedBays[g + 1].outerPins
+        .filter((p) => p.edge === 'W' && p.kind === 'input')
+        .sort((a, b) => a.y - b.y);
+      for (let j = 0; j < rightPins.length; j++) {
+        const pin = rightPins[j];
+        const colX = gapX0 + gp.rightOffsets[j];
+        const py = pin.y;
+        const addedTiles: Array<{ tx: number; ty: number; dir: Dir; kind: 'belt' }> = [];
+
+        for (let y = 0; y < py; y++) {
+          addBeltEntity(
+            allRouteEntities,
+            `bus:nchan:${chanExtCounter++}`,
+            pin.beltTier,
+            colX,
+            y,
+            Dir.SOUTH,
+            pin.netId,
+            pin.item,
+          );
+          addedTiles.push({ tx: colX, ty: y, dir: Dir.SOUTH, kind: 'belt' });
+        }
+        for (let x = colX; x < bayREdgeX; x++) {
+          addBeltEntity(
+            allRouteEntities,
+            `bus:nchan:${chanExtCounter++}`,
+            pin.beltTier,
+            x,
+            py,
+            Dir.EAST,
+            pin.netId,
+            pin.item,
+          );
+          addedTiles.push({ tx: x, ty: py, dir: Dir.EAST, kind: 'belt' });
+        }
+
+        if (pin.netId) {
+          const rn = routedByNetId.get(pin.netId);
+          if (rn) {
+            rn.tiles.unshift(...addedTiles);
+            rn.length = rn.tiles.length;
+          }
+        }
+        pin.edge = 'N';
+        pin.x = colX;
+        pin.y = 0;
+        pin.offset = colX;
+        pin.dir = Dir.SOUTH;
+      }
+    }
   }
 
   const fixedWarnings: string[] = [];
@@ -2620,7 +2820,7 @@ export function runTiledPipeline(
         bestScore = score;
         bestResult = stitched;
       }
-      if (overflow === 0 && arErr < 0.22) {
+      if ((overflow === 0 && arErr < 0.28) || Date.now() - start > 1400) {
         break;
       }
     }
