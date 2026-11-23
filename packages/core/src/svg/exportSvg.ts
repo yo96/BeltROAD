@@ -87,9 +87,28 @@ export function renderLayoutToSvg(result: PipelineResult, tilePx = 18): string {
 
     if (isMachineName(e.name)) {
       const itemMeta = e.item ? getItemMeta(e.item) : null;
-      const isFurnace = e.name === 'electric-furnace';
+      const fillCol =
+        e.name === 'electric-furnace'
+          ? '#334155'
+          : e.name === 'foundry'
+            ? '#5c2410'
+            : e.name === 'electromagnetic-plant'
+              ? '#3b1c6e'
+              : e.name === 'cryogenic-plant'
+                ? '#164e63'
+                : '#1e3a5f';
+      const strokeCol =
+        e.name === 'electric-furnace'
+          ? '#f97316'
+          : e.name === 'foundry'
+            ? '#fb923c'
+            : e.name === 'electromagnetic-plant'
+              ? '#e879f9'
+              : e.name === 'cryogenic-plant'
+                ? '#22d3ee'
+                : '#93c5fd';
       parts.push(
-        `<rect x="${ex + 1}" y="${ey + 1}" width="${ew - 2}" height="${eh - 2}" fill="${isFurnace ? '#334155' : '#1e3a5f'}" stroke="${isFurnace ? '#f97316' : '#93c5fd'}" stroke-width="1.5" rx="3" />`,
+        `<rect x="${ex + 1}" y="${ey + 1}" width="${ew - 2}" height="${eh - 2}" fill="${fillCol}" stroke="${strokeCol}" stroke-width="1.5" rx="3" />`,
       );
       if (itemMeta) {
         parts.push(

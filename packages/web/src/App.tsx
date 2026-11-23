@@ -3,18 +3,23 @@ import {
   BELT_SPECS,
   BUILTIN_PRESETS,
   BalancerTemplate,
+  BeltStackSize,
+  BeltTier,
   DesignSpec,
   DrcReport,
   Edge,
   EntityInstance,
   FloorplanResult,
   InputPreset,
+  InserterTier,
   ModuleName,
   OptimizationLevel,
   PipelineProgress,
   PipelineResult,
   PoleTier,
   PortMarkerMode,
+  QUALITY_SPECS,
+  QualityTier,
   RawCatalog,
   Rot90,
   RouteResult,
@@ -25,6 +30,7 @@ import {
   defaultOptimizationConfig,
   edgeToInwardDir,
   edgeToOutwardDir,
+  effectiveBeltCapacity,
   encodeSpecToUrlHash,
   getCatalog,
   getDefaultCatalogRaw,
@@ -740,7 +746,7 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  const beltCapacity = BELT_SPECS[spec.pdk.defaultBeltTier].itemsPerSec * 60;
+  const beltCapacity = effectiveBeltCapacity(spec.pdk.defaultBeltTier, spec.pdk) * 60;
   const currentGlobalModule = spec.pdk.modules.global[0] ?? '';
 
   const selectedPin =
@@ -1203,16 +1209,23 @@ export default function App() {
                   className="select"
                   value={spec.pdk.defaultBeltTier}
                   onChange={(e) => {
-                    const tier = e.target.value as 'yellow' | 'red' | 'blue';
+                    const tier = e.target.value as BeltTier;
                     updateSpec((prev) => ({
                       ...prev,
-                      pdk: { ...prev.pdk, defaultBeltTier: tier },
+                      pdk: {
+                        ...prev.pdk,
+                        defaultBeltTier: tier,
+                        allowedBeltTiers: prev.pdk.allowedBeltTiers.includes(tier)
+                          ? prev.pdk.allowedBeltTiers
+                          : [...prev.pdk.allowedBeltTiers, tier],
+                      },
                     }));
                   }}
                 >
                   <option value="yellow">Yellow (15/s)</option>
                   <option value="red">Red Fast (30/s)</option>
                   <option value="blue">Blue Express (45/s)</option>
+                  <option value="turbo">Turbo Green (60/s)</option>
                 </select>
               </div>
               <div>
@@ -1239,16 +1252,23 @@ export default function App() {
                   className="select"
                   value={spec.pdk.defaultInserterTier}
                   onChange={(e) => {
-                    const tier = e.target.value as 'yellow' | 'fast' | 'bulk';
+                    const tier = e.target.value as InserterTier;
                     updateSpec((prev) => ({
                       ...prev,
-                      pdk: { ...prev.pdk, defaultInserterTier: tier },
+                      pdk: {
+                        ...prev.pdk,
+                        defaultInserterTier: tier,
+                        allowedInserterTiers: prev.pdk.allowedInserterTiers.includes(tier)
+                          ? prev.pdk.allowedInserterTiers
+                          : [...prev.pdk.allowedInserterTiers, tier],
+                      },
                     }));
                   }}
                 >
                   <option value="yellow">Yellow Inserter</option>
                   <option value="fast">Fast Inserter</option>
                   <option value="bulk">Bulk Inserter</option>
+                  <option value="stack">Stack Inserter (16/s)</option>
                 </select>
               </div>
               <div>
@@ -1269,6 +1289,51 @@ export default function App() {
                   <option value="substation">Substation (2×2)</option>
                 </select>
               </div>
+              <div>
+                <label className="field-label">Belt Stacking (2.0)</label>
+                <select
+                  className="select"
+                  value={spec.pdk.beltStackSize ?? 1}
+                  onChange={(e) => {
+                    const stackSize = Number(e.target.value) as BeltStackSize;
+                    updateSpec((prev) => ({
+                      ...prev,
+                      pdk: {
+                        ...prev.pdk,
+                        beltStackSize: stackSize,
+                        allowedInserterTiers:
+                          stackSize > 1 && !prev.pdk.allowedInserterTiers.includes('stack')
+                            ? [...prev.pdk.allowedInserterTiers, 'stack']
+                            : prev.pdk.allowedInserterTiers,
+                      },
+                    }));
+                  }}
+                >
+                  <option value={1}>1× (Unstacked)</option>
+                  <option value={2}>2× Stacked Belt</option>
+                  <option value={4}>4× Full Stack (2.0)</option>
+                </select>
+              </div>
+              <div>
+                <label className="field-label">Machine Quality</label>
+                <select
+                  className="select"
+                  value={spec.pdk.machineQuality ?? 'normal'}
+                  onChange={(e) => {
+                    const q = e.target.value as QualityTier;
+                    updateSpec((prev) => ({
+                      ...prev,
+                      pdk: { ...prev.pdk, machineQuality: q },
+                    }));
+                  }}
+                >
+                  {(Object.keys(QUALITY_SPECS) as QualityTier[]).map((q) => (
+                    <option key={q} value={q}>
+                      {QUALITY_SPECS[q].label} ({QUALITY_SPECS[q].speedMultiplier}×)
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
 
             <div style={{ marginTop: 8 }}>
@@ -1284,7 +1349,7 @@ export default function App() {
                       ...prev.pdk,
                       modules: {
                         ...prev.pdk.modules,
-                        global: mod ? [mod, mod, mod, mod] : [],
+                        global: mod ? Array.from({ length: 8 }, () => mod) : [],
                       },
                     },
                   }));
@@ -1319,7 +1384,7 @@ export default function App() {
                   <option value="none">None</option>
                 </select>
               </div>
-              <div style={{ display: 'flex', alignItems: 'flex-end', paddingBottom: 4 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', gap: 4, paddingBottom: 2 }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 11.5 }}>
                   <input
                     type="checkbox"
@@ -1332,6 +1397,22 @@ export default function App() {
                     }
                   />
                   Downsize low-rate belts
+                </label>
+                <label
+                  style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 11.5 }}
+                  title="Prefer 4x4/5x5 Space Age Foundry, Electromagnetic Plant (+50% prod), and Cryogenic Plant"
+                >
+                  <input
+                    type="checkbox"
+                    checked={spec.pdk.spaceAgeBuildings ?? false}
+                    onChange={(e) =>
+                      updateSpec((prev) => ({
+                        ...prev,
+                        pdk: { ...prev.pdk, spaceAgeBuildings: e.target.checked },
+                      }))
+                    }
+                  />
+                  Space Age buildings
                 </label>
               </div>
             </div>

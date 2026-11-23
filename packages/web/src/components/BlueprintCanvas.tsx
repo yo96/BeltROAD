@@ -9,6 +9,7 @@ import {
   POLE_BY_ENTITY_NAME,
   PerimeterPin,
   PlacedMacro,
+  QUALITY_SPECS,
   RouteResult,
   StaNetReport,
   StaReport,
@@ -625,19 +626,43 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
 
         if (isMachineName(e.name)) {
           const isFurnace = e.name === 'electric-furnace';
+          const isFoundry = e.name === 'foundry';
+          const isEmPlant = e.name === 'electromagnetic-plant';
+          const isCryo = e.name === 'cryogenic-plant';
           if (fastLod) {
             ctx.fillStyle =
               layers.heatmap && e.macroId && macroUtilMap.has(e.macroId)
                 ? utilColor(macroUtilMap.get(e.macroId)!)
                 : isFurnace
                   ? '#475569'
-                  : '#1d4ed8';
+                  : isFoundry
+                    ? '#9a3412'
+                    : isEmPlant
+                      ? '#6d28d9'
+                      : isCryo
+                        ? '#0e7490'
+                        : '#1d4ed8';
             ctx.fillRect(ex + 0.4, ey + 0.4, Math.max(1.5, ew - 0.8), Math.max(1.5, eh - 0.8));
             continue;
           }
-          ctx.fillStyle = isFurnace ? '#2b3445' : '#1b385c';
+          ctx.fillStyle = isFurnace
+            ? '#2b3445'
+            : isFoundry
+              ? '#431a0d'
+              : isEmPlant
+                ? '#2d1552'
+                : isCryo
+                  ? '#113a4a'
+                  : '#1b385c';
           ctx.fillRect(ex + 1, ey + 1, ew - 2, eh - 2);
-          ctx.strokeStyle = isFurnace ? '#fb923c' : '#7dd3fc';
+          ctx.strokeStyle =
+            isFurnace || isFoundry
+              ? '#fb923c'
+              : isEmPlant
+                ? '#e879f9'
+                : isCryo
+                  ? '#22d3ee'
+                  : '#7dd3fc';
           ctx.lineWidth = Math.max(1, s * 0.08);
           ctx.strokeRect(ex + 1, ey + 1, ew - 2, eh - 2);
 
@@ -646,10 +671,17 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
             ctx.fillRect(ex + 1, ey + 1, ew - 2, eh - 2);
           }
 
-          // Procedural assembler gear / furnace chamber silhouette
+          // Procedural assembler gear / furnace / Space Age silhouette
           const cx = ex + ew / 2;
           const cy = ey + eh / 2;
-          ctx.strokeStyle = isFurnace ? 'rgba(251,146,60,0.45)' : 'rgba(186,230,253,0.35)';
+          ctx.strokeStyle =
+            isFurnace || isFoundry
+              ? 'rgba(251,146,60,0.45)'
+              : isEmPlant
+                ? 'rgba(232,121,249,0.45)'
+                : isCryo
+                  ? 'rgba(34,211,238,0.45)'
+                  : 'rgba(186,230,253,0.35)';
           ctx.lineWidth = 1;
           ctx.beginPath();
           ctx.arc(cx, cy, Math.min(ew, eh) * 0.32, 0, Math.PI * 2);
@@ -671,10 +703,18 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
             ctx.fillStyle = '#e2eef9';
             ctx.font = `700 ${Math.max(8, s * 0.34)}px JetBrains Mono, monospace`;
             ctx.textAlign = 'left';
-            const badge = isFurnace ? 'EF' : `A${e.name.slice(-1)}`;
+            const badge = isFurnace
+              ? 'EF'
+              : isFoundry
+                ? 'FND'
+                : isEmPlant
+                  ? 'EMP'
+                  : isCryo
+                    ? 'CRY'
+                    : `A${e.name.slice(-1)}`;
             ctx.fillText(badge, ex + 3, ey + Math.max(10, s * 0.38));
 
-            // Module pips
+            // Module pips (bottom-left)
             if (e.items && e.items.length > 0) {
               e.items.forEach((mod, mi) => {
                 ctx.fillStyle = mod.startsWith('speed')
@@ -684,6 +724,16 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
                     : '#22c55e';
                 ctx.fillRect(ex + 3 + mi * (s * 0.24), ey + eh - s * 0.28, s * 0.18, s * 0.18);
               });
+            }
+
+            // Quality pips (bottom-right)
+            if (e.quality && e.quality !== 'normal') {
+              const qSpec = QUALITY_SPECS[e.quality];
+              const pip = Math.max(2.5, s * 0.18);
+              for (let qi = 0; qi < qSpec.level; qi++) {
+                ctx.fillStyle = qSpec.color;
+                ctx.fillRect(ex + ew - 3 - pip - qi * (pip + 1.5), ey + eh - pip - 3, pip, pip);
+              }
             }
           }
           continue;
@@ -1358,7 +1408,17 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
       pct > 100.1 ? '#f87171' : pct > 85 ? '#fbbf24' : '#7dd3fc';
     const hitEnt = tileEntityMap.get(`${tx},${ty}`);
     if (hitEnt) {
-      lines.push({ text: `Entity: ${hitEnt.name}` });
+      const qLabel =
+        hitEnt.quality && hitEnt.quality !== 'normal'
+          ? ` [${QUALITY_SPECS[hitEnt.quality].label}]`
+          : '';
+      lines.push({
+        text: `Entity: ${hitEnt.name}${qLabel}`,
+        color:
+          hitEnt.quality && hitEnt.quality !== 'normal'
+            ? QUALITY_SPECS[hitEnt.quality].color
+            : undefined,
+      });
       if (hitEnt.recipe) lines.push({ text: `Recipe: ${hitEnt.recipe}` });
 
       const netSt = hitEnt.netId ? staNetMap.get(hitEnt.netId) : undefined;

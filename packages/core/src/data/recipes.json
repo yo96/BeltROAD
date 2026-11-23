@@ -85,7 +85,14 @@
     "beacon": { "id": "beacon", "name": "Beacon", "color": "#38bdf8", "category": "production", "stackSize": 20 },
     "construction-robot": { "id": "construction-robot", "name": "Construction Robot", "color": "#e2e8f0", "category": "logistics", "stackSize": 50 },
     "logistic-robot": { "id": "logistic-robot", "name": "Logistic Robot", "color": "#facc15", "category": "logistics", "stackSize": 50 },
-    "roboport": { "id": "roboport", "name": "Roboport", "color": "#eab308", "category": "logistics", "stackSize": 10 }
+    "roboport": { "id": "roboport", "name": "Roboport", "color": "#eab308", "category": "logistics", "stackSize": 10 },
+    "turbo-transport-belt": { "id": "turbo-transport-belt", "name": "Turbo Transport Belt", "color": "#22c55e", "category": "logistics", "stackSize": 100 },
+    "turbo-underground-belt": { "id": "turbo-underground-belt", "name": "Turbo Underground Belt", "color": "#16a34a", "category": "logistics", "stackSize": 50 },
+    "turbo-splitter": { "id": "turbo-splitter", "name": "Turbo Splitter", "color": "#22c55e", "category": "logistics", "stackSize": 50 },
+    "stack-inserter": { "id": "stack-inserter", "name": "Stack Inserter", "color": "#f8fafc", "category": "logistics", "stackSize": 50 },
+    "foundry": { "id": "foundry", "name": "Foundry", "color": "#f97316", "category": "production", "stackSize": 20 },
+    "electromagnetic-plant": { "id": "electromagnetic-plant", "name": "Electromagnetic Plant", "color": "#e879f9", "category": "production", "stackSize": 20 },
+    "cryogenic-plant": { "id": "cryogenic-plant", "name": "Cryogenic Plant", "color": "#22d3ee", "category": "production", "stackSize": 20 }
   },
   "recipes": [
     {

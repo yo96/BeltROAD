@@ -31,6 +31,7 @@ export interface BlueprintEntity {
   direction?: number;
   type?: 'input' | 'output';
   recipe?: string;
+  quality?: string;
   items?: BlueprintInsertPlan[];
   text?: string;
   always_show?: boolean;
@@ -216,6 +217,10 @@ export function entitiesToFactorio2BlueprintData(
 
     if (ent.recipe) {
       bpEnt.recipe = ent.recipe;
+    }
+
+    if (ent.quality && ent.quality !== 'normal') {
+      bpEnt.quality = ent.quality;
     }
 
     if (ent.items && ent.items.length > 0) {

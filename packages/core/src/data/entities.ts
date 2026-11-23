@@ -3,15 +3,27 @@ import {
   AssemblerTier,
   BeltTier,
   Dir,
+  MachineName,
   ModuleName,
+  PdkConfig,
   PoleTier,
+  QualityTier,
+  RecipeDef,
 } from '../types.js';
 
 export interface BeltSpec {
   tier: BeltTier;
-  beltName: 'transport-belt' | 'fast-transport-belt' | 'express-transport-belt';
-  undergroundName: 'underground-belt' | 'fast-underground-belt' | 'express-underground-belt';
-  splitterName: 'splitter' | 'fast-splitter' | 'express-splitter';
+  beltName:
+    | 'transport-belt'
+    | 'fast-transport-belt'
+    | 'express-transport-belt'
+    | 'turbo-transport-belt';
+  undergroundName:
+    | 'underground-belt'
+    | 'fast-underground-belt'
+    | 'express-underground-belt'
+    | 'turbo-underground-belt';
+  splitterName: 'splitter' | 'fast-splitter' | 'express-splitter' | 'turbo-splitter';
   itemsPerSec: number;
   /** Factorio max_distance between underground pair (5 = max 4 skipped tiles) */
   maxUgDistance: number;
@@ -46,18 +58,52 @@ export const BELT_SPECS: Record<BeltTier, BeltSpec> = {
     maxUgDistance: 9,
     color: '#38bdf8',
   },
+  turbo: {
+    tier: 'turbo',
+    beltName: 'turbo-transport-belt',
+    undergroundName: 'turbo-underground-belt',
+    splitterName: 'turbo-splitter',
+    itemsPerSec: 60,
+    maxUgDistance: 11,
+    color: '#22c55e',
+  },
+};
+
+export function effectiveBeltCapacity(
+  tier: BeltTier,
+  pdk?: Pick<PdkConfig, 'beltStackSize'>,
+): number {
+  const stack = pdk?.beltStackSize ?? 1;
+  return BELT_SPECS[tier].itemsPerSec * stack;
+}
+
+export interface QualitySpec {
+  tier: QualityTier;
+  label: string;
+  speedMultiplier: number;
+  color: string;
+  level: number;
+}
+
+export const QUALITY_SPECS: Record<QualityTier, QualitySpec> = {
+  normal: { tier: 'normal', label: 'Normal', speedMultiplier: 1.0, color: '#94a3b8', level: 0 },
+  uncommon: { tier: 'uncommon', label: 'Uncommon', speedMultiplier: 1.3, color: '#4ade80', level: 1 },
+  rare: { tier: 'rare', label: 'Rare', speedMultiplier: 1.6, color: '#38bdf8', level: 2 },
+  epic: { tier: 'epic', label: 'Epic', speedMultiplier: 1.9, color: '#c084fc', level: 3 },
+  legendary: { tier: 'legendary', label: 'Legendary', speedMultiplier: 2.5, color: '#f59e0b', level: 4 },
 };
 
 export interface MachineSpec {
-  name: 'assembling-machine-1' | 'assembling-machine-2' | 'assembling-machine-3' | 'electric-furnace';
+  name: MachineName;
   size: number;
   craftingSpeed: number;
   moduleSlots: number;
+  baseProductivity?: number;
   powerKw: number;
   drainKw: number;
 }
 
-export const MACHINE_SPECS: Record<MachineSpec['name'], MachineSpec> = {
+export const MACHINE_SPECS: Record<MachineName, MachineSpec> = {
   'assembling-machine-1': {
     name: 'assembling-machine-1',
     size: 3,
@@ -90,9 +136,107 @@ export const MACHINE_SPECS: Record<MachineSpec['name'], MachineSpec> = {
     powerKw: 180,
     drainKw: 6,
   },
+  foundry: {
+    name: 'foundry',
+    size: 4,
+    craftingSpeed: 4.0,
+    moduleSlots: 4,
+    baseProductivity: 0.5,
+    powerKw: 2500,
+    drainKw: 83.3,
+  },
+  'electromagnetic-plant': {
+    name: 'electromagnetic-plant',
+    size: 4,
+    craftingSpeed: 2.0,
+    moduleSlots: 5,
+    baseProductivity: 0.5,
+    powerKw: 2000,
+    drainKw: 66.7,
+  },
+  'cryogenic-plant': {
+    name: 'cryogenic-plant',
+    size: 5,
+    craftingSpeed: 2.0,
+    moduleSlots: 8,
+    baseProductivity: 0,
+    powerKw: 1500,
+    drainKw: 50,
+  },
 };
 
-export function assemblerNameForTier(tier: AssemblerTier): MachineSpec['name'] {
+export const EM_PLANT_RECIPES = new Set([
+  'copper-cable',
+  'electronic-circuit',
+  'advanced-circuit',
+  'processing-unit',
+  'battery',
+  'accumulator',
+  'solar-panel',
+  'substation',
+  'beacon',
+  'roboport',
+  'speed-module',
+  'speed-module-2',
+  'speed-module-3',
+  'productivity-module',
+  'productivity-module-2',
+  'productivity-module-3',
+  'efficiency-module',
+  'efficiency-module-2',
+  'efficiency-module-3',
+]);
+
+export const FOUNDRY_RECIPES = new Set([
+  'transport-belt',
+  'fast-transport-belt',
+  'express-transport-belt',
+  'turbo-transport-belt',
+  'underground-belt',
+  'fast-underground-belt',
+  'express-underground-belt',
+  'turbo-underground-belt',
+  'splitter',
+  'fast-splitter',
+  'express-splitter',
+  'turbo-splitter',
+  'pipe',
+  'pipe-to-ground',
+  'concrete',
+  'refined-concrete',
+]);
+
+export const CRYO_PLANT_RECIPES = new Set([
+  'plastic-bar',
+  'sulfur',
+  'explosives',
+  'solid-fuel',
+  'sulfuric-acid',
+  'lubricant',
+]);
+
+export function selectMachineForRecipe(recipe: RecipeDef, pdk: PdkConfig): MachineName {
+  if (pdk.spaceAgeBuildings) {
+    if (EM_PLANT_RECIPES.has(recipe.id) || EM_PLANT_RECIPES.has(recipe.outputItem)) {
+      return 'electromagnetic-plant';
+    }
+    if (FOUNDRY_RECIPES.has(recipe.id) || FOUNDRY_RECIPES.has(recipe.outputItem)) {
+      return 'foundry';
+    }
+    if (
+      recipe.category === 'chemistry' ||
+      CRYO_PLANT_RECIPES.has(recipe.id) ||
+      CRYO_PLANT_RECIPES.has(recipe.outputItem)
+    ) {
+      return 'cryogenic-plant';
+    }
+  }
+  return recipe.category === 'smelting'
+    ? 'electric-furnace'
+    : assemblerNameForTier(pdk.defaultAssemblerTier);
+}
+
+export function assemblerNameForTier(tier: AssemblerTier): MachineName {
   if (tier === 1) return 'assembling-machine-1';
   if (tier === 2) return 'assembling-machine-2';
   return 'assembling-machine-3';
@@ -100,7 +244,12 @@ export function assemblerNameForTier(tier: AssemblerTier): MachineSpec['name'] {
 
 export interface InserterSpec {
   kind: AllInserterKind;
-  name: 'inserter' | 'long-handed-inserter' | 'fast-inserter' | 'bulk-inserter';
+  name:
+    | 'inserter'
+    | 'long-handed-inserter'
+    | 'fast-inserter'
+    | 'bulk-inserter'
+    | 'stack-inserter';
   reach: 1 | 2;
   /** Conservative belt<->machine items/s throughput */
   itemsPerSec: number;
@@ -141,6 +290,14 @@ export const INSERTER_SPECS: Record<AllInserterKind, InserterSpec> = {
     powerKw: 169,
     color: '#4ade80',
   },
+  stack: {
+    kind: 'stack',
+    name: 'stack-inserter',
+    reach: 1,
+    itemsPerSec: 16.0,
+    powerKw: 200,
+    color: '#f8fafc',
+  },
 };
 
 export const INSERTER_BY_ENTITY_NAME: Record<string, InserterSpec> = {
@@ -148,6 +305,7 @@ export const INSERTER_BY_ENTITY_NAME: Record<string, InserterSpec> = {
   'long-handed-inserter': INSERTER_SPECS.long,
   'fast-inserter': INSERTER_SPECS.fast,
   'bulk-inserter': INSERTER_SPECS.bulk,
+  'stack-inserter': INSERTER_SPECS.stack,
 };
 
 export interface PoleSpec {
@@ -217,6 +375,7 @@ export function beltTierFromEntityName(name: string): BeltTier | null {
   if (name === 'transport-belt' || name === 'underground-belt' || name === 'splitter') return 'yellow';
   if (name === 'fast-transport-belt' || name === 'fast-underground-belt' || name === 'fast-splitter') return 'red';
   if (name === 'express-transport-belt' || name === 'express-underground-belt' || name === 'express-splitter') return 'blue';
+  if (name === 'turbo-transport-belt' || name === 'turbo-underground-belt' || name === 'turbo-splitter') return 'turbo';
   return null;
 }
 
@@ -228,12 +387,18 @@ export function isUndergroundName(name: string): boolean {
   return (
     name === 'underground-belt' ||
     name === 'fast-underground-belt' ||
-    name === 'express-underground-belt'
+    name === 'express-underground-belt' ||
+    name === 'turbo-underground-belt'
   );
 }
 
 export function isSplitterName(name: string): boolean {
-  return name === 'splitter' || name === 'fast-splitter' || name === 'express-splitter';
+  return (
+    name === 'splitter' ||
+    name === 'fast-splitter' ||
+    name === 'express-splitter' ||
+    name === 'turbo-splitter'
+  );
 }
 
 export function isMachineName(name: string): boolean {

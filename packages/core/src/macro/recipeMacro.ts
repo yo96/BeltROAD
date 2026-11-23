@@ -4,8 +4,10 @@ import {
   Dir,
   EntityInstance,
   InserterTier,
+  MachineName,
   MacroPin,
   PdkConfig,
+  QualityTier,
   RecipeMacroSpec,
 } from '../types.js';
 import {
@@ -14,7 +16,9 @@ import {
   MACHINE_SPECS,
   POLE_SPECS,
   PoleSpec,
+  QUALITY_SPECS,
   doesPoleSupplyEntity,
+  effectiveBeltCapacity,
 } from '../data/entities.js';
 import { getCatalog } from '../data/catalog.js';
 import { pinOutsideOffset } from './transform.js';
@@ -24,10 +28,29 @@ interface IngredientTrack {
   isDualLane: boolean;
 }
 
+function machineShortLabel(machineName: MachineName, quality?: QualityTier): string {
+  const base =
+    machineName === 'electric-furnace'
+      ? 'Furnace'
+      : machineName === 'foundry'
+        ? 'Foundry'
+        : machineName === 'electromagnetic-plant'
+          ? 'EM Plant'
+          : machineName === 'cryogenic-plant'
+            ? 'Cryo Plant'
+            : `Asm${machineName.slice(-1)}`;
+  if (quality && quality !== 'normal') {
+    return `${QUALITY_SPECS[quality].label} ${base}`;
+  }
+  return base;
+}
+
 function selectInserterKind(
   ratePerMachine: number,
   reach: 1 | 2,
   pdk: PdkConfig,
+  maxSlots = 3,
+  preferStack = false,
 ): { kind: AllInserterKind; count: number } {
   if (reach === 2) {
     const spec = INSERTER_SPECS.long;
@@ -35,9 +58,16 @@ function selectInserterKind(
     return { kind: 'long', count };
   }
 
-  const tierOrder: InserterTier[] = ['yellow', 'fast', 'bulk'];
+  const tierOrder: InserterTier[] = ['yellow', 'fast', 'bulk', 'stack'];
   const allowed = tierOrder.filter((t) => pdk.allowedInserterTiers.includes(t));
   const pool: InserterTier[] = allowed.length > 0 ? allowed : [pdk.defaultInserterTier];
+  if (preferStack && pool.includes('stack')) {
+    const stackCount = Math.min(
+      maxSlots,
+      Math.max(1, Math.ceil(ratePerMachine / INSERTER_SPECS.stack.itemsPerSec)),
+    );
+    return { kind: 'stack', count: stackCount };
+  }
   const defIdx = Math.max(0, pool.indexOf(pdk.defaultInserterTier));
 
   for (let i = defIdx; i < pool.length; i++) {
@@ -47,18 +77,24 @@ function selectInserterKind(
     }
   }
   const fastest = pool[pool.length - 1];
-  const count = Math.min(3, Math.max(1, Math.ceil(ratePerMachine / INSERTER_SPECS[fastest].itemsPerSec)));
+  const count = Math.min(
+    maxSlots,
+    Math.max(1, Math.ceil(ratePerMachine / INSERTER_SPECS[fastest].itemsPerSec)),
+  );
   return { kind: fastest, count };
 }
 
-function assignTracks(spec: RecipeMacroSpec): {
+function assignTracks(
+  spec: RecipeMacroSpec,
+  pdk: PdkConfig,
+): {
   northFar: IngredientTrack | null;
   northNear: IngredientTrack | null;
   southFar: IngredientTrack | null;
 } {
   // Sort highest throughput ingredients first so they sit on reach-1 (northNear) tracks
   const ings = [...spec.ingredientRates].sort((a, b) => b.ratePerSec - a.ratePerSec);
-  const cap = BELT_SPECS[spec.beltTier].itemsPerSec;
+  const cap = effectiveBeltCapacity(spec.beltTier, pdk);
   const tracks: IngredientTrack[] = [];
 
   if (ings.length <= 2) {
@@ -123,6 +159,7 @@ function layoutSegmentSubstations(
   count: number,
   poleSpec: PoleSpec,
   existingLastSub: number | undefined,
+  ms: number,
 ): { machineXs: number[]; substationXs: number[]; endX: number } {
   const machineXs: number[] = [];
   const substationXs: number[] = [];
@@ -136,7 +173,7 @@ function layoutSegmentSubstations(
     const needCover =
       lastSub === undefined ||
       !doesPoleSupplyEntity(lastSub, 0, poleSpec, x, 0, 1, 1) ||
-      !doesPoleSupplyEntity(lastSub, 0, poleSpec, x + 2, 0, 1, 1);
+      !doesPoleSupplyEntity(lastSub, 0, poleSpec, x + ms - 1, 0, 1, 1);
 
     const periodicSub =
       existingLastSub === undefined
@@ -149,7 +186,7 @@ function layoutSegmentSubstations(
       x += 2;
     }
     machineXs.push(x);
-    x += 3;
+    x += ms;
   }
 
   if (count > 0 && lastSub === undefined) {
@@ -159,8 +196,8 @@ function layoutSegmentSubstations(
   } else if (count > 0 && lastSub !== undefined) {
     const lastMx = machineXs[count - 1];
     if (
-      !doesPoleSupplyEntity(lastSub, 0, poleSpec, lastMx, 0, 3, 1) ||
-      !doesPoleSupplyEntity(lastSub, 0, poleSpec, lastMx + 2, 0, 1, 1)
+      !doesPoleSupplyEntity(lastSub, 0, poleSpec, lastMx, 0, ms, 1) ||
+      !doesPoleSupplyEntity(lastSub, 0, poleSpec, lastMx + ms - 1, 0, 1, 1)
     ) {
       substationXs.push(x);
       x += 2;
@@ -176,6 +213,7 @@ function layoutMachineRow(
   northInsertersPerMachine: number,
   southInsertersPerMachine: number,
   pdk: PdkConfig,
+  ms: number,
   laneFlipAfterIdx?: number,
 ): MachineRowGeometry {
   const poleSpec = POLE_SPECS[pdk.defaultPoleTier];
@@ -186,7 +224,7 @@ function layoutMachineRow(
 
   if (poleSpec.tier === 'substation') {
     if (!hasSplit) {
-      const seg = layoutSegmentSubstations(startX, machineCount, poleSpec, undefined);
+      const seg = layoutSegmentSubstations(startX, machineCount, poleSpec, undefined, ms);
       return {
         machineXs: seg.machineXs,
         poleXs: [],
@@ -197,7 +235,7 @@ function layoutMachineRow(
 
     const leftCount = laneFlipAfterIdx + 1;
     const rightCount = machineCount - leftCount;
-    const leftSeg = layoutSegmentSubstations(startX, leftCount, poleSpec, undefined);
+    const leftSeg = layoutSegmentSubstations(startX, leftCount, poleSpec, undefined, ms);
     const laneFlipX = leftSeg.endX;
     const lastLeftSub = leftSeg.substationXs[leftSeg.substationXs.length - 1];
     const rightSeg = layoutSegmentSubstations(
@@ -205,6 +243,7 @@ function layoutMachineRow(
       rightCount,
       poleSpec,
       lastLeftSub,
+      ms,
     );
 
     return {
@@ -217,11 +256,11 @@ function layoutMachineRow(
   }
 
   // Small or Medium poles sit on the north & south inserter strips.
-  // If any machine needs all 3 slots for inserters on North or South, use stride 4 so poles sit cleanly in the 1-tile gap.
-  const needsGap = northInsertersPerMachine >= 3 || southInsertersPerMachine >= 3;
-  const stride = needsGap ? 4 : 3;
-  const poleOffset = needsGap ? 3 : 2;
-  const step = poleSpec.tier === 'small' ? 1 : 2;
+  // If any machine needs all `ms` slots for inserters on North or South, use stride `ms + 1` so poles sit cleanly in the 1-tile gap.
+  const needsGap = northInsertersPerMachine >= ms || southInsertersPerMachine >= ms;
+  const stride = needsGap ? ms + 1 : ms;
+  const poleOffset = needsGap ? ms : Math.min(ms - 1, 2);
+  const step = poleSpec.tier === 'small' || ms >= 4 ? 1 : 2;
   const needSmallStarter = needsGap && poleSpec.tier === 'small' && machineCount > 0;
   const leftMachineStartX = needSmallStarter ? startX + 1 : startX;
 
@@ -231,7 +270,7 @@ function layoutMachineRow(
       machineXs.push(leftMachineStartX + i * stride);
     }
     const endX =
-      leftMachineStartX + (machineCount > 0 ? (machineCount - 1) * stride + 3 : 0);
+      leftMachineStartX + (machineCount > 0 ? (machineCount - 1) * stride + ms : 0);
 
     const poleXs: number[] = [];
     if (needSmallStarter) {
@@ -244,8 +283,8 @@ function layoutMachineRow(
       const lastMx = machineXs[machineCount - 1];
       const coveredLast = poleXs.some(
         (px) =>
-          doesPoleSupplyEntity(px, 0, poleSpec, lastMx, 0, 3, 1) &&
-          doesPoleSupplyEntity(px, 0, poleSpec, lastMx + (needsGap ? 2 : 1), 0, 1, 1),
+          doesPoleSupplyEntity(px, 0, poleSpec, lastMx, 0, ms, 1) &&
+          doesPoleSupplyEntity(px, 0, poleSpec, lastMx + (needsGap ? ms - 1 : 1), 0, 1, 1),
       );
       if (!coveredLast) {
         poleXs.push(lastMx + poleOffset);
@@ -273,14 +312,14 @@ function layoutMachineRow(
   const lastLeftMx = machineXs[leftCount - 1];
   const lastLeftCovered = poleXs.some(
     (px) =>
-      doesPoleSupplyEntity(px, 0, poleSpec, lastLeftMx, 0, 3, 1) &&
-      doesPoleSupplyEntity(px, 0, poleSpec, lastLeftMx + (needsGap ? 2 : 1), 0, 1, 1),
+      doesPoleSupplyEntity(px, 0, poleSpec, lastLeftMx, 0, ms, 1) &&
+      doesPoleSupplyEntity(px, 0, poleSpec, lastLeftMx + (needsGap ? ms - 1 : 1), 0, 1, 1),
   );
   if (!lastLeftCovered) {
     poleXs.push(lastLeftMx + poleOffset);
   }
 
-  const laneFlipX = lastLeftMx + (needsGap ? 4 : 3);
+  const laneFlipX = lastLeftMx + (needsGap ? ms + 1 : ms);
   let rightStartX = laneFlipX + 3;
   if (needsGap && poleSpec.tier === 'small') {
     // Small pole at laneFlipX + 3 powers the first right machine's leftmost inserter slot & bridges the jog
@@ -306,15 +345,15 @@ function layoutMachineRow(
   const lastRightMx = machineXs[machineCount - 1];
   const lastRightCovered = poleXs.some(
     (px) =>
-      doesPoleSupplyEntity(px, 0, poleSpec, lastRightMx, 0, 3, 1) &&
-      doesPoleSupplyEntity(px, 0, poleSpec, lastRightMx + (needsGap ? 2 : 1), 0, 1, 1),
+      doesPoleSupplyEntity(px, 0, poleSpec, lastRightMx, 0, ms, 1) &&
+      doesPoleSupplyEntity(px, 0, poleSpec, lastRightMx + (needsGap ? ms - 1 : 1), 0, 1, 1),
   );
   if (!lastRightCovered) {
     poleXs.push(lastRightMx + poleOffset);
   }
 
   const finalEndX = Math.max(
-    lastRightMx + 3,
+    lastRightMx + ms,
     ...poleXs.map((p) => p + 1),
   );
   return {
@@ -356,12 +395,13 @@ function populateStripEntities(
       : {};
   const beltSpec = BELT_SPECS[spec.beltTier];
   const poleSpec = POLE_SPECS[pdk.defaultPoleTier];
+  const ms = MACHINE_SPECS[spec.machineName].size;
   const yFarN = yMachine - 3;
   const yNearN = yMachine - 2;
   const yInsN = yMachine - 1;
-  const yInsS = yMachine + 3;
-  const yOut = yMachine + 4;
-  const yFarS = yMachine + 5;
+  const yInsS = yMachine + ms;
+  const yOut = yMachine + ms + 1;
+  const yFarS = yMachine + ms + 2;
 
   let uid = 0;
   const eid = (tag: string) => `${macroId}:r${rowIdx}:${tag}:${uid++}`;
@@ -373,10 +413,11 @@ function populateStripEntities(
       name: spec.machineName,
       tx: mx,
       ty: yMachine,
-      w: 3,
-      h: 3,
+      w: ms,
+      h: ms,
       direction: Dir.NORTH,
       recipe: spec.recipeId,
+      quality: spec.quality,
       items: spec.modules.length > 0 ? [...spec.modules] : undefined,
       macroId,
       item: spec.outputItem,
@@ -430,7 +471,8 @@ function populateStripEntities(
   let maxSouthInX = xStart;
 
   for (const mx of geom.machineXs) {
-    const northFree = [mx, mx + 1, mx + 2].filter((x) => !poleSet.has(x));
+    const slotXs = Array.from({ length: ms }, (_, k) => mx + k);
+    const northFree = slotXs.filter((x) => !poleSet.has(x));
     let nCursor = 0;
     if (northNearIns) {
       const nearLimit = northFarIns ? Math.max(1, northFree.length - 1) : northFree.length;
@@ -469,7 +511,7 @@ function populateStripEntities(
       }
     }
 
-    const southFree = [mx, mx + 1, mx + 2].filter((x) => !poleSet.has(x));
+    const southFree = slotXs.filter((x) => !poleSet.has(x));
     let sCursor = 0;
     for (let c = 0; c < outIns.count && sCursor < southFree.length; c++) {
       entities.push({
@@ -623,7 +665,10 @@ function buildSingleRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledMac
   const catalog = getCatalog();
   const recipe = catalog.recipesById[spec.recipeId];
   const beltSpec = BELT_SPECS[spec.beltTier];
-  const { northFar, northNear, southFar } = assignTracks(spec);
+  const beltCap = effectiveBeltCapacity(spec.beltTier, pdk);
+  const ms = MACHINE_SPECS[spec.machineName].size;
+  const preferStackOut = (pdk.beltStackSize ?? 1) > 1;
+  const { northFar, northNear, southFar } = assignTracks(spec, pdk);
 
   const hasDualNorth =
     (northFar?.isDualLane ?? false) || (northNear?.isDualLane ?? false);
@@ -635,8 +680,8 @@ function buildSingleRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledMac
   const yMachine = topPad + northTrackRows + 1; // +1 for North inserter strip
   const yFarN = yMachine - 3;
   const yNearN = yMachine - 2;
-  const yOut = yMachine + 4;
-  const yFarS = yMachine + 5;
+  const yOut = yMachine + ms + 1;
+  const yFarS = yMachine + ms + 2;
   const bottomPad = hasDualSouth ? 1 : 0;
   const height = (southFar ? yFarS + 1 : yOut + 1) + bottomPad;
 
@@ -646,6 +691,7 @@ function buildSingleRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledMac
         northFar.items.reduce((a, b) => a + b.ratePerSec, 0) / M,
         2,
         pdk,
+        ms,
       )
     : null;
   const northNearIns = northNear
@@ -653,14 +699,22 @@ function buildSingleRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledMac
         northNear.items.reduce((a, b) => a + b.ratePerSec, 0) / M,
         1,
         pdk,
+        ms,
       )
     : null;
-  const outIns = selectInserterKind(spec.outputRatePerSec / M, 1, pdk);
+  const outIns = selectInserterKind(
+    spec.outputRatePerSec / M,
+    1,
+    pdk,
+    ms,
+    preferStackOut,
+  );
   const southFarIns = southFar
     ? selectInserterKind(
         southFar.items.reduce((a, b) => a + b.ratePerSec, 0) / M,
         2,
         pdk,
+        ms,
       )
     : null;
 
@@ -669,12 +723,12 @@ function buildSingleRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledMac
 
   const needsLaneBalance =
     Boolean(spec.balanceOutputLanes) ||
-    spec.outputRatePerSec > beltSpec.itemsPerSec * 0.49;
+    spec.outputRatePerSec > beltCap * 0.49;
   const laneFlipAfterIdx =
     needsLaneBalance && M >= 2 ? Math.floor(M / 2) - 1 : undefined;
   const tailW = needsLaneBalance && M === 1 ? 2 : 0;
 
-  const geom = layoutMachineRow(headerW, M, nNeeded, sNeeded, pdk, laneFlipAfterIdx);
+  const geom = layoutMachineRow(headerW, M, nNeeded, sNeeded, pdk, ms, laneFlipAfterIdx);
   const width = geom.endX + tailW;
 
   const entities: EntityInstance[] = [];
@@ -857,14 +911,14 @@ function buildSingleRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledMac
       id: `${spec.id}:tail:sp`,
       name: beltSpec.splitterName,
       tx: geom.endX,
-      ty: yMachine + 3,
+      ty: yMachine + ms,
       w: 1,
       h: 2,
       direction: Dir.EAST,
       macroId: spec.id,
       role: 'splitter-macro',
     });
-    entities.push(mkBelt(geom.endX + 1, yMachine + 3, Dir.SOUTH, spec.outputItem));
+    entities.push(mkBelt(geom.endX + 1, yMachine + ms, Dir.SOUTH, spec.outputItem));
     entities.push(mkBelt(geom.endX + 1, yOut, Dir.EAST, spec.outputItem, true));
   }
 
@@ -887,7 +941,7 @@ function buildSingleRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledMac
     .filter((e) => e.role === 'machine' || e.role === 'inserter-in' || e.role === 'inserter-out')
     .map((e) => ({ tx: e.tx, ty: e.ty, w: e.w, h: e.h }));
 
-  const sublabel = `${spec.machineCount}× ${MACHINE_SPECS[spec.machineName].name === 'electric-furnace' ? 'Furnace' : `Asm${spec.machineName.slice(-1)}`}`;
+  const sublabel = `${spec.machineCount}× ${machineShortLabel(spec.machineName, spec.quality)}`;
 
   return {
     id: spec.id,
@@ -911,7 +965,7 @@ function buildSingleRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledMac
  * Cuts height and internal belt length dramatically compared to duplicated 2-row layouts.
  */
 function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledMacro | null {
-  const { northFar, northNear, southFar } = assignTracks(spec);
+  const { northFar, northNear, southFar } = assignTracks(spec, pdk);
   if (southFar !== null) return null;
   if (spec.machineCount < 4 || !northNear) return null;
 
@@ -939,32 +993,35 @@ function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): Compil
   const recipe = catalog.recipesById[spec.recipeId];
   const beltSpec = BELT_SPECS[spec.beltTier];
   const poleSpec = POLE_SPECS[pdk.defaultPoleTier];
+  const ms = MACHINE_SPECS[spec.machineName].size;
+  const preferStackOut = (pdk.beltStackSize ?? 1) > 1;
 
-  // Vertical coordinates
+  // Vertical coordinates (parameterized by ms x ms machine footprint)
   const yOutTop = 0;
   const yInsOutTop = 1;
-  const yMachTop = 2; // 2..4
-  const yInsInTop = 5;
-  const yTrack1 = 6;
-  const yTrack2 = hasTwoInputs ? 7 : -1;
-  const yInsInBot = hasTwoInputs ? 8 : 7;
-  const yMachBot = hasTwoInputs ? 9 : 8; // 9..11 or 8..10
-  const yInsOutBot = hasTwoInputs ? 12 : 11;
-  const yOutBot = hasTwoInputs ? 13 : 12;
+  const yMachTop = 2; // 2 .. 2+ms-1
+  const yInsInTop = 2 + ms;
+  const yTrack1 = 3 + ms;
+  const yTrack2 = hasTwoInputs ? 4 + ms : -1;
+  const yInsInBot = hasTwoInputs ? 5 + ms : 4 + ms;
+  const yMachBot = hasTwoInputs ? 6 + ms : 5 + ms;
+  const yInsOutBot = yMachBot + ms;
+  const yOutBot = yMachBot + ms + 1;
   const height = yOutBot + 1;
+  const dy = yTrack1 - 6;
 
   // Inserter requirements for top and bottom strips
-  const topInsTrack1 = selectInserterKind(r1PerMach, 1, pdk);
+  const topInsTrack1 = selectInserterKind(r1PerMach, 1, pdk, ms);
   const topInsTrack2 =
-    hasTwoInputs && northFar ? selectInserterKind(r2PerMach, 2, pdk) : null;
+    hasTwoInputs && northFar ? selectInserterKind(r2PerMach, 2, pdk, ms) : null;
 
   const botInsTrack2 =
-    hasTwoInputs && northFar ? selectInserterKind(r2PerMach, 1, pdk) : null;
+    hasTwoInputs && northFar ? selectInserterKind(r2PerMach, 1, pdk, ms) : null;
   const botInsTrack1 = hasTwoInputs
-    ? selectInserterKind(r1PerMach, 2, pdk)
-    : selectInserterKind(r1PerMach, 1, pdk);
+    ? selectInserterKind(r1PerMach, 2, pdk, ms)
+    : selectInserterKind(r1PerMach, 1, pdk, ms);
 
-  const outIns = selectInserterKind(spec.outputRatePerSec / M, 1, pdk);
+  const outIns = selectInserterKind(spec.outputRatePerSec / M, 1, pdk, ms, preferStackOut);
 
   const nNeeded = Math.max(
     topInsTrack1.count + (topInsTrack2?.count ?? 0),
@@ -973,8 +1030,8 @@ function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): Compil
   const sNeeded = outIns.count;
 
   const headerW = hasDual ? 5 : 0;
-  const geomTop = layoutMachineRow(headerW, mTop, nNeeded, sNeeded, pdk);
-  const geomBot = layoutMachineRow(headerW, mBot, nNeeded, sNeeded, pdk);
+  const geomTop = layoutMachineRow(headerW, mTop, nNeeded, sNeeded, pdk, ms);
+  const geomBot = layoutMachineRow(headerW, mBot, nNeeded, sNeeded, pdk, ms);
   const stripEndX = Math.max(geomTop.endX, geomBot.endX);
 
   const entities: EntityInstance[] = [];
@@ -1027,10 +1084,11 @@ function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): Compil
       name: spec.machineName,
       tx: mx,
       ty: yMachTop,
-      w: 3,
-      h: 3,
+      w: ms,
+      h: ms,
       direction: Dir.NORTH,
       recipe: spec.recipeId,
+      quality: spec.quality,
       items: spec.modules.length > 0 ? [...spec.modules] : undefined,
       macroId: spec.id,
       item: spec.outputItem,
@@ -1043,11 +1101,12 @@ function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): Compil
       name: spec.machineName,
       tx: mx,
       ty: yMachBot,
-      w: 3,
-      h: 3,
+      w: ms,
+      h: ms,
       direction: Dir.NORTH,
       macroId: spec.id,
       recipe: spec.recipeId,
+      quality: spec.quality,
       items: spec.modules.length > 0 ? [...spec.modules] : undefined,
       item: spec.outputItem,
       role: 'machine',
@@ -1136,7 +1195,8 @@ function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): Compil
   // Inserters for Top Row (faces SOUTH into center tracks, output faces SOUTH picking from machine)
   let maxInX = 0;
   for (const mx of geomTop.machineXs) {
-    const inFree = [mx, mx + 1, mx + 2].filter((x) => !topPoleSet.has(x));
+    const slotXs = Array.from({ length: ms }, (_, k) => mx + k);
+    const inFree = slotXs.filter((x) => !topPoleSet.has(x));
     let ic = 0;
     const t1Limit = topInsTrack2 ? Math.max(1, inFree.length - 1) : inFree.length;
     for (let c = 0; c < topInsTrack1.count && ic < t1Limit; c++) {
@@ -1172,7 +1232,7 @@ function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): Compil
       }
     }
 
-    const outFree = [mx, mx + 1, mx + 2].filter((x) => !topPoleSet.has(x));
+    const outFree = slotXs.filter((x) => !topPoleSet.has(x));
     for (let c = 0; c < outIns.count && c < outFree.length; c++) {
       entities.push({
         id: eid('outt'),
@@ -1191,7 +1251,8 @@ function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): Compil
 
   // Inserters for Bottom Row (faces NORTH into center tracks, output faces NORTH picking from machine)
   for (const mx of geomBot.machineXs) {
-    const inFree = [mx, mx + 1, mx + 2].filter((x) => !botPoleSet.has(x));
+    const slotXs = Array.from({ length: ms }, (_, k) => mx + k);
+    const inFree = slotXs.filter((x) => !botPoleSet.has(x));
     let ic = 0;
     if (botInsTrack2) {
       const b2Limit = Math.max(1, inFree.length - 1);
@@ -1227,7 +1288,7 @@ function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): Compil
       });
     }
 
-    const outFree = [mx, mx + 1, mx + 2].filter((x) => !botPoleSet.has(x));
+    const outFree = slotXs.filter((x) => !botPoleSet.has(x));
     for (let c = 0; c < outIns.count && c < outFree.length; c++) {
       entities.push({
         id: eid('outb'),
@@ -1257,26 +1318,26 @@ function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): Compil
   const t2Meta = northFar ? trackMeta(northFar) : null;
 
   if (hasDual) {
-    // 5-tile West header (x=0..4) merges dual-lane center tracks with 2-tile vertical pin spacing
+    // 5-tile West header (x=0..4) merges dual-lane center tracks with 2-tile vertical pin spacing (shifted by dy = yTrack1 - 6)
     if (hasTwoInputs && northFar && t2Meta) {
       if (northFar.isDualLane) {
         const [b1, b2] = northFar.items;
-        entities.push(mkBelt(0, 6, Dir.EAST, b1.item));
-        addInPin(b1.item, b1.ratePerSec, 0, 6, Dir.EAST);
-        entities.push(mkBelt(1, 6, Dir.SOUTH, b1.item));
+        entities.push(mkBelt(0, 6 + dy, Dir.EAST, b1.item));
+        addInPin(b1.item, b1.ratePerSec, 0, 6 + dy, Dir.EAST);
+        entities.push(mkBelt(1, 6 + dy, Dir.SOUTH, b1.item));
 
-        entities.push(mkBelt(0, 8, Dir.EAST, b2.item));
-        addInPin(b2.item, b2.ratePerSec, 0, 8, Dir.EAST);
-        entities.push(mkBelt(1, 8, Dir.NORTH, b2.item));
+        entities.push(mkBelt(0, 8 + dy, Dir.EAST, b2.item));
+        addInPin(b2.item, b2.ratePerSec, 0, 8 + dy, Dir.EAST);
+        entities.push(mkBelt(1, 8 + dy, Dir.NORTH, b2.item));
 
         entities.push(
-          mkBelt(1, 7, Dir.EAST, undefined, true, [b1.item, b2.item]),
+          mkBelt(1, 7 + dy, Dir.EAST, undefined, true, [b1.item, b2.item]),
         );
       } else {
         const [b1] = northFar.items;
-        entities.push(mkBelt(0, 7, Dir.EAST, b1.item));
-        addInPin(b1.item, b1.ratePerSec, 0, 7, Dir.EAST);
-        entities.push(mkBelt(1, 7, Dir.EAST, b1.item));
+        entities.push(mkBelt(0, 7 + dy, Dir.EAST, b1.item));
+        addInPin(b1.item, b1.ratePerSec, 0, 7 + dy, Dir.EAST);
+        entities.push(mkBelt(1, 7 + dy, Dir.EAST, b1.item));
       }
 
       if (track1Dual) {
@@ -1284,7 +1345,7 @@ function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): Compil
           id: eid('ug2i'),
           name: beltSpec.undergroundName,
           tx: 2,
-          ty: 7,
+          ty: 7 + dy,
           w: 1,
           h: 1,
           direction: Dir.EAST,
@@ -1296,7 +1357,7 @@ function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): Compil
           id: eid('ug2o'),
           name: beltSpec.undergroundName,
           tx: 4,
-          ty: 7,
+          ty: 7 + dy,
           w: 1,
           h: 1,
           direction: Dir.EAST,
@@ -1305,47 +1366,47 @@ function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): Compil
           role: 'ug-macro',
         });
       } else {
-        entities.push(mkBelt(2, 7, Dir.EAST, t2Meta.item, false, t2Meta.laneItems));
-        entities.push(mkBelt(3, 7, Dir.EAST, t2Meta.item, false, t2Meta.laneItems));
-        entities.push(mkBelt(4, 7, Dir.EAST, t2Meta.item, false, t2Meta.laneItems));
+        entities.push(mkBelt(2, 7 + dy, Dir.EAST, t2Meta.item, false, t2Meta.laneItems));
+        entities.push(mkBelt(3, 7 + dy, Dir.EAST, t2Meta.item, false, t2Meta.laneItems));
+        entities.push(mkBelt(4, 7 + dy, Dir.EAST, t2Meta.item, false, t2Meta.laneItems));
       }
     }
 
     if (track1Dual) {
       const [a1, a2] = northNear.items;
-      entities.push(mkBelt(0, 4, Dir.EAST, a1.item));
-      addInPin(a1.item, a1.ratePerSec, 0, 4, Dir.EAST);
-      entities.push(mkBelt(1, 4, Dir.EAST, a1.item));
-      entities.push(mkBelt(2, 4, Dir.EAST, a1.item));
-      entities.push(mkBelt(3, 4, Dir.SOUTH, a1.item));
-      entities.push(mkBelt(3, 5, Dir.SOUTH, a1.item));
+      entities.push(mkBelt(0, 4 + dy, Dir.EAST, a1.item));
+      addInPin(a1.item, a1.ratePerSec, 0, 4 + dy, Dir.EAST);
+      entities.push(mkBelt(1, 4 + dy, Dir.EAST, a1.item));
+      entities.push(mkBelt(2, 4 + dy, Dir.EAST, a1.item));
+      entities.push(mkBelt(3, 4 + dy, Dir.SOUTH, a1.item));
+      entities.push(mkBelt(3, 5 + dy, Dir.SOUTH, a1.item));
 
-      entities.push(mkBelt(0, 10, Dir.EAST, a2.item));
-      addInPin(a2.item, a2.ratePerSec, 0, 10, Dir.EAST);
-      entities.push(mkBelt(1, 10, Dir.EAST, a2.item));
-      entities.push(mkBelt(2, 10, Dir.EAST, a2.item));
-      entities.push(mkBelt(3, 10, Dir.NORTH, a2.item));
-      entities.push(mkBelt(3, 9, Dir.NORTH, a2.item));
-      entities.push(mkBelt(3, 8, Dir.NORTH, a2.item));
-      entities.push(mkBelt(3, 7, Dir.NORTH, a2.item));
+      entities.push(mkBelt(0, 10 + dy, Dir.EAST, a2.item));
+      addInPin(a2.item, a2.ratePerSec, 0, 10 + dy, Dir.EAST);
+      entities.push(mkBelt(1, 10 + dy, Dir.EAST, a2.item));
+      entities.push(mkBelt(2, 10 + dy, Dir.EAST, a2.item));
+      entities.push(mkBelt(3, 10 + dy, Dir.NORTH, a2.item));
+      entities.push(mkBelt(3, 9 + dy, Dir.NORTH, a2.item));
+      entities.push(mkBelt(3, 8 + dy, Dir.NORTH, a2.item));
+      entities.push(mkBelt(3, 7 + dy, Dir.NORTH, a2.item));
 
       entities.push(
-        mkBelt(3, 6, Dir.EAST, undefined, true, [a1.item, a2.item]),
+        mkBelt(3, 6 + dy, Dir.EAST, undefined, true, [a1.item, a2.item]),
       );
       entities.push(
-        mkBelt(4, 6, Dir.EAST, undefined, false, [a1.item, a2.item]),
+        mkBelt(4, 6 + dy, Dir.EAST, undefined, false, [a1.item, a2.item]),
       );
     } else {
-      // Single high-rate item on Track 1 curves around (1,6) into (4,6) -> full 2-lane belt
+      // Single high-rate item on Track 1 curves around (1,6+dy) into (4,6+dy) -> full 2-lane belt
       const [a1] = northNear.items;
-      entities.push(mkBelt(0, 4, Dir.EAST, a1.item));
-      addInPin(a1.item, a1.ratePerSec, 0, 4, Dir.EAST);
-      entities.push(mkBelt(1, 4, Dir.EAST, a1.item));
-      entities.push(mkBelt(2, 4, Dir.EAST, a1.item));
-      entities.push(mkBelt(3, 4, Dir.EAST, a1.item));
-      entities.push(mkBelt(4, 4, Dir.SOUTH, a1.item));
-      entities.push(mkBelt(4, 5, Dir.SOUTH, a1.item));
-      entities.push(mkBelt(4, 6, Dir.EAST, a1.item));
+      entities.push(mkBelt(0, 4 + dy, Dir.EAST, a1.item));
+      addInPin(a1.item, a1.ratePerSec, 0, 4 + dy, Dir.EAST);
+      entities.push(mkBelt(1, 4 + dy, Dir.EAST, a1.item));
+      entities.push(mkBelt(2, 4 + dy, Dir.EAST, a1.item));
+      entities.push(mkBelt(3, 4 + dy, Dir.EAST, a1.item));
+      entities.push(mkBelt(4, 4 + dy, Dir.SOUTH, a1.item));
+      entities.push(mkBelt(4, 5 + dy, Dir.SOUTH, a1.item));
+      entities.push(mkBelt(4, 6 + dy, Dir.EAST, a1.item));
     }
 
     for (let x = headerW; x < inBeltEnd; x++) {
@@ -1414,7 +1475,7 @@ function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): Compil
     .filter((e) => e.role === 'machine' || e.role === 'inserter-in' || e.role === 'inserter-out')
     .map((e) => ({ tx: e.tx, ty: e.ty, w: e.w, h: e.h }));
 
-  const sublabel = `${spec.machineCount}× ${MACHINE_SPECS[spec.machineName].name === 'electric-furnace' ? 'Furnace' : `Asm${spec.machineName.slice(-1)}`}`;
+  const sublabel = `${spec.machineCount}× ${machineShortLabel(spec.machineName, spec.quality)}`;
 
   return {
     id: spec.id,

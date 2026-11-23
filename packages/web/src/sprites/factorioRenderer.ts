@@ -7,6 +7,7 @@ import {
   FloorplanResult,
   INSERTER_BY_ENTITY_NAME,
   POLE_BY_ENTITY_NAME,
+  QUALITY_SPECS,
   StaNetReport,
   beltTierFromEntityName,
   dirDelta,
@@ -127,6 +128,14 @@ function tierColors(tier: BeltTier): {
   chevron: string;
   bed: string;
 } {
+  if (tier === 'turbo') {
+    return {
+      rail: '#14532d',
+      trim: '#22c55e',
+      chevron: '#86efac',
+      bed: '#1e2b22',
+    };
+  }
   if (tier === 'red') {
     return {
       rail: '#7c2d12',
@@ -519,40 +528,77 @@ function drawMachineEntity(
     );
   } else {
     const isFurnace = e.name === 'electric-furnace';
+    const isFoundry = e.name === 'foundry';
+    const isEmPlant = e.name === 'electromagnetic-plant';
+    const isCryo = e.name === 'cryogenic-plant';
     const margin = Math.max(1.5, s * 0.08);
     const bx = ex + margin;
     const by = ey + margin;
     const bw = ew - margin * 2;
     const bh = eh - margin * 2;
 
-    if (isFurnace) {
-      // Heavy steel Electric Furnace chassis + glowing thermal coils
-      ctx.fillStyle = '#3f454f';
+    if (isFurnace || isFoundry) {
+      // Heavy steel Electric Furnace or Space Age molten Foundry
+      ctx.fillStyle = isFoundry ? '#5c2410' : '#3f454f';
       ctx.fillRect(bx, by, bw, bh);
-      ctx.strokeStyle = '#737d8c';
+      ctx.strokeStyle = isFoundry ? '#fb923c' : '#737d8c';
       ctx.lineWidth = Math.max(1.4, s * 0.08);
       ctx.strokeRect(bx, by, bw, bh);
 
-      // Inner dark insulation deck
-      ctx.fillStyle = '#242931';
+      ctx.fillStyle = isFoundry ? '#2b1309' : '#242931';
       ctx.fillRect(bx + bw * 0.14, by + bh * 0.14, bw * 0.72, bh * 0.72);
 
-      // Glowing orange furnace core
-      const glow = ctx.createRadialGradient(cx, cy, bw * 0.04, cx, cy, bw * 0.3);
+      const glow = ctx.createRadialGradient(cx, cy, bw * 0.04, cx, cy, bw * 0.32);
       glow.addColorStop(0, '#fde047');
       glow.addColorStop(0.45, '#f97316');
       glow.addColorStop(1, 'rgba(234,88,12,0.12)');
       ctx.fillStyle = glow;
       ctx.beginPath();
-      ctx.arc(cx, cy, bw * 0.28, 0, Math.PI * 2);
+      ctx.arc(cx, cy, bw * (isFoundry ? 0.32 : 0.28), 0, Math.PI * 2);
       ctx.fill();
 
-      // Vertical radiator pipes along sides
       if (s >= 10) {
-        ctx.fillStyle = '#64748b';
+        ctx.fillStyle = isFoundry ? '#9a3412' : '#64748b';
         ctx.fillRect(bx + bw * 0.06, by + bh * 0.2, bw * 0.07, bh * 0.6);
         ctx.fillRect(bx + bw * 0.87, by + bh * 0.2, bw * 0.07, bh * 0.6);
       }
+    } else if (isEmPlant) {
+      ctx.fillStyle = '#3b1c6e';
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.strokeStyle = '#e879f9';
+      ctx.lineWidth = Math.max(1.4, s * 0.08);
+      ctx.strokeRect(bx, by, bw, bh);
+
+      ctx.fillStyle = '#1f103d';
+      ctx.beginPath();
+      ctx.arc(cx, cy, bw * 0.36, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#c084fc';
+      ctx.lineWidth = Math.max(1.2, s * 0.07);
+      ctx.stroke();
+
+      const glow = ctx.createRadialGradient(cx, cy, bw * 0.04, cx, cy, bw * 0.28);
+      glow.addColorStop(0, '#f5d0fe');
+      glow.addColorStop(0.6, '#d946ef');
+      glow.addColorStop(1, 'rgba(192,132,252,0.1)');
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(cx, cy, bw * 0.22, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (isCryo) {
+      ctx.fillStyle = '#164e63';
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.strokeStyle = '#22d3ee';
+      ctx.lineWidth = Math.max(1.4, s * 0.08);
+      ctx.strokeRect(bx, by, bw, bh);
+
+      ctx.fillStyle = '#0c2d3a';
+      ctx.fillRect(bx + bw * 0.14, by + bh * 0.14, bw * 0.72, bh * 0.72);
+      ctx.fillStyle = '#67e8f9';
+      ctx.beginPath();
+      ctx.arc(cx - bw * 0.16, cy, bw * 0.14, 0, Math.PI * 2);
+      ctx.arc(cx + bw * 0.16, cy, bw * 0.14, 0, Math.PI * 2);
+      ctx.fill();
     } else {
       // Factorio Assembling Machine tier body colors
       const tier = e.name.endsWith('1') ? 1 : e.name.endsWith('3') ? 3 : 2;
@@ -607,6 +653,16 @@ function drawMachineEntity(
       ctx.beginPath();
       ctx.arc(bx + bw * 0.16, by + bh * 0.16, Math.max(1.8, s * 0.09), 0, Math.PI * 2);
       ctx.fill();
+    }
+  }
+
+  // Quality tier dots (top-right of machine, clear of status light & centered bottom module icons)
+  if (e.quality && e.quality !== 'normal' && s >= 7) {
+    const qSpec = QUALITY_SPECS[e.quality];
+    const pip = Math.max(2.5, s * 0.2);
+    for (let qi = 0; qi < qSpec.level; qi++) {
+      ctx.fillStyle = qSpec.color;
+      ctx.fillRect(ex + ew - 3 - pip - qi * (pip + 1.5), ey + 3, pip, pip);
     }
   }
 
@@ -1111,8 +1167,17 @@ export function renderFactorioScene(
         ? utilColorFn(macroUtilMap.get(m.macroId)!)
         : null;
     if (fastLod) {
-      const isFurnace = m.name === 'electric-furnace';
-      ctx.fillStyle = hColor ?? (isFurnace ? '#64748b' : '#2a5f82');
+      const mColor =
+        m.name === 'electric-furnace'
+          ? '#64748b'
+          : m.name === 'foundry'
+            ? '#9a3412'
+            : m.name === 'electromagnetic-plant'
+              ? '#6d28d9'
+              : m.name === 'cryogenic-plant'
+                ? '#0e7490'
+                : '#2a5f82';
+      ctx.fillStyle = hColor ?? mColor;
       ctx.fillRect(
         ox + m.tx * s + 0.3,
         oy + m.ty * s + 0.3,

@@ -1,12 +1,15 @@
 import yaml from 'js-yaml';
 import {
+  BeltStackSize,
   DesignSpec,
   OptimizationConfig,
   OptimizationLevel,
   PdkConfig,
   PinConstraint,
+  QualityTier,
   TargetSpec,
 } from '../types.js';
+import { QUALITY_SPECS } from '../data/entities.js';
 import { getCatalog } from '../data/catalog.js';
 
 export function defaultOptimizationConfig(level: OptimizationLevel = 'compact'): OptimizationConfig {
@@ -60,11 +63,14 @@ export function defaultPdkConfig(): PdkConfig {
     defaultBeltTier: 'red',
     allowedBeltTiers: ['yellow', 'red', 'blue'],
     downsizeLowRateBelts: false,
+    beltStackSize: 1,
     defaultAssemblerTier: 2,
     allowedAssemblerTiers: [1, 2, 3],
     defaultInserterTier: 'fast',
     allowedInserterTiers: ['yellow', 'long', 'fast', 'bulk'],
     defaultPoleTier: 'medium',
+    machineQuality: 'normal',
+    spaceAgeBuildings: false,
     modules: {
       global: [],
       byRecipe: {},
@@ -78,24 +84,33 @@ export function normalizeSpec(raw: Partial<DesignSpec>): DesignSpec {
   const defPdk = defaultPdkConfig();
   const rawPdk = raw.pdk ?? ({} as Partial<PdkConfig>);
 
+  const rawStack = rawPdk.beltStackSize;
+  const beltStackSize: BeltStackSize = rawStack === 2 || rawStack === 4 ? rawStack : 1;
+  const rawQuality = rawPdk.machineQuality;
+  const machineQuality: QualityTier =
+    rawQuality && rawQuality in QUALITY_SPECS ? rawQuality : 'normal';
+
   const pdk: PdkConfig = {
     defaultBeltTier: rawPdk.defaultBeltTier ?? defPdk.defaultBeltTier,
     allowedBeltTiers:
       rawPdk.allowedBeltTiers && rawPdk.allowedBeltTiers.length > 0
-        ? rawPdk.allowedBeltTiers
-        : defPdk.allowedBeltTiers,
+        ? [...rawPdk.allowedBeltTiers]
+        : [...defPdk.allowedBeltTiers],
     downsizeLowRateBelts: rawPdk.downsizeLowRateBelts ?? defPdk.downsizeLowRateBelts,
+    beltStackSize,
     defaultAssemblerTier: rawPdk.defaultAssemblerTier ?? defPdk.defaultAssemblerTier,
     allowedAssemblerTiers:
       rawPdk.allowedAssemblerTiers && rawPdk.allowedAssemblerTiers.length > 0
-        ? rawPdk.allowedAssemblerTiers
-        : defPdk.allowedAssemblerTiers,
+        ? [...rawPdk.allowedAssemblerTiers]
+        : [...defPdk.allowedAssemblerTiers],
     defaultInserterTier: rawPdk.defaultInserterTier ?? defPdk.defaultInserterTier,
     allowedInserterTiers:
       rawPdk.allowedInserterTiers && rawPdk.allowedInserterTiers.length > 0
-        ? rawPdk.allowedInserterTiers
-        : defPdk.allowedInserterTiers,
+        ? [...rawPdk.allowedInserterTiers]
+        : [...defPdk.allowedInserterTiers],
     defaultPoleTier: rawPdk.defaultPoleTier ?? defPdk.defaultPoleTier,
+    machineQuality,
+    spaceAgeBuildings: Boolean(rawPdk.spaceAgeBuildings),
     modules: {
       global: rawPdk.modules?.global ?? [],
       byRecipe: rawPdk.modules?.byRecipe ?? {},
@@ -106,6 +121,12 @@ export function normalizeSpec(raw: Partial<DesignSpec>): DesignSpec {
 
   if (!pdk.allowedBeltTiers.includes(pdk.defaultBeltTier)) {
     pdk.allowedBeltTiers = [pdk.defaultBeltTier, ...pdk.allowedBeltTiers];
+  }
+  if (!pdk.allowedInserterTiers.includes(pdk.defaultInserterTier)) {
+    pdk.allowedInserterTiers = [...pdk.allowedInserterTiers, pdk.defaultInserterTier];
+  }
+  if (beltStackSize > 1 && !pdk.allowedInserterTiers.includes('stack')) {
+    pdk.allowedInserterTiers = [...pdk.allowedInserterTiers, 'stack'];
   }
 
   const rawFloor = raw.floorplan ?? ({} as DesignSpec['floorplan']);

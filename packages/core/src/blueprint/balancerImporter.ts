@@ -113,11 +113,13 @@ function extractBalancerFromBlueprint(bp: BlueprintData, idx: number): BalancerT
 
   // Determine dominant belt tier and verify no weaving
   const tiersPresent = new Set(rawDefs.map((r) => r.tier));
-  const beltTier: BeltTier = tiersPresent.has('blue')
-    ? 'blue'
-    : tiersPresent.has('red')
-      ? 'red'
-      : 'yellow';
+  const beltTier: BeltTier = tiersPresent.has('turbo')
+    ? 'turbo'
+    : tiersPresent.has('blue')
+      ? 'blue'
+      : tiersPresent.has('red')
+        ? 'red'
+        : 'yellow';
 
   // Map occupied tiles to detect perimeter input & output ports
   const tileMap = new Map<string, BalancerEntityDef>();

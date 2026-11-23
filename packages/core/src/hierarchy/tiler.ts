@@ -21,7 +21,7 @@ import {
   TilingSummary,
 } from '../types.js';
 import type { PipelineOptions } from '../pipeline.js';
-import { BELT_SPECS, MACHINE_SPECS } from '../data/entities.js';
+import { BELT_SPECS, MACHINE_SPECS, effectiveBeltCapacity } from '../data/entities.js';
 import { dirDelta, flipDirX } from '../geometry.js';
 import { synthesizeDesign } from '../synth/synthesize.js';
 import { buildPowerGrid } from '../pdn/powerGrid.js';
@@ -323,6 +323,7 @@ interface TrunkSpec {
 function planTrunksForColumnPins(
   colPins: PerimeterPin[],
   rowCount: number,
+  pdk?: Pick<DesignSpec['pdk'], 'beltStackSize'>,
   maxTrunks?: number,
 ): { trunks: TrunkSpec[]; consolidatedIds: Set<string> } {
   if (rowCount < 2) return { trunks: [], consolidatedIds: new Set() };
@@ -333,7 +334,7 @@ function planTrunksForColumnPins(
   const ordered = [...colPins].sort((a, b) => a.y - b.y);
   for (const pin of ordered) {
     if (maxTrunks !== undefined && trunks.length >= maxTrunks) break;
-    const beltCap = BELT_SPECS[pin.beltTier].itemsPerSec;
+    const beltCap = effectiveBeltCapacity(pin.beltTier, pdk);
     const g = Math.floor((beltCap + 1e-6) / Math.max(1e-6, pin.ratePerSec));
     if (g < 2) continue;
 
@@ -523,8 +524,9 @@ function buildInputBusForColumn(
   tileBoundaryAdjacentX: number,
   tilePrefixes: string[],
   tileInputNetByPrefixAndPinId: Map<string, SynthNet>,
+  pdk?: Pick<DesignSpec['pdk'], 'beltStackSize'>,
 ): void {
-  const { trunks, consolidatedIds } = planTrunksForColumnPins(unitInPins, rowCount);
+  const { trunks, consolidatedIds } = planTrunksForColumnPins(unitInPins, rowCount, pdk);
   const flowDir = side === 'W' ? Dir.EAST : Dir.WEST;
   const step = side === 'W' ? 1 : -1;
 
@@ -1199,9 +1201,10 @@ function planInteriorChannelColumns(
 function estimateColumnInputPinCount(
   unitInPins: PerimeterPin[],
   rowsInWing: number,
+  pdk?: Pick<DesignSpec['pdk'], 'beltStackSize'>,
 ): number {
   if (rowsInWing <= 0) return 0;
-  const plan = planTrunksForColumnPins(unitInPins, rowsInWing);
+  const plan = planTrunksForColumnPins(unitInPins, rowsInWing, pdk);
   let count = 0;
   for (const t of plan.trunks) count += t.groups.length;
   const unconsolidated = unitInPins.length - plan.consolidatedIds.size;
@@ -1218,6 +1221,7 @@ function pickBestBayCountForCompiledUnit(
   reqArRaw: number,
   prefLayout: 'auto' | 'stack' | 'twin',
   requireEdgePins = true,
+  pdk?: Pick<DesignSpec['pdk'], 'beltStackSize'>,
 ): { bayCount: number; layout: 'stack' | 'twin' } {
   const reqAr = clampNum(reqArRaw || 1.35, 0.2, 5.0);
   if (prefLayout === 'stack' || K < 2) {
@@ -1241,9 +1245,9 @@ function pickBestBayCountForCompiledUnit(
   const estBayFootprint = (kBay: number, layout: 'stack' | 'twin') => {
     const rL = layout === 'twin' ? Math.ceil(kBay / 2) : kBay;
     const rR = layout === 'twin' ? Math.floor(kBay / 2) : 0;
-    const wPlan = planTrunksForColumnPins(unitInPins, rL);
+    const wPlan = planTrunksForColumnPins(unitInPins, rL, pdk);
     const westW = wPlan.trunks.length === 0 ? 0 : 1 + 4 * wPlan.trunks.length;
-    const ePlan = rR > 0 ? planTrunksForColumnPins(unitInPins, rR) : { trunks: [] };
+    const ePlan = rR > 0 ? planTrunksForColumnPins(unitInPins, rR, pdk) : { trunks: [] };
     const eastW = ePlan.trunks.length === 0 ? 0 : 1 + 4 * ePlan.trunks.length;
     const spW = layout === 'twin' ? 8 * unitOutPins.length : 4 * unitOutPins.length;
     const w = layout === 'twin' ? westW + 2 * uW + spW + eastW : westW + uW + spW;
@@ -1286,8 +1290,8 @@ function pickBestBayCountForCompiledUnit(
         sumW += (G - 1) * 6;
       } else {
         for (let g = 0; g < G - 1; g++) {
-          const leftPinsEst = estimateColumnInputPinCount(unitInPins, bayFootprints[g].rR);
-          const rightPinsEst = estimateColumnInputPinCount(unitInPins, bayFootprints[g + 1].rL);
+          const leftPinsEst = estimateColumnInputPinCount(unitInPins, bayFootprints[g].rR, pdk);
+          const rightPinsEst = estimateColumnInputPinCount(unitInPins, bayFootprints[g + 1].rL, pdk);
           sumW += planInteriorChannelColumns(leftPinsEst, rightPinsEst).gapWidth;
         }
       }
@@ -1327,6 +1331,7 @@ function buildSingleBayLayout(
   unitOutPins: PerimeterPin[],
   K: number,
   layout: 'stack' | 'twin',
+  pdk?: Pick<DesignSpec['pdk'], 'beltStackSize'>,
 ): BuiltBayLayout {
   const uW = unit.floorplan.width;
   const uH = unit.floorplan.height;
@@ -1334,7 +1339,7 @@ function buildSingleBayLayout(
   const rowsRight = layout === 'twin' ? Math.floor(K / 2) : 0;
 
   // Plan West & East consolidated buses
-  const westPlan = planTrunksForColumnPins(unitInPins, rowsLeft);
+  const westPlan = planTrunksForColumnPins(unitInPins, rowsLeft, pdk);
   const westBusW = westPlan.trunks.length === 0 ? 0 : 1 + 4 * westPlan.trunks.length;
 
   let eastPlan = { trunks: [] as TrunkSpec[], consolidatedIds: new Set<string>() };
@@ -1344,7 +1349,7 @@ function buildSingleBayLayout(
     const rightInPins = mirroredUnit.floorplan.pins
       .filter((p) => p.kind === 'input' && p.edge === 'E')
       .sort((a, b) => a.y - b.y);
-    eastPlan = planTrunksForColumnPins(rightInPins, rowsRight);
+    eastPlan = planTrunksForColumnPins(rightInPins, rowsRight, pdk);
     eastBusW = eastPlan.trunks.length === 0 ? 0 : 1 + 4 * eastPlan.trunks.length;
   }
 
@@ -1354,7 +1359,7 @@ function buildSingleBayLayout(
   if (layout === 'twin') {
     outTrunksCount = unitOutPins.length;
   } else {
-    const outPlan = planTrunksForColumnPins(unitOutPins, rowsLeft);
+    const outPlan = planTrunksForColumnPins(unitOutPins, rowsLeft, pdk);
     // Only consolidate outputs in 1xK stack if all K tiles fit cleanly on 1 collector trunk per item
     const singleGroupTrunks = outPlan.trunks.filter((t) => t.groups.length === 1);
     outTrunksCount = singleGroupTrunks.length;
@@ -1522,6 +1527,7 @@ function buildSingleBayLayout(
       leftTilesX - 1,
       leftPrefixes,
       tileInputNetByKey,
+      pdk,
     );
   } else {
     // Direct West perimeter input pins (no consolidation trunks)
@@ -1570,6 +1576,7 @@ function buildSingleBayLayout(
         rightTilesX + uW,
         rightPrefixes,
         tileInputNetByKey,
+        pdk,
       );
     } else {
       for (let r = 0; r < rowsRight; r++) {
@@ -1634,7 +1641,7 @@ function buildSingleBayLayout(
         }
       }
     } else {
-      const outPlan = planTrunksForColumnPins(unitOutPins, rowsLeft);
+      const outPlan = planTrunksForColumnPins(unitOutPins, rowsLeft, pdk);
       const consolidatedTrunks = outPlan.trunks.filter((t) => t.groups.length === 1);
       const consolidatedOutIds = new Set(consolidatedTrunks.map((t) => t.pinTemplate.id));
       const allOutTrunkCols = consolidatedTrunks.map((_, idx) => spineX0 + 4 * idx);
@@ -1742,8 +1749,8 @@ function buildSingleBayLayout(
     const rightOutPins = mirroredUnit!.floorplan.pins
       .filter((p) => p.kind === 'output' && p.edge === 'W')
       .sort((a, b) => a.y - b.y);
-    const leftTrunks = planTrunksForColumnPins(unitOutPins, rowsLeft).trunks;
-    const rightTrunks = planTrunksForColumnPins(rightOutPins, rowsRight).trunks;
+    const leftTrunks = planTrunksForColumnPins(unitOutPins, rowsLeft, pdk).trunks;
+    const rightTrunks = planTrunksForColumnPins(rightOutPins, rowsRight, pdk).trunks;
     const leftTrunkByPinId = new Map(leftTrunks.map((tr) => [tr.pinTemplate.id, tr]));
     const rightTrunkByPinId = new Map(rightTrunks.map((tr) => [tr.pinTemplate.id, tr]));
     const T = unitOutPins.length;
@@ -1818,7 +1825,7 @@ function buildSingleBayLayout(
       const lLeg = leftLegs[t];
       const rLeg = rightLegs[t];
       if (!rLeg) return false;
-      const beltCap = BELT_SPECS[p.beltTier].itemsPerSec;
+      const beltCap = effectiveBeltCapacity(p.beltTier, pdk);
       return lLeg.ratePerSec + rLeg.ratePerSec <= beltCap + 1e-4;
     });
 
@@ -2260,7 +2267,7 @@ function assembleTiledBlueprint(
     (minG, p) =>
       Math.min(
         minG,
-        Math.floor((BELT_SPECS[p.beltTier].itemsPerSec + 1e-6) / Math.max(1e-6, p.ratePerSec)),
+        Math.floor((effectiveBeltCapacity(p.beltTier, spec.pdk) + 1e-6) / Math.max(1e-6, p.ratePerSec)),
       ),
     Infinity,
   );
@@ -2280,6 +2287,7 @@ function assembleTiledBlueprint(
     reqAr,
     prefLayout,
     requireEdgePins,
+    spec.pdk,
   );
 
   const mirroredUnit = layout === 'twin' ? mirrorUnitTileX(unit) : null;
@@ -2289,7 +2297,7 @@ function assembleTiledBlueprint(
   for (let g = 0; g < bayCount; g++) {
     const kBay = baseTiles + (g < remTiles ? 1 : 0);
     rawBays.push(
-      buildSingleBayLayout(unit, mirroredUnit, unitInPins, unitOutPins, kBay, layout),
+      buildSingleBayLayout(unit, mirroredUnit, unitInPins, unitOutPins, kBay, layout, spec.pdk),
     );
   }
 

@@ -10,6 +10,7 @@ import {
 import {
   BELT_SPECS,
   INSERTER_BY_ENTITY_NAME,
+  effectiveBeltCapacity,
 } from '../data/entities.js';
 import { analyzeNetworkLaneFlow } from './laneFlow.js';
 
@@ -23,7 +24,7 @@ export function runSta(
   const { macroLanes, netLanes, entityLanes } = analyzeNetworkLaneFlow(synth, allEntities);
 
   const nets: StaNetReport[] = synth.nets.map((net) => {
-    const cap = BELT_SPECS[net.beltTier].itemsPerSec;
+    const cap = effectiveBeltCapacity(net.beltTier, pdk);
     const halfCap = cap * 0.5;
     const util = net.ratePerSec / cap;
     const lr = netLanes.get(net.id) ?? { left: net.ratePerSec / 2, right: net.ratePerSec / 2 };
@@ -73,7 +74,7 @@ export function runSta(
     if (node.kind !== 'recipe-macro') continue;
     const rm = node as RecipeMacroSpec;
     const macroEnts = entitiesByMacro.get(rm.id) ?? [];
-    const beltCap = BELT_SPECS[rm.beltTier].itemsPerSec;
+    const beltCap = effectiveBeltCapacity(rm.beltTier, pdk);
     const util = rm.exactMachines / Math.max(1, rm.machineCount);
     if (util > maxUtilization) maxUtilization = util;
 

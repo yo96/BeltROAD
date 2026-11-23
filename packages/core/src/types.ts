@@ -11,11 +11,21 @@ export enum Dir {
 export type Edge = 'N' | 'S' | 'E' | 'W';
 export type Rot90 = 0 | 1 | 2 | 3;
 
-export type BeltTier = 'yellow' | 'red' | 'blue';
+export type BeltTier = 'yellow' | 'red' | 'blue' | 'turbo';
+export type BeltStackSize = 1 | 2 | 4;
 export type AssemblerTier = 1 | 2 | 3;
-export type InserterTier = 'yellow' | 'fast' | 'bulk';
-export type AllInserterKind = 'yellow' | 'long' | 'fast' | 'bulk';
+export type InserterTier = 'yellow' | 'fast' | 'bulk' | 'stack';
+export type AllInserterKind = 'yellow' | 'long' | 'fast' | 'bulk' | 'stack';
 export type PoleTier = 'small' | 'medium' | 'substation';
+export type QualityTier = 'normal' | 'uncommon' | 'rare' | 'epic' | 'legendary';
+export type MachineName =
+  | 'assembling-machine-1'
+  | 'assembling-machine-2'
+  | 'assembling-machine-3'
+  | 'electric-furnace'
+  | 'foundry'
+  | 'electromagnetic-plant'
+  | 'cryogenic-plant';
 export type ModuleName =
   | 'speed-module'
   | 'speed-module-2'
@@ -34,11 +44,17 @@ export interface PdkConfig {
   defaultBeltTier: BeltTier;
   allowedBeltTiers: BeltTier[];
   downsizeLowRateBelts: boolean;
+  /** Factorio 2.0 belt stacking height (1 = unstacked, 2 = 2x, 4 = 4x max with Stack Inserters) */
+  beltStackSize?: BeltStackSize;
   defaultAssemblerTier: AssemblerTier;
   allowedAssemblerTiers: AssemblerTier[];
   defaultInserterTier: InserterTier;
   allowedInserterTiers: AllInserterKind[];
   defaultPoleTier: PoleTier;
+  /** Space Age entity quality tier for crafting machines (defaults to 'normal') */
+  machineQuality?: QualityTier;
+  /** Prefer Space Age specialized buildings (Foundry / Electromagnetic Plant / Cryogenic Plant) */
+  spaceAgeBuildings?: boolean;
   modules: {
     global: ModuleName[];
     byRecipe: Record<string, ModuleName[]>;
@@ -198,6 +214,7 @@ export interface EntityInstance {
   direction: Dir;
   type?: 'input' | 'output'; // for underground-belt
   recipe?: string;
+  quality?: QualityTier;
   items?: ModuleName[]; // modules inside crafting machine
   macroId?: string;
   netId?: string;
@@ -254,7 +271,8 @@ export interface RecipeMacroSpec {
   kind: 'recipe-macro';
   recipeId: string;
   outputItem: string;
-  machineName: 'assembling-machine-1' | 'assembling-machine-2' | 'assembling-machine-3' | 'electric-furnace';
+  machineName: MachineName;
+  quality?: QualityTier;
   machineCount: number;
   exactMachines: number;
   modules: ModuleName[];

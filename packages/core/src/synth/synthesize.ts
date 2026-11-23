@@ -4,6 +4,8 @@ import {
   BomSummary,
   DagSummaryNode,
   DesignSpec,
+  InserterTier,
+  MachineName,
   ModuleName,
   PdkConfig,
   RecipeDef,
@@ -15,11 +17,12 @@ import {
   SynthesisResult,
 } from '../types.js';
 import {
-  BELT_SPECS,
   INSERTER_SPECS,
   MACHINE_SPECS,
   MODULE_SPECS,
-  assemblerNameForTier,
+  QUALITY_SPECS,
+  effectiveBeltCapacity,
+  selectMachineForRecipe,
 } from '../data/entities.js';
 import {
   getDefaultRecipeForItem,
@@ -30,7 +33,7 @@ import { selectBalancerTemplate } from '../data/balancers.js';
 
 const MAX_MACHINES_PER_SLICE = 16;
 
-const TIER_ORDER: BeltTier[] = ['yellow', 'red', 'blue'];
+const TIER_ORDER: BeltTier[] = ['yellow', 'red', 'blue', 'turbo'];
 
 export function pickBeltTierForRate(ratePerSec: number, pdk: PdkConfig): BeltTier {
   const allowed = TIER_ORDER.filter((t) => pdk.allowedBeltTiers.includes(t));
@@ -38,7 +41,7 @@ export function pickBeltTierForRate(ratePerSec: number, pdk: PdkConfig): BeltTie
 
   if (pdk.downsizeLowRateBelts) {
     for (const t of pool) {
-      if (BELT_SPECS[t].itemsPerSec + 1e-6 >= ratePerSec) {
+      if (effectiveBeltCapacity(t, pdk) + 1e-6 >= ratePerSec) {
         return t;
       }
     }
@@ -47,11 +50,11 @@ export function pickBeltTierForRate(ratePerSec: number, pdk: PdkConfig): BeltTie
 
   // Prefer default belt tier unless rate exceeds its capacity and a faster allowed tier exists
   const defTier = pool.includes(pdk.defaultBeltTier) ? pdk.defaultBeltTier : pool[0];
-  if (BELT_SPECS[defTier].itemsPerSec + 1e-6 >= ratePerSec) {
+  if (effectiveBeltCapacity(defTier, pdk) + 1e-6 >= ratePerSec) {
     return defTier;
   }
   for (const t of pool) {
-    if (BELT_SPECS[t].itemsPerSec + 1e-6 >= ratePerSec) {
+    if (effectiveBeltCapacity(t, pdk) + 1e-6 >= ratePerSec) {
       return t;
     }
   }
@@ -197,7 +200,8 @@ export function synthesizeDesign(
   interface ComputedRecipe {
     item: string;
     recipe: RecipeDef;
-    machineName: RecipeMacroSpec['machineName'];
+    machineName: MachineName;
+    quality?: PdkConfig['machineQuality'];
     modules: ModuleName[];
     effectiveSpeed: number;
     effectiveProd: number;
@@ -210,7 +214,9 @@ export function synthesizeDesign(
 
   const computedRecipes = new Map<string, ComputedRecipe>();
   const dag: DagSummaryNode[] = [];
-  const defaultCap = BELT_SPECS[spec.pdk.defaultBeltTier].itemsPerSec;
+  const defaultCap = effectiveBeltCapacity(spec.pdk.defaultBeltTier, spec.pdk);
+  const qualityTier = spec.pdk.machineQuality ?? 'normal';
+  const qualityMult = QUALITY_SPECS[qualityTier].speedMultiplier;
 
   for (const item of topoOrder) {
     const demand = demandPerSec.get(item) ?? 0;
@@ -234,10 +240,7 @@ export function synthesizeDesign(
     }
 
     const recipe = dec.recipe;
-    const machineName: RecipeMacroSpec['machineName'] =
-      recipe.category === 'smelting'
-        ? 'electric-furnace'
-        : assemblerNameForTier(spec.pdk.defaultAssemblerTier);
+    const machineName: MachineName = selectMachineForRecipe(recipe, spec.pdk);
     const machineSpec = MACHINE_SPECS[machineName];
     const modules = resolveMachineModules(
       recipe,
@@ -256,8 +259,11 @@ export function synthesizeDesign(
       consBonus += mod.consumption;
     }
 
-    const effectiveSpeed = machineSpec.craftingSpeed * Math.max(0.2, 1 + speedBonus);
-    const effectiveProd = recipe.allowProductivity ? Math.max(1, 1 + prodBonus) : 1;
+    const effectiveSpeed =
+      machineSpec.craftingSpeed * qualityMult * Math.max(0.2, 1 + speedBonus);
+    const baseProd = machineSpec.baseProductivity ?? 0;
+    const effectiveProd =
+      1 + baseProd + (recipe.allowProductivity ? prodBonus : 0);
     const effectivePowerMult = Math.max(0.2, 1 + consBonus);
 
     const outPerMachinePerSec =
@@ -275,31 +281,59 @@ export function synthesizeDesign(
     }
 
     const reach1Pool = spec.pdk.allowedInserterTiers.filter(
-      (t): t is 'yellow' | 'fast' | 'bulk' => t !== 'long',
+      (t): t is InserterTier => t !== 'long',
     );
     const maxReach1 = Math.max(
       INSERTER_SPECS[spec.pdk.defaultInserterTier].itemsPerSec,
       ...reach1Pool.map((t) => INSERTER_SPECS[t].itemsPerSec),
     );
     const maxReach2 = INSERTER_SPECS.long.itemsPerSec;
+    const ms = machineSpec.size;
     const totalIngRate = ingredients.reduce((a, b) => a + b.ratePerSec, 0);
-    const maxOutPerMach = (ingredients.length <= 2 ? 3 : 2) * maxReach1;
+    const maxOutPerMach = (ingredients.length <= 2 ? ms : Math.max(2, ms - 1)) * maxReach1;
     const maxInPerMach =
       ingredients.length <= 1
-        ? 3 * maxReach1
+        ? ms * maxReach1
         : ingredients.length === 2
-          ? Math.min(2 * maxReach1 + maxReach2, 1.5 * maxReach1 + 1.5 * maxReach2)
-          : 2 * maxReach1 + 2 * maxReach2;
-    const minMachinesForIo = Math.max(
-      Math.ceil(demand / Math.max(0.1, maxOutPerMach)),
-      Math.ceil(totalIngRate / Math.max(0.1, maxInPerMach)),
-    );
+          ? Math.min((ms - 1) * maxReach1 + maxReach2, (ms - 1.5) * maxReach1 + 1.5 * maxReach2)
+          : (ms - 1) * maxReach1 + 2 * maxReach2;
+
+    const minSliceMachinesForIo = (outRate: number, totalIng: number, ingList: typeof ingredients): number => {
+      let mReq = Math.max(
+        1,
+        Math.ceil(outRate / Math.max(0.1, maxOutPerMach)),
+        Math.ceil(totalIng / Math.max(0.1, maxInPerMach)),
+      );
+      // When using Space Age features (ms >= 4, quality, or stack inserters), verify actual placed
+      // per-machine inserter count meets STA input & output throughput cleanly.
+      const isV2HighIo =
+        ms >= 4 || qualityTier !== 'normal' || maxReach1 > 10;
+      if (isV2HighIo && ingList.length > 0 && ingList.length <= 2) {
+        const sorted = [...ingList].sort((a, b) => b.ratePerSec - a.ratePerSec);
+        while (mReq < 64) {
+          const rNear = sorted[0].ratePerSec / mReq;
+          const cNear = Math.min(ms, Math.max(1, Math.ceil(rNear / maxReach1)));
+          let capPerMach = cNear * maxReach1;
+          if (sorted.length === 2) {
+            const cNearBounded = Math.min(Math.max(1, ms - 1), cNear);
+            const cFar = Math.min(2, Math.max(1, ms - cNearBounded));
+            capPerMach = cNearBounded * maxReach1 + cFar * maxReach2;
+          }
+          if (mReq * capPerMach + 1e-4 >= totalIng) break;
+          mReq++;
+        }
+      }
+      return mReq;
+    };
+
+    const minMachinesForIo = minSliceMachinesForIo(demand, totalIngRate, ingredients);
     const machineCount = Math.max(1, Math.ceil(exactMachines), minMachinesForIo);
 
     computedRecipes.set(item, {
       item,
       recipe,
       machineName,
+      quality: qualityTier !== 'normal' ? qualityTier : undefined,
       modules,
       effectiveSpeed,
       effectiveProd,
@@ -382,11 +416,12 @@ export function synthesizeDesign(
   // Primary Inputs
   for (const d of dag) {
     if (d.mode !== 'input-pin' || d.demandPerSec <= 0) continue;
-    const maxCap = BELT_SPECS[
+    const maxCap = effectiveBeltCapacity(
       spec.pdk.allowedBeltTiers.includes(spec.pdk.defaultBeltTier)
         ? spec.pdk.defaultBeltTier
-        : spec.pdk.allowedBeltTiers[0] ?? 'red'
-    ].itemsPerSec;
+        : spec.pdk.allowedBeltTiers[0] ?? 'red',
+      spec.pdk,
+    );
     const beltCount = Math.max(1, Math.ceil(d.demandPerSec / maxCap));
     const perBeltRate = d.demandPerSec / beltCount;
     const tier = pickBeltTierForRate(perBeltRate, spec.pdk);
@@ -413,7 +448,7 @@ export function synthesizeDesign(
 
   // Primary Outputs
   for (const [item, rps] of targetRates.entries()) {
-    const maxCap = BELT_SPECS[spec.pdk.defaultBeltTier].itemsPerSec;
+    const maxCap = effectiveBeltCapacity(spec.pdk.defaultBeltTier, spec.pdk);
     const beltCount = Math.max(1, Math.ceil(rps / maxCap));
     const perBeltRate = rps / beltCount;
     const tier = pickBeltTierForRate(perBeltRate, spec.pdk);
@@ -440,7 +475,7 @@ export function synthesizeDesign(
 
   // Recipe Macros (sliced so every output & input pin stays <= 1 belt)
   for (const comp of computedRecipes.values()) {
-    const maxBeltCap = BELT_SPECS[spec.pdk.defaultBeltTier].itemsPerSec;
+    const maxBeltCap = effectiveBeltCapacity(spec.pdk.defaultBeltTier, spec.pdk);
     let sliceCount = Math.max(
       1,
       Math.ceil(comp.demandPerSec / maxBeltCap),
@@ -465,15 +500,49 @@ export function synthesizeDesign(
         : 0;
     const useUniformCeil = sliceCount > 1 && unbalancedMax > maxBeltCap + 1e-4;
 
+    const reach1PoolSlice = spec.pdk.allowedInserterTiers.filter(
+      (t): t is InserterTier => t !== 'long',
+    );
+    const maxReach1Slice = Math.max(
+      INSERTER_SPECS[spec.pdk.defaultInserterTier].itemsPerSec,
+      ...reach1PoolSlice.map((t) => INSERTER_SPECS[t].itemsPerSec),
+    );
+    const maxReach2Slice = INSERTER_SPECS.long.itemsPerSec;
+    const msSlice = MACHINE_SPECS[comp.machineName].size;
+    const isV2HighIoSlice =
+      msSlice >= 4 || (spec.pdk.machineQuality ?? 'normal') !== 'normal' || maxReach1Slice > 10;
+
     for (let s = 0; s < sliceCount; s++) {
       let mCount = useUniformCeil
-        ? Math.max(1, Math.ceil(comp.exactMachines / sliceCount))
+        ? Math.max(
+            1,
+            Math.ceil(comp.exactMachines / sliceCount),
+            Math.ceil(comp.machineCount / sliceCount),
+          )
         : baseMachines + (s < remMachines ? 1 : 0);
       const frac = sliceCount > 1 ? equalFrac : mCount / comp.machineCount;
       const sliceOutRate = comp.demandPerSec * frac;
       const sliceExactMachines = comp.exactMachines * frac;
+      const sliceIngTotal = comp.ingredients.reduce((acc, ing) => acc + ing.ratePerSec * frac, 0);
+      if (isV2HighIoSlice && comp.ingredients.length > 0 && comp.ingredients.length <= 2) {
+        const sortedSlice = [...comp.ingredients]
+          .map((ing) => ing.ratePerSec * frac)
+          .sort((a, b) => b - a);
+        while (mCount < 64) {
+          const rNear = sortedSlice[0] / mCount;
+          const cNear = Math.min(msSlice, Math.max(1, Math.ceil(rNear / maxReach1Slice)));
+          let capPerMach = cNear * maxReach1Slice;
+          if (sortedSlice.length === 2) {
+            const cNearBounded = Math.min(Math.max(1, msSlice - 1), cNear);
+            const cFar = Math.min(2, Math.max(1, msSlice - cNearBounded));
+            capPerMach = cNearBounded * maxReach1Slice + cFar * maxReach2Slice;
+          }
+          if (mCount * capPerMach + 1e-4 >= sliceIngTotal) break;
+          mCount++;
+        }
+      }
       const outTier = pickBeltTierForRate(sliceOutRate, spec.pdk);
-      const sliceBeltCap = BELT_SPECS[outTier].itemsPerSec;
+      const sliceBeltCap = effectiveBeltCapacity(outTier, spec.pdk);
       if (sliceOutRate > sliceBeltCap * 0.5 + 1e-4 && mCount % 2 === 1) {
         const heavyLaneRate = (Math.ceil(mCount / 2) / mCount) * sliceOutRate;
         if (heavyLaneRate > sliceBeltCap * 0.5 - 1e-4) {
@@ -503,6 +572,7 @@ export function synthesizeDesign(
         recipeId: comp.recipe.id,
         outputItem: comp.item,
         machineName: comp.machineName,
+        quality: comp.quality,
         machineCount: mCount,
         exactMachines: sliceExactMachines,
         modules: comp.modules,
@@ -596,7 +666,7 @@ export function synthesizeDesign(
       S === 1 &&
       D >= 3 &&
       spec.optimization?.busTaps !== false &&
-      totalRate <= BELT_SPECS[balTier].itemsPerSec + 1e-6 &&
+      totalRate <= effectiveBeltCapacity(balTier, spec.pdk) + 1e-6 &&
       !hasCustomExact &&
       distinctDepths.size >= 2
     ) {
@@ -686,7 +756,7 @@ export function synthesizeDesign(
 
     if (S >= 2) {
       const maxSinkRate = Math.max(...sinks.map((s) => s.ratePerSec));
-      const balHalfCap = BELT_SPECS[template.beltTier].itemsPerSec * 0.5;
+      const balHalfCap = effectiveBeltCapacity(template.beltTier, spec.pdk) * 0.5;
       if (
         totalRate > balHalfCap - 1e-4 ||
         maxSinkRate > balHalfCap - 1e-4

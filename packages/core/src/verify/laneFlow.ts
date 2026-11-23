@@ -3,6 +3,7 @@ import {
   BeltLaneFlowInfo,
   Dir,
   EntityInstance,
+  PdkConfig,
   RecipeMacroSpec,
   SynthesisResult,
   SynthNet,
@@ -11,6 +12,7 @@ import {
   BELT_SPECS,
   INSERTER_BY_ENTITY_NAME,
   beltTierFromEntityName,
+  effectiveBeltCapacity,
   isSplitterName,
   isUndergroundName,
 } from '../data/entities.js';
@@ -486,6 +488,7 @@ export function simulateMacroInputLanes(
   incomingNets: SynthNet[],
   netLanes: Map<string, LaneRates>,
   outputEntityIds: Set<string>,
+  pdk?: Pick<PdkConfig, 'beltStackSize'>,
 ): Map<string, BeltLaneFlowInfo> {
   const result = new Map<string, BeltLaneFlowInfo>();
   if (macroEnts.length === 0) return result;
@@ -714,7 +717,7 @@ export function simulateMacroInputLanes(
 
     const items = laneItemState.get(id);
     const tier = beltTierFromEntityName(ent.name) ?? rm.beltTier;
-    const cap = BELT_SPECS[tier].itemsPerSec;
+    const cap = effectiveBeltCapacity(tier, pdk);
 
     result.set(id, {
       leftRatePerSec: inL < 1e-6 ? 0 : inL,
@@ -769,6 +772,7 @@ function simulateBalancerLanes(
   balEnts: EntityInstance[],
   inLeft: number,
   inRight: number,
+  pdk?: Pick<PdkConfig, 'beltStackSize'>,
 ): Map<string, BeltLaneFlowInfo> {
   const result = new Map<string, BeltLaneFlowInfo>();
   const transportEnts = balEnts.filter((e) => beltTierFromEntityName(e.name) !== null);
@@ -852,7 +856,7 @@ function simulateBalancerLanes(
     const l = r.left < 1e-6 ? 0 : r.left;
     const rr = r.right < 1e-6 ? 0 : r.right;
     const tier = beltTierFromEntityName(e.name) ?? balNode.beltTier;
-    const baseCap = BELT_SPECS[tier].itemsPerSec;
+    const baseCap = effectiveBeltCapacity(tier, pdk);
     const isParallelSplitter =
       isSplitterName(e.name) &&
       ((balNode.inputs >= 2 && balNode.outputs >= 2) || l + rr > baseCap + 1e-4);
@@ -910,7 +914,7 @@ export function analyzeNetworkLaneFlow(
           leftItem: node.outputItem,
           rightItem: node.outputItem,
           beltTier: tier,
-          capacityPerSec: BELT_SPECS[tier].itemsPerSec,
+          capacityPerSec: effectiveBeltCapacity(tier, synth.spec.pdk),
           source: 'macro-output',
         };
       }
@@ -995,6 +999,7 @@ export function analyzeNetworkLaneFlow(
         entitiesByMacro.get(nodeId) ?? [],
         inLeft,
         inRight,
+        synth.spec.pdk,
       );
       for (const [eid, info] of balLanes.entries()) {
         entityLanes[eid] = info;
@@ -1037,6 +1042,7 @@ export function analyzeNetworkLaneFlow(
       inNets.get(node.id) ?? [],
       netLanes,
       ml?.reachableIds ?? new Set(),
+      synth.spec.pdk,
     );
     for (const [eid, info] of inFlow.entries()) {
       entityLanes[eid] = info;
