@@ -6,6 +6,7 @@ import {
   PortMarkerMode,
 } from '../types.js';
 import { isSplitterName, isUndergroundName } from '../data/entities.js';
+import { isFluidItem } from '../data/catalog.js';
 
 export interface BlueprintSignalId {
   type?: 'item' | 'fluid' | 'virtual';
@@ -207,7 +208,7 @@ export function entitiesToFactorio2BlueprintData(
     const isDirectional =
       ent.role !== 'pole-macro' &&
       ent.role !== 'pole-pdn' &&
-      ent.role !== 'machine' &&
+      (ent.role !== 'machine' || Boolean(ent.hasFluidBox)) &&
       ent.role !== 'beacon-macro' &&
       ent.role !== 'port-marker';
 
@@ -236,7 +237,10 @@ export function entitiesToFactorio2BlueprintData(
       bpEnt.always_show = true;
       bpEnt.show_in_chart = false;
       if (ent.markerIcon) {
-        bpEnt.icon = { type: 'item', name: ent.markerIcon };
+        bpEnt.icon = {
+          type: isFluidItem(ent.markerIcon) ? 'fluid' : 'item',
+          name: ent.markerIcon,
+        };
       }
     } else if (ent.name === 'constant-combinator' && ent.markerIcon) {
       bpEnt.control_behavior = {
@@ -248,7 +252,7 @@ export function entitiesToFactorio2BlueprintData(
                 {
                   index: 1,
                   signal: {
-                    type: 'item',
+                    type: isFluidItem(ent.markerIcon) ? 'fluid' : 'item',
                     name: ent.markerIcon,
                     quality: 'normal',
                   },
@@ -270,7 +274,7 @@ export function entitiesToFactorio2BlueprintData(
   }
 
   const icons = (options.icons ?? []).slice(0, 4).map((name, i) => ({
-    signal: { type: 'item' as const, name },
+    signal: { type: (isFluidItem(name) ? 'fluid' : 'item') as 'fluid' | 'item', name },
     index: i + 1,
   }));
 
@@ -297,7 +301,7 @@ export function createBlueprintBookData(
   options: ExportBlueprintBookOptions,
 ): BlueprintBookData {
   const icons = (options.icons ?? []).slice(0, 4).map((name, i) => ({
-    signal: { type: 'item' as const, name },
+    signal: { type: (isFluidItem(name) ? 'fluid' : 'item') as 'fluid' | 'item', name },
     index: i + 1,
   }));
   const activeIdx =

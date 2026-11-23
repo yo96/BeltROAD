@@ -21,6 +21,7 @@ import {
   INSERTER_SPECS,
   MACHINE_SPECS,
   MODULE_SPECS,
+  PIPE_SPEC,
   QUALITY_SPECS,
   beaconTransmissionMultiplier,
   effectiveBeltCapacity,
@@ -29,6 +30,7 @@ import {
 import {
   getDefaultRecipeForItem,
   getItemMeta,
+  isFluidItem,
   isPresetInputItem,
 } from '../data/catalog.js';
 import { selectBalancerTemplate } from '../data/balancers.js';
@@ -73,12 +75,12 @@ interface ItemDecision {
   recipe?: RecipeDef;
 }
 
-function decideItemMode(item: string, spec: DesignSpec): ItemDecision {
+function decideItemMode(item: string, spec: DesignSpec, fluidsEnabled: boolean): ItemDecision {
   const recipe = getDefaultRecipeForItem(item);
   if (!recipe) {
     return { mode: 'input-pin', forcedInputReason: 'no-recipe' };
   }
-  if (recipe.hasFluid) {
+  if (recipe.hasFluid && !fluidsEnabled) {
     return { mode: 'input-pin', forcedInputReason: 'fluid-v1', recipe };
   }
   const override = spec.inputOverrides[item];
@@ -137,6 +139,10 @@ export function synthesizeDesign(
     throw new Error('All target production rates must be > 0.');
   }
 
+  const fluidsEnabled =
+    Boolean(spec.pdk.enableFluids) ||
+    spec.targets.some((t) => getDefaultRecipeForItem(t.item)?.hasFluid);
+
   // 1. Discover reachable graph and decide input-pin vs synthesize
   const decisions = new Map<string, ItemDecision>();
   const adj = new Map<string, string[]>(); // item -> ingredient items
@@ -152,14 +158,14 @@ export function synthesizeDesign(
     }
     visiting.add(item);
 
-    const dec = decideItemMode(item, spec);
+    const dec = decideItemMode(item, spec, fluidsEnabled);
     decisions.set(item, dec);
     if (!inDegree.has(item)) inDegree.set(item, 0);
 
     if (dec.mode === 'synthesize' && dec.recipe) {
       const deps: string[] = [];
       for (const ing of dec.recipe.ingredients) {
-        if (ing.type === 'fluid') continue;
+        if (ing.type === 'fluid' && !fluidsEnabled) continue;
         deps.push(ing.item);
         inDegree.set(ing.item, (inDegree.get(ing.item) ?? 0) + 1);
         visit(ing.item);
@@ -213,6 +219,7 @@ export function synthesizeDesign(
     machineCount: number;
     demandPerSec: number;
     ingredients: { item: string; ratePerSec: number }[];
+    fluidInputs: { item: string; ratePerSec: number }[];
     powerKwPerMachine: number;
     directInsert?: {
       ratio: '3:2' | '1:2' | '1:1';
@@ -282,6 +289,7 @@ export function synthesizeDesign(
     const meta = getItemMeta(item);
 
     if (dec.mode === 'input-pin' || !dec.recipe) {
+      const cap = isFluidItem(item) ? PIPE_SPEC.capacityPerSec : defaultCap;
       dag.push({
         item,
         name: meta.name,
@@ -291,7 +299,7 @@ export function synthesizeDesign(
         forcedInputReason: dec.forcedInputReason,
         exactMachines: 0,
         machineCount: 0,
-        beltCount: Math.max(1, Math.ceil(demand / defaultCap)),
+        beltCount: Math.max(1, Math.ceil(demand / cap)),
         ingredients: [],
       });
       continue;
@@ -326,8 +334,15 @@ export function synthesizeDesign(
 
     // Ingredient flow depends solely on demand & productivity, independent of machine speed
     const rawIngredients: { item: string; ratePerSec: number }[] = [];
+    const fluidIngredients: { item: string; ratePerSec: number }[] = [];
     for (const ing of recipe.ingredients) {
-      if (ing.type === 'fluid') continue;
+      if (ing.type === 'fluid') {
+        if (fluidsEnabled) {
+          const flRate = demand * (ing.amount / (recipe.outputCount * effectiveProd));
+          fluidIngredients.push({ item: ing.item, ratePerSec: flRate });
+        }
+        continue;
+      }
       const ingRate = demand * (ing.amount / (recipe.outputCount * effectiveProd));
       rawIngredients.push({ item: ing.item, ratePerSec: ingRate });
     }
@@ -505,13 +520,21 @@ export function synthesizeDesign(
     for (const ing of ingredients) {
       demandPerSec.set(ing.item, (demandPerSec.get(ing.item) ?? 0) + ing.ratePerSec);
     }
+    for (const fl of fluidIngredients) {
+      demandPerSec.set(fl.item, (demandPerSec.get(fl.item) ?? 0) + fl.ratePerSec);
+    }
 
     const fullTrackCount = ingredients.filter((i) => i.ratePerSec > 0.48 * defaultCap).length;
     const halfTrackCount = ingredients.length - fullTrackCount;
     const neededTracks = fullTrackCount + Math.ceil(halfTrackCount / 2);
 
     let beaconsPerMachine = 0;
-    if (beaconMode !== 'none' && activeBeaconModules.length > 0 && neededTracks <= 2) {
+    if (
+      beaconMode !== 'none' &&
+      activeBeaconModules.length > 0 &&
+      neededTracks <= 2 &&
+      fluidIngredients.length === 0
+    ) {
       if (beaconMode === 'row-8') {
         const canSingleNorthTrack =
           ingredients.length <= 1 ||
@@ -600,6 +623,7 @@ export function synthesizeDesign(
       machineCount,
       demandPerSec: demand,
       ingredients,
+      fluidInputs: fluidIngredients,
       powerKwPerMachine: machineSpec.powerKw * effectivePowerMult,
       directInsert: fusedDirectInsert,
     });
@@ -615,7 +639,7 @@ export function synthesizeDesign(
       exactMachines: finalExactMachines,
       machineCount,
       beltCount: Math.max(1, Math.ceil(demand / defaultCap)),
-      ingredients,
+      ingredients: [...ingredients, ...fluidIngredients],
     });
   }
 
@@ -629,7 +653,7 @@ export function synthesizeDesign(
     }
     let maxIngDepth = 0;
     for (const ing of dec.recipe.ingredients) {
-      if (ing.type === 'fluid') continue;
+      if (ing.type === 'fluid' && !fluidsEnabled) continue;
       maxIngDepth = Math.max(maxIngDepth, itemDepth.get(ing.item) ?? 0);
     }
     itemDepth.set(item, maxIngDepth + 1);
@@ -676,15 +700,18 @@ export function synthesizeDesign(
   // Primary Inputs
   for (const d of dag) {
     if (d.mode !== 'input-pin' || d.demandPerSec <= 0) continue;
-    const maxCap = effectiveBeltCapacity(
-      spec.pdk.allowedBeltTiers.includes(spec.pdk.defaultBeltTier)
-        ? spec.pdk.defaultBeltTier
-        : spec.pdk.allowedBeltTiers[0] ?? 'red',
-      spec.pdk,
-    );
+    const isFluid = isFluidItem(d.item);
+    const maxCap = isFluid
+      ? PIPE_SPEC.capacityPerSec
+      : effectiveBeltCapacity(
+          spec.pdk.allowedBeltTiers.includes(spec.pdk.defaultBeltTier)
+            ? spec.pdk.defaultBeltTier
+            : spec.pdk.allowedBeltTiers[0] ?? 'red',
+          spec.pdk,
+        );
     const beltCount = Math.max(1, Math.ceil(d.demandPerSec / maxCap));
     const perBeltRate = d.demandPerSec / beltCount;
-    const tier = pickBeltTierForRate(perBeltRate, spec.pdk);
+    const tier = isFluid ? spec.pdk.defaultBeltTier : pickBeltTierForRate(perBeltRate, spec.pdk);
     for (let i = 0; i < beltCount; i++) {
       const nodeId = `in:${d.item}:${i}`;
       const node: SynthInputNode = {
@@ -694,6 +721,7 @@ export function synthesizeDesign(
         busIndex: i,
         ratePerSec: perBeltRate,
         beltTier: tier,
+        isFluid: isFluid || undefined,
         pinId: nodeId,
       };
       nodes.push(node);
@@ -856,6 +884,9 @@ export function synthesizeDesign(
     for (const ing of comp.ingredients) {
       sliceCount = Math.max(sliceCount, Math.ceil(ing.ratePerSec / maxBeltCap));
     }
+    for (const fl of comp.fluidInputs) {
+      sliceCount = Math.max(sliceCount, Math.ceil(fl.ratePerSec / PIPE_SPEC.capacityPerSec));
+    }
     // Never create more slices than integer machines
     sliceCount = Math.min(sliceCount, comp.machineCount);
 
@@ -941,6 +972,11 @@ export function synthesizeDesign(
         };
       });
 
+      const fluidInputs =
+        comp.fluidInputs.length > 0
+          ? comp.fluidInputs.map((fl) => ({ item: fl.item, ratePerSec: fl.ratePerSec * frac }))
+          : undefined;
+
       const macroNode: RecipeMacroSpec = {
         id: macroId,
         kind: 'recipe-macro',
@@ -958,6 +994,7 @@ export function synthesizeDesign(
         outputRatePerSec: sliceOutRate,
         beltTier: outTier,
         ingredientRates: ingRates,
+        fluidInputs,
         preferredRows:
           override?.rows ?? (comp.beaconsPerMachine >= 8 ? 1 : undefined),
         balanceOutputLanes: forceBal || sliceOutRate > sliceBeltCap * 0.49,
@@ -983,6 +1020,16 @@ export function synthesizeDesign(
           beltTier: ing.beltTier,
         });
       }
+      if (fluidInputs) {
+        for (const fl of fluidInputs) {
+          addSink(fl.item, {
+            nodeId: macroId,
+            pinId: `in:${fl.item}`,
+            ratePerSec: fl.ratePerSec,
+            beltTier: spec.pdk.defaultBeltTier,
+          });
+        }
+      }
     }
   }
 
@@ -994,6 +1041,7 @@ export function synthesizeDesign(
     const sinks = itemSinks.get(item) ?? [];
     if (sinks.length === 0) continue;
 
+    const isFluid = isFluidItem(item);
     const S = sources.length;
     const D = sinks.length;
 
@@ -1014,7 +1062,56 @@ export function synthesizeDesign(
           item,
           ratePerSec: dst.ratePerSec,
           beltTier: tier,
+          isFluid: isFluid || undefined,
           source: { nodeId: src.nodeId, pinId: src.pinId, kind: 'source', item },
+          sink: { nodeId: dst.nodeId, pinId: dst.pinId, kind: 'sink', item },
+        });
+      }
+      continue;
+    }
+
+    if (isFluid) {
+      const manId = `pipe-man:${item}:${S}x${D}`;
+      const totalRate = sinks.reduce((acc, s) => acc + s.ratePerSec, 0);
+      const tier = spec.pdk.defaultBeltTier;
+      const manNode: BalancerMacroSpec = {
+        id: manId,
+        kind: 'balancer-macro',
+        item,
+        inputs: S,
+        outputs: D,
+        beltTier: tier,
+        totalRatePerSec: totalRate,
+        templateId: `pipe-manifold:${S}x${D}`,
+        isFluid: true,
+      };
+      nodes.push(manNode);
+
+      for (let i = 0; i < S; i++) {
+        const src = sources[i];
+        nets.push({
+          id: `net:${netCounter++}:${item}:in${i}`,
+          busId: `${item}:in`,
+          busIndex: i,
+          item,
+          ratePerSec: src.ratePerSec,
+          beltTier: tier,
+          isFluid: true,
+          source: { nodeId: src.nodeId, pinId: src.pinId, kind: 'source', item },
+          sink: { nodeId: manId, pinId: `in:${i}`, kind: 'sink', item },
+        });
+      }
+      for (let j = 0; j < D; j++) {
+        const dst = sinks[j];
+        nets.push({
+          id: `net:${netCounter++}:${item}:out${j}`,
+          busId: `${item}:out`,
+          busIndex: j,
+          item,
+          ratePerSec: dst.ratePerSec,
+          beltTier: tier,
+          isFluid: true,
+          source: { nodeId: manId, pinId: `out:${j}`, kind: 'source', item },
           sink: { nodeId: dst.nodeId, pinId: dst.pinId, kind: 'sink', item },
         });
       }

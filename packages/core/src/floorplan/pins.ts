@@ -208,6 +208,7 @@ export function resolvePerimeterPins(
         item: d.node.item,
         ratePerSec: d.node.ratePerSec,
         beltTier: d.node.beltTier,
+        isFluid: d.node.isFluid,
         edge,
         offset: off,
         x,

@@ -7,16 +7,19 @@ import {
 import {
   BELT_SPECS,
   INSERTER_BY_ENTITY_NAME,
+  PIPE_SPEC,
   POLE_BY_ENTITY_NAME,
   beltTierFromEntityName,
   doesPoleSupplyEntity,
   isBeltLikeName,
   isMachineName,
+  isPipeName,
+  isPipeUndergroundName,
   isSplitterName,
   isUndergroundName,
   requiresPower,
 } from '../data/entities.js';
-import { dirDelta, inserterReachTiles } from '../geometry.js';
+import { dirDelta, inserterReachTiles, oppositeDir } from '../geometry.js';
 
 export function runDrc(
   entities: EntityInstance[],
@@ -197,6 +200,90 @@ export function runDrc(
     }
   }
 
+  // 2b. Underground pipe pairing & axis-span check
+  const pipeUndergrounds = entities.filter((e) => isPipeUndergroundName(e.name));
+  const pipeUgByTile = new Map<string, EntityInstance>();
+  for (const pu of pipeUndergrounds) {
+    pipeUgByTile.set(`${pu.tx},${pu.ty}`, pu);
+  }
+  const pipeHorizSpans = new Map<string, EntityInstance[]>();
+  const pipeVertSpans = new Map<string, EntityInstance[]>();
+
+  for (const u of pipeUndergrounds) {
+    const oppDir = oppositeDir(u.direction);
+    const { dx, dy } = dirDelta(oppDir);
+    const isHoriz = dx !== 0;
+
+    let partner: EntityInstance | null = null;
+    let foundDist = 0;
+    for (let step = 1; step <= PIPE_SPEC.maxUgDistance; step++) {
+      const cand = pipeUgByTile.get(`${u.tx + dx * step},${u.ty + dy * step}`);
+      if (!cand) continue;
+      if (cand.direction === oppDir) {
+        partner = cand;
+        foundDist = step;
+        break;
+      }
+      if (cand.direction === u.direction) {
+        break;
+      }
+    }
+
+    if (!partner) {
+      addV(
+        'PIPE_UG_PAIR',
+        'error',
+        `Unpaired pipe-to-ground at (${u.tx},${u.ty}).`,
+        u.tx,
+        u.ty,
+        [u.id],
+      );
+      continue;
+    }
+
+    if (u.id < partner.id) {
+      if (u.item && partner.item && u.item !== partner.item) {
+        addV(
+          'NO_FLUID_MIXING',
+          'error',
+          `Underground pipe fluid mixing (${u.item} vs ${partner.item}) between (${u.tx},${u.ty}) and (${partner.tx},${partner.ty}).`,
+          u.tx,
+          u.ty,
+          [u.id, partner.id],
+        );
+      }
+      const spanMap = isHoriz ? pipeHorizSpans : pipeVertSpans;
+      for (let k = 0; k <= foundDist; k++) {
+        const key = `${u.tx + dx * k},${u.ty + dy * k}`;
+        let arr = spanMap.get(key);
+        if (!arr) {
+          arr = [];
+          spanMap.set(key, arr);
+        }
+        arr.push(u);
+      }
+    }
+  }
+
+  for (const [spanName, spanMap] of [
+    ['horizontal', pipeHorizSpans],
+    ['vertical', pipeVertSpans],
+  ] as const) {
+    for (const [key, list] of spanMap.entries()) {
+      if (list.length > 1) {
+        const [xs, ys] = key.split(',').map(Number);
+        addV(
+          'PIPE_UG_PAIR',
+          'error',
+          `Overlapping ${spanName} underground pipes at (${xs},${ys}).`,
+          xs,
+          ys,
+          list.map((e) => e.id),
+        );
+      }
+    }
+  }
+
   // 3. Inserter validation (valid pickup & drop targets)
   for (const e of entities) {
     const insSpec = INSERTER_BY_ENTITY_NAME[e.name];
@@ -273,6 +360,45 @@ export function runDrc(
         ny,
         [e.id, target.id],
       );
+    }
+  }
+
+  // 4b. Fluid mixing check (NO_FLUID_MIXING)
+  const pipeEntities = entities.filter((e) => isPipeName(e.name));
+  if (pipeEntities.length > 0) {
+    const pipeByTile = new Map<string, EntityInstance>();
+    for (const p of pipeEntities) {
+      pipeByTile.set(`${p.tx},${p.ty}`, p);
+    }
+    const pipeHasPort = (ent: EntityInstance, dx: number, dy: number): boolean => {
+      if (!isPipeUndergroundName(ent.name)) return true;
+      const d = dirDelta(ent.direction);
+      return d.dx === dx && d.dy === dy;
+    };
+    for (const a of pipeEntities) {
+      for (const [dx, dy] of [
+        [1, 0],
+        [0, 1],
+      ] as const) {
+        const b = pipeByTile.get(`${a.tx + dx},${a.ty + dy}`);
+        if (!b) continue;
+        if (
+          pipeHasPort(a, dx, dy) &&
+          pipeHasPort(b, -dx, -dy) &&
+          a.item &&
+          b.item &&
+          a.item !== b.item
+        ) {
+          addV(
+            'NO_FLUID_MIXING',
+            'error',
+            `Fluid mixing between "${a.item}" at (${a.tx},${a.ty}) and "${b.item}" at (${b.tx},${b.ty}).`,
+            a.tx,
+            a.ty,
+            [a.id, b.id],
+          );
+        }
+      }
     }
   }
 

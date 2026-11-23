@@ -5,14 +5,17 @@ import {
 import {
   BELT_SPECS,
   INSERTER_BY_ENTITY_NAME,
+  PIPE_SPEC,
   POLE_BY_ENTITY_NAME,
   beltTierFromEntityName,
   isMachineName,
+  isPipeName,
+  isPipeUndergroundName,
   isSplitterName,
   isUndergroundName,
 } from '../data/entities.js';
 import { getItemMeta } from '../data/catalog.js';
-import { dirDelta } from '../geometry.js';
+import { dirDelta, oppositeDir } from '../geometry.js';
 
 function escapeXml(str: string): string {
   return str
@@ -78,6 +81,7 @@ export function renderLayoutToSvg(result: PipelineResult, tilePx = 18): string {
   // Entities
   const ugInputs: EntityInstance[] = [];
   const ugOutputs: EntityInstance[] = [];
+  const pipeUgs: EntityInstance[] = [];
 
   for (const e of result.allEntities) {
     const ex = ox + e.tx * tilePx;
@@ -90,23 +94,27 @@ export function renderLayoutToSvg(result: PipelineResult, tilePx = 18): string {
       const fillCol =
         e.name === 'electric-furnace'
           ? '#334155'
-          : e.name === 'foundry'
-            ? '#5c2410'
-            : e.name === 'electromagnetic-plant'
-              ? '#3b1c6e'
-              : e.name === 'cryogenic-plant'
-                ? '#164e63'
-                : '#1e3a5f';
+          : e.name === 'chemical-plant'
+            ? '#0f4c5c'
+            : e.name === 'foundry'
+              ? '#5c2410'
+              : e.name === 'electromagnetic-plant'
+                ? '#3b1c6e'
+                : e.name === 'cryogenic-plant'
+                  ? '#164e63'
+                  : '#1e3a5f';
       const strokeCol =
         e.name === 'electric-furnace'
           ? '#f97316'
-          : e.name === 'foundry'
-            ? '#fb923c'
-            : e.name === 'electromagnetic-plant'
-              ? '#e879f9'
-              : e.name === 'cryogenic-plant'
-                ? '#22d3ee'
-                : '#93c5fd';
+          : e.name === 'chemical-plant'
+            ? '#2dd4bf'
+            : e.name === 'foundry'
+              ? '#fb923c'
+              : e.name === 'electromagnetic-plant'
+                ? '#e879f9'
+                : e.name === 'cryogenic-plant'
+                  ? '#22d3ee'
+                  : '#93c5fd';
       parts.push(
         `<rect x="${ex + 1}" y="${ey + 1}" width="${ew - 2}" height="${eh - 2}" fill="${fillCol}" stroke="${strokeCol}" stroke-width="1.5" rx="3" />`,
       );
@@ -178,6 +186,24 @@ export function renderLayoutToSvg(result: PipelineResult, tilePx = 18): string {
       continue;
     }
 
+    if (isPipeName(e.name)) {
+      const fCol = e.item ? getItemMeta(e.item).color : PIPE_SPEC.color;
+      if (isPipeUndergroundName(e.name)) {
+        pipeUgs.push(e);
+        parts.push(
+          `<rect x="${ex + 2}" y="${ey + 2}" width="${ew - 4}" height="${eh - 4}" fill="#1f2937" stroke="${fCol}" stroke-width="1.6" rx="3" />`,
+        );
+      } else {
+        parts.push(
+          `<rect x="${ex + 3}" y="${ey + 3}" width="${ew - 6}" height="${eh - 6}" fill="#475569" stroke="#cbd5e1" stroke-width="1" rx="2" />`,
+        );
+        parts.push(
+          `<circle cx="${ex + ew / 2}" cy="${ey + eh / 2}" r="${tilePx * 0.16}" fill="${fCol}" />`,
+        );
+      }
+      continue;
+    }
+
     if (e.name in POLE_BY_ENTITY_NAME) {
       const p = POLE_BY_ENTITY_NAME[e.name];
       parts.push(
@@ -209,6 +235,28 @@ export function renderLayoutToSvg(result: PipelineResult, tilePx = 18): string {
     }
   }
   parts.push(`</g>`);
+
+  // Pipe underground span dashed lines
+  for (const u of pipeUgs) {
+    const opp = oppositeDir(u.direction);
+    const { dx, dy } = dirDelta(opp);
+    if (dx + dy <= 0) continue; // draw once per pair (EAST or SOUTH)
+    for (let step = 1; step <= PIPE_SPEC.maxUgDistance; step++) {
+      const m = pipeUgs.find(
+        (o) =>
+          o.tx === u.tx + dx * step &&
+          o.ty === u.ty + dy * step &&
+          o.direction === opp,
+      );
+      if (m) {
+        const fCol = u.item ? getItemMeta(u.item).color : PIPE_SPEC.color;
+        parts.push(
+          `<line x1="${ox + (u.tx + 0.5) * tilePx}" y1="${oy + (u.ty + 0.5) * tilePx}" x2="${ox + (m.tx + 0.5) * tilePx}" y2="${oy + (m.ty + 0.5) * tilePx}" stroke="${fCol}" stroke-dasharray="3 2" stroke-width="1.4" opacity="0.85" />`,
+        );
+        break;
+      }
+    }
+  }
 
   // Perimeter pin labels
   for (const pin of result.floorplan.pins) {

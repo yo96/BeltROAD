@@ -10,8 +10,10 @@ import {
 import {
   BELT_SPECS,
   INSERTER_BY_ENTITY_NAME,
+  PIPE_SPEC,
   countBeaconsAffectingMachine,
   effectiveBeltCapacity,
+  isPipeName,
 } from '../data/entities.js';
 import { analyzeNetworkLaneFlow } from './laneFlow.js';
 
@@ -25,6 +27,27 @@ export function runSta(
   const { macroLanes, netLanes, entityLanes } = analyzeNetworkLaneFlow(synth, allEntities);
 
   const nets: StaNetReport[] = synth.nets.map((net) => {
+    if (net.isFluid) {
+      const cap = PIPE_SPEC.capacityPerSec;
+      const util = net.ratePerSec / cap;
+      if (util > maxUtilization) maxUtilization = util;
+      const passed = util <= 1.0001;
+      if (!passed) {
+        bottlenecks.push(
+          `Pipe net "${net.id}" (${net.item}) carries ${net.ratePerSec.toFixed(2)}/s > ${cap}/s.`,
+        );
+      }
+      return {
+        netId: net.id,
+        item: net.item,
+        ratePerSec: net.ratePerSec,
+        capacityPerSec: cap,
+        utilization: util,
+        beltTier: net.beltTier,
+        passed,
+      };
+    }
+
     const cap = effectiveBeltCapacity(net.beltTier, pdk);
     const halfCap = cap * 0.5;
     const util = net.ratePerSec / cap;
@@ -152,6 +175,22 @@ export function runSta(
       issues.push(
         `Output belt lane overflow: L=${ml.peakLeft.toFixed(2)}/s, R=${ml.peakRight.toFixed(2)}/s > ${(beltCap * 0.5).toFixed(2)}/s (half-${rm.beltTier} belt)`,
       );
+    }
+
+    if (rm.fluidInputs && rm.fluidInputs.length > 0) {
+      for (const fl of rm.fluidInputs) {
+        if (fl.ratePerSec > PIPE_SPEC.capacityPerSec + 1e-4) {
+          laneOk = false;
+          issues.push(
+            `Fluid input "${fl.item}" requires ${fl.ratePerSec.toFixed(2)}/s > ${PIPE_SPEC.capacityPerSec}/s`,
+          );
+        }
+        const hasPipe = macroEnts.some((e) => isPipeName(e.name) && e.item === fl.item);
+        if (!hasPipe) {
+          laneOk = false;
+          issues.push(`Missing pipe entities for fluid "${fl.item}"`);
+        }
+      }
     }
 
     if ((rm.beaconsPerMachine ?? 0) > 0) {

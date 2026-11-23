@@ -23,6 +23,7 @@ export type MachineName =
   | 'assembling-machine-2'
   | 'assembling-machine-3'
   | 'electric-furnace'
+  | 'chemical-plant'
   | 'foundry'
   | 'electromagnetic-plant'
   | 'cryogenic-plant';
@@ -73,6 +74,8 @@ export interface PdkConfig {
   };
   allowBeltWeaving: false;
   portMarkers: PortMarkerMode;
+  /** Enable fluid recipes, chemical plants, and dedicated pipe routing (v2.5) */
+  enableFluids?: boolean;
 }
 
 export interface TargetSpec {
@@ -217,6 +220,10 @@ export type EntityRole =
   | 'balancer'
   | 'pole-macro'
   | 'pole-pdn'
+  | 'pipe-macro'
+  | 'pipe-route'
+  | 'pipe-ug-macro'
+  | 'pipe-ug-route'
   | 'port-marker';
 
 export interface EntityInstance {
@@ -239,6 +246,8 @@ export interface EntityInstance {
   role: EntityRole;
   /** Explicit intentional dual-lane merge point inside a macro input manifold */
   intentionalSideLoad?: boolean;
+  /** Crafting machine has an active fluidbox port that changes with machine orientation */
+  hasFluidBox?: boolean;
   markerText?: string;
   markerIcon?: string;
   markerRatePerMin?: number;
@@ -258,6 +267,7 @@ export interface SynthNet {
   item: string;
   ratePerSec: number;
   beltTier: BeltTier;
+  isFluid?: boolean;
   source: NetEndpoint;
   sink: NetEndpoint;
 }
@@ -269,6 +279,7 @@ export interface SynthInputNode {
   busIndex: number;
   ratePerSec: number;
   beltTier: BeltTier;
+  isFluid?: boolean;
   pinId: string;
 }
 
@@ -279,6 +290,7 @@ export interface SynthOutputNode {
   busIndex: number;
   ratePerSec: number;
   beltTier: BeltTier;
+  isFluid?: boolean;
   pinId: string;
 }
 
@@ -314,6 +326,7 @@ export interface RecipeMacroSpec {
   outputRatePerSec: number;
   beltTier: BeltTier;
   ingredientRates: { item: string; ratePerSec: number; beltTier: BeltTier }[];
+  fluidInputs?: { item: string; ratePerSec: number }[];
   preferredRows?: number;
   balanceOutputLanes?: boolean;
   sliceIndex: number;
@@ -329,6 +342,7 @@ export interface BalancerMacroSpec {
   beltTier: BeltTier;
   totalRatePerSec: number;
   templateId: string;
+  isFluid?: boolean;
 }
 
 export type SynthNode = SynthInputNode | SynthOutputNode | RecipeMacroSpec | BalancerMacroSpec;
@@ -377,6 +391,7 @@ export interface MacroPin {
   portY: number;
   ratePerSec: number;
   beltTier: BeltTier;
+  isFluid?: boolean;
 }
 
 export interface CompiledMacro {
@@ -391,6 +406,7 @@ export interface CompiledMacro {
   height: number;
   rotation: Rot90;
   flippedY?: boolean;
+  noFlipY?: boolean;
   entities: EntityInstance[];
   pins: MacroPin[];
   /** Tiles that are open interior paths for power poles etc., vs occupied */
@@ -415,6 +431,7 @@ export interface PerimeterPin {
   item: string;
   ratePerSec: number;
   beltTier: BeltTier;
+  isFluid?: boolean;
   edge: Edge;
   /** Coordinate along edge (y for W/E, x for N/S) */
   offset: number;
@@ -444,6 +461,7 @@ export interface RoutedNetSegment {
   netId: string;
   item: string;
   beltTier: BeltTier;
+  isFluid?: boolean;
   tiles: { tx: number; ty: number; dir: Dir; kind: 'belt' | 'ug-in' | 'ug-out'; jumpDist?: number }[];
   routed: boolean;
   length: number;
@@ -478,7 +496,9 @@ export type DrcCode =
   | 'POWER_COVERAGE'
   | 'POWER_CONNECTIVITY'
   | 'DIE_BOUNDS'
-  | 'UNROUTED_NET';
+  | 'UNROUTED_NET'
+  | 'NO_FLUID_MIXING'
+  | 'PIPE_UG_PAIR';
 
 export interface DrcViolation {
   id: string;

@@ -936,6 +936,7 @@ export function analyzeNetworkLaneFlow(
     inDeg.set(n.id, 0);
   }
   for (const net of synth.nets) {
+    if (net.isFluid) continue;
     outNets.get(net.source.nodeId)?.push(net);
     inNets.get(net.sink.nodeId)?.push(net);
     inDeg.set(net.sink.nodeId, (inDeg.get(net.sink.nodeId) ?? 0) + 1);

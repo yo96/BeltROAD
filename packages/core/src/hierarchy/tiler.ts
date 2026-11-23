@@ -46,6 +46,7 @@ function countRecipeAndBalancerMacros(synth: SynthesisResult): number {
 export function shouldUseTiling(spec: DesignSpec, fullSynth: SynthesisResult): boolean {
   const mode = spec.optimization?.tiling ?? 'auto';
   if (mode === 'off') return false;
+  if (fullSynth.nets.some((n) => n.isFluid)) return false;
 
   const activeMacroIds = new Set<string>();
   const activePinIds = new Set<string>();

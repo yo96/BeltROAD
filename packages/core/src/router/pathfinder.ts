@@ -8,8 +8,15 @@ import {
   RouteResult,
   SynthesisResult,
 } from '../types.js';
-import { BELT_SPECS, isBeltLikeName, isSplitterName, isUndergroundName } from '../data/entities.js';
-import { dirDelta } from '../geometry.js';
+import {
+  BELT_SPECS,
+  PIPE_SPEC,
+  isBeltLikeName,
+  isPipeUndergroundName,
+  isSplitterName,
+  isUndergroundName,
+} from '../data/entities.js';
+import { dirDelta, oppositeDir } from '../geometry.js';
 import {
   DX4,
   DY4,
@@ -26,6 +33,8 @@ export interface RouteNetSpec {
   netId: string;
   item: string;
   beltTier: BeltTier;
+  isFluid: boolean;
+  fluidId: number;
   maxUgDist: number;
   sx: number;
   sy: number;
@@ -54,9 +63,19 @@ export interface RouteProgressCallback {
 function buildRouteSpecs(
   synth: SynthesisResult,
   floorplan: FloorplanResult,
+  fluidIdByItem: Map<string, number>,
 ): RouteNetSpec[] {
   const macroById = new Map(floorplan.macros.map((m) => [m.id, m]));
   const pinById = new Map(floorplan.pins.map((p) => [p.id, p]));
+
+  const getFluidId = (item: string): number => {
+    let fid = fluidIdByItem.get(item);
+    if (!fid) {
+      fid = fluidIdByItem.size + 1;
+      fluidIdByItem.set(item, fid);
+    }
+    return fid;
+  };
 
   const specs: RouteNetSpec[] = [];
   synth.nets.forEach((net, idx) => {
@@ -107,12 +126,17 @@ function buildRouteSpecs(
       allowedTargetTile = (pm.y + mp.y) * floorplan.width + (pm.x + mp.x);
     }
 
+    const isFluid = Boolean(net.isFluid);
+    const fluidId = isFluid ? getFluidId(net.item) : 0;
+
     specs.push({
       netIdx: idx,
       netId: net.id,
       item: net.item,
       beltTier: net.beltTier,
-      maxUgDist: BELT_SPECS[net.beltTier].maxUgDistance,
+      isFluid,
+      fluidId,
+      maxUgDist: isFluid ? PIPE_SPEC.maxUgDistance : BELT_SPECS[net.beltTier].maxUgDistance,
       sx,
       sy,
       srcDirIdx: dirToIdx4(srcDir),
@@ -132,9 +156,19 @@ function initStaticGrid(
   buf: RouterBuffers,
   floorplan: FloorplanResult,
   specs: RouteNetSpec[],
+  fluidIdByItem: Map<string, number>,
 ): void {
   const W = buf.width;
   const H = buf.height;
+
+  const getOrAssignFluidId = (item: string): number => {
+    let fid = fluidIdByItem.get(item);
+    if (!fid) {
+      fid = fluidIdByItem.size + 1;
+      fluidIdByItem.set(item, fid);
+    }
+    return fid;
+  };
 
   // Block all macro entities & register macro internal underground spans
   const macroUgs: Array<{
@@ -142,6 +176,11 @@ function initStaticGrid(
     ty: number;
     dir: Dir;
     type: 'input' | 'output';
+  }> = [];
+  const macroPipeUgs: Array<{
+    tx: number;
+    ty: number;
+    dir: Dir;
   }> = [];
 
   const outputPortTiles = new Set<number>();
@@ -169,6 +208,12 @@ function initStaticGrid(
             buf.staticBlock[idx] = 1;
             buf.macroObstacle[idx] = 1;
             macroEntityTiles.add(idx);
+            if (ent.name === 'pipe' && ent.item) {
+              buf.staticFluidId[idx] = getOrAssignFluidId(ent.item);
+            } else if (isPipeUndergroundName(ent.name) && ent.item) {
+              buf.staticPipeUgFluid[idx] = getOrAssignFluidId(ent.item);
+              buf.staticPipeUgDir[idx] = dirToIdx4(ent.direction);
+            }
           }
         }
       }
@@ -178,6 +223,12 @@ function initStaticGrid(
           ty: gy,
           dir: ent.direction,
           type: ent.type,
+        });
+      } else if (isPipeUndergroundName(ent.name) && ent.item) {
+        macroPipeUgs.push({
+          tx: gx,
+          ty: gy,
+          dir: ent.direction,
         });
       }
     }
@@ -230,12 +281,39 @@ function initStaticGrid(
     }
   }
 
+  // Mark macro internal underground pipe spans so router never weaves with them
+  const macroPipeUgMap = new Map(macroPipeUgs.map((u) => [`${u.tx},${u.ty}`, u]));
+  for (const u of macroPipeUgs) {
+    const oppDir = oppositeDir(u.dir);
+    const oppIdx = dirToIdx4(oppDir);
+    if (oppIdx !== 1 && oppIdx !== 2) continue; // scan each pair once along EAST or SOUTH
+    const dx = DX4[oppIdx];
+    const dy = DY4[oppIdx];
+    const isHoriz = dx !== 0;
+    for (let step = 1; step <= PIPE_SPEC.maxUgDistance; step++) {
+      const cand = macroPipeUgMap.get(`${u.tx + dx * step},${u.ty + dy * step}`);
+      if (!cand) continue;
+      if (cand.dir === oppDir) {
+        for (let k = 0; k <= step; k++) {
+          const tidx = (u.ty + dy * k) * W + (u.tx + dx * k);
+          if (isHoriz) buf.ugHorizOcc[tidx]++;
+          else buf.ugVertOcc[tidx]++;
+        }
+        break;
+      }
+      if (cand.dir === u.dir) break;
+    }
+  }
+
   // Block perimeter pins on edge AND reserve 1-tile port stubs for each net
   for (const pin of floorplan.pins) {
     if (pin.x >= 0 && pin.x < W && pin.y >= 0 && pin.y < H) {
       const idx = pin.y * W + pin.x;
       buf.staticBlock[idx] = 1;
       buf.macroObstacle[idx] = 1;
+      if (pin.isFluid) {
+        buf.staticFluidId[idx] = getOrAssignFluidId(pin.item);
+      }
     }
   }
 
@@ -270,6 +348,56 @@ function tileSurfaceCost(
   return 1.0 + (buf.histCost[tileIdx] + 1.0) * buf.presFactor * (occ + 1);
 }
 
+function hasSurfaceFluidPort(kind: number, dirIdx: number, towardDirIdx: number): boolean {
+  if (kind === 1) return true; // Regular pipe connects on all 4 surface faces
+  if (kind === 2) return towardDirIdx === ((dirIdx + 2) & 3); // ug-in surface port faces opposite travel dir
+  if (kind === 3) return towardDirIdx === dirIdx; // ug-out surface port faces travel dir
+  return false;
+}
+
+function fluidMixingPenalty(
+  buf: RouterBuffers,
+  x: number,
+  y: number,
+  myKind: number,
+  myDirIdx: number,
+  myFluidId: number,
+  allowCongestion: boolean,
+): { penalty: number; conflictNet: number } {
+  const W = buf.width;
+  const H = buf.height;
+  for (let k = 0; k < 4; k++) {
+    if (!hasSurfaceFluidPort(myKind, myDirIdx, k)) continue;
+    const nx = x + DX4[k];
+    const ny = y + DY4[k];
+    if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+    const nIdx = ny * W + nx;
+    const opp = (k + 2) & 3;
+
+    const sf = buf.staticFluidId[nIdx];
+    if (sf > 0 && sf !== myFluidId) {
+      return { penalty: Infinity, conflictNet: -1 };
+    }
+    const suf = buf.staticPipeUgFluid[nIdx];
+    if (suf > 0 && suf !== myFluidId && buf.staticPipeUgDir[nIdx] === opp) {
+      return { penalty: Infinity, conflictNet: -1 };
+    }
+    const rf = buf.routedFluidId[nIdx];
+    if (
+      rf > 0 &&
+      rf !== myFluidId &&
+      buf.surfaceCount[nIdx] > 0 &&
+      hasSurfaceFluidPort(buf.surfaceKind[nIdx], buf.surfaceDir[nIdx], opp)
+    ) {
+      if (!allowCongestion) {
+        return { penalty: Infinity, conflictNet: buf.surfaceOwner[nIdx] };
+      }
+      return { penalty: buf.presFactor * 16.0, conflictNet: buf.surfaceOwner[nIdx] };
+    }
+  }
+  return { penalty: 0, conflictNet: -1 };
+}
+
 /**
  * Checks if placing a surface belt or ug-out at (x, y) pointing in `dirIdx`
  * would side-load into an adjacent foreign belt or macro obstacle.
@@ -282,6 +410,8 @@ function sideLoadPenalty(
   spec: RouteNetSpec,
   allowCongestion: boolean,
 ): number {
+  if (spec.isFluid) return 0; // Pipes use fluidMixingPenalty rather than belt side-load rules
+
   const nx = x + DX4[dirIdx];
   const ny = y + DY4[dirIdx];
   const W = buf.width;
@@ -295,6 +425,9 @@ function sideLoadPenalty(
   if (buf.macroObstacle[nIdx] !== 0) {
     return Infinity; // Never point a belt into a non-target macro/edge obstacle
   }
+
+  // Belts ending adjacent to a routed pipe do not side-load onto pipes
+  if (buf.routedFluidId[nIdx] > 0) return 0;
 
   const nOcc = buf.surfaceCount[nIdx];
   if (nOcc > 0 && buf.surfaceOwner[nIdx] !== spec.netIdx) {
@@ -341,6 +474,9 @@ function commitNetPath(
     buf.surfaceOwner[st.tileIdx] = spec.netIdx;
     buf.surfaceDir[st.tileIdx] = st.dirIdx;
     buf.surfaceKind[st.tileIdx] = st.kind;
+    if (spec.isFluid) {
+      buf.routedFluidId[st.tileIdx] = spec.fluidId;
+    }
 
     if (st.kind === 2 && st.jumpDist >= 2) {
       const sx = st.tileIdx % W;
@@ -369,6 +505,7 @@ function ripUpNetPath(
     if (buf.surfaceCount[st.tileIdx] === 0) {
       buf.surfaceOwner[st.tileIdx] = -1;
       buf.surfaceKind[st.tileIdx] = 0;
+      buf.routedFluidId[st.tileIdx] = 0;
     }
     if (st.kind === 2 && st.jumpDist >= 2) {
       const sx = st.tileIdx % W;
@@ -492,6 +629,25 @@ function routeSingleNet(
       const slPen = sideLoadPenalty(buf, x, y, nd, spec, allowCongestion);
       if (slPen === Infinity) continue;
 
+      let fluidPen = 0;
+      if (spec.isFluid) {
+        const mxStart =
+          tile === startTile
+            ? fluidMixingPenalty(buf, x, y, 1, dIdx, spec.fluidId, allowCongestion).penalty
+            : 0;
+        const mxNext = fluidMixingPenalty(
+          buf,
+          nx,
+          ny,
+          1,
+          nd,
+          spec.fluidId,
+          allowCongestion,
+        ).penalty;
+        fluidPen = mxStart + mxNext;
+        if (fluidPen === Infinity) continue;
+      }
+
       const turnCost = nd === dIdx ? 0 : turnPenalty;
       const p1d = (nd + 1) & 3;
       const p2d = (nd + 3) & 3;
@@ -509,7 +665,7 @@ function routeSingleNet(
         isAlignedSide(nx + DX4[p1d], ny + DY4[p1d]) ||
         isAlignedSide(nx + DX4[p2d], ny + DY4[p2d]);
       const busBias = aligned ? 0 : 0.06;
-      const candG = curG + nextBaseCost + slPen + turnCost + busBias;
+      const candG = curG + nextBaseCost + slPen + fluidPen + turnCost + busBias;
       const nState = (nTile << 2) | nd;
 
       if (closedStamp[nState] === activeStamp) continue;
@@ -531,6 +687,20 @@ function routeSingleNet(
     // Check entry tile (x, y) itself doesn't clash with existing underground along same axis
     const entryUgOcc = isHoriz ? ugH[tile] : ugV[tile];
     if (entryUgOcc > 0 && !allowCongestion) continue;
+
+    let entryFluidPen = 0;
+    if (spec.isFluid) {
+      entryFluidPen = fluidMixingPenalty(
+        buf,
+        x,
+        y,
+        2,
+        dIdx,
+        spec.fluidId,
+        allowCongestion,
+      ).penalty;
+      if (entryFluidPen === Infinity) continue;
+    }
 
     // Check surface tile (x, y) isn't already congested if we jump from here
     let ugBlocked = false;
@@ -562,7 +732,10 @@ function routeSingleNet(
       // Case A: landing directly on goalTile heading dstDirIdx
       if (eTile === goalTile && dIdx === dstDirIdx) {
         const slPen = sideLoadPenalty(buf, ex, ey, dIdx, spec, allowCongestion);
-        if (slPen < Infinity) {
+        const exitFluidPenA = spec.isFluid
+          ? fluidMixingPenalty(buf, ex, ey, 3, dIdx, spec.fluidId, allowCongestion).penalty
+          : 0;
+        if (slPen < Infinity && exitFluidPenA < Infinity) {
           let spanPenaltyA = 0;
           if (allowCongestion) {
             for (let m = 0; m <= k; m++) {
@@ -571,7 +744,8 @@ function routeSingleNet(
               if (occ > 0) spanPenaltyA += buf.presFactor * 8 * occ;
             }
           }
-          const jumpCost = ugBasePenalty + k * 1.02 + slPen + outCost + spanPenaltyA;
+          const jumpCost =
+            ugBasePenalty + k * 1.02 + slPen + outCost + entryFluidPen + exitFluidPenA + spanPenaltyA;
           const candG = curG + jumpCost;
           const nState = (eTile << 2) | dIdx;
           if (closedStamp[nState] !== activeStamp && (openStamp[nState] !== activeStamp || candG < gScore[nState])) {
@@ -601,6 +775,14 @@ function routeSingleNet(
       const slExit = sideLoadPenalty(buf, ex, ey, dIdx, spec, allowCongestion);
       if (slExit === Infinity) continue;
 
+      let exitFluidPen = 0;
+      if (spec.isFluid) {
+        exitFluidPen =
+          fluidMixingPenalty(buf, ex, ey, 3, dIdx, spec.fluidId, allowCongestion).penalty +
+          fluidMixingPenalty(buf, ax, ay, 1, dIdx, spec.fluidId, allowCongestion).penalty;
+        if (exitFluidPen === Infinity) continue;
+      }
+
       let spanPenalty = 0;
       if (allowCongestion) {
         for (let m = 0; m <= k; m++) {
@@ -610,7 +792,16 @@ function routeSingleNet(
         }
       }
 
-      const candG = curG + ugBasePenalty + k * 1.02 + outCost + aCost + slExit + spanPenalty;
+      const candG =
+        curG +
+        ugBasePenalty +
+        k * 1.02 +
+        outCost +
+        aCost +
+        slExit +
+        entryFluidPen +
+        exitFluidPen +
+        spanPenalty;
       const nState = (aTile << 2) | dIdx;
       if (closedStamp[nState] === activeStamp) continue;
       if (openStamp[nState] !== activeStamp || candG < gScore[nState]) {
@@ -733,7 +924,7 @@ function findConflicts(
       }
 
       // Check accidental side-loading: belt or ug-out pointing into another net's tile
-      if (st.kind === 1 || st.kind === 3) {
+      if (!specs[i].isFluid && (st.kind === 1 || st.kind === 3)) {
         const x = st.tileIdx % W;
         const y = (st.tileIdx - x) / W;
         const nx = x + DX4[st.dirIdx];
@@ -742,12 +933,28 @@ function findConflicts(
           const nIdx = ny * W + nx;
           if (
             nIdx !== specs[i].allowedTargetTile &&
+            buf.routedFluidId[nIdx] === 0 &&
             buf.surfaceCount[nIdx] > 0 &&
             buf.surfaceOwner[nIdx] !== specs[i].netIdx
           ) {
             conflictTiles.add(nIdx);
             netHasConflict = true;
             totalConflicts++;
+          }
+        }
+      }
+
+      // Check fluid mixing on surface pipe connections
+      if (specs[i].isFluid) {
+        const x = st.tileIdx % W;
+        const y = (st.tileIdx - x) / W;
+        const mx = fluidMixingPenalty(buf, x, y, st.kind, st.dirIdx, specs[i].fluidId, false);
+        if (mx.penalty === Infinity) {
+          conflictTiles.add(st.tileIdx);
+          netHasConflict = true;
+          totalConflicts++;
+          if (mx.conflictNet >= 0) {
+            conflictingNets.add(mx.conflictNet);
           }
         }
       }
@@ -931,6 +1138,7 @@ interface RoutingAttemptResult {
 function runRoutingAttempt(
   floorplan: FloorplanResult,
   specs: RouteNetSpec[],
+  fluidIdByItem: Map<string, number>,
   order: number[],
   optimizeRoutes: boolean,
   startTime: number,
@@ -940,7 +1148,7 @@ function runRoutingAttempt(
   const W = floorplan.width;
   const H = floorplan.height;
   const buf = createRouterBuffers(W, H);
-  initStaticGrid(buf, floorplan, specs);
+  initStaticGrid(buf, floorplan, specs, fluidIdByItem);
 
   const netSteps: Array<PlacedTileStep[] | null> = new Array(specs.length).fill(null);
   const useCorridor = W * H > 80 * 80;
@@ -1058,7 +1266,8 @@ export function routeGrid(
   const startTime = Date.now();
   const W = floorplan.width;
   const H = floorplan.height;
-  const specs = buildRouteSpecs(synth, floorplan);
+  const fluidIdByItem = new Map<string, number>();
+  const specs = buildRouteSpecs(synth, floorplan, fluidIdByItem);
 
   const byHpwl = specs.map((s, idx) => ({
     idx,
@@ -1069,6 +1278,7 @@ export function routeGrid(
   let bestAttempt = runRoutingAttempt(
     floorplan,
     specs,
+    fluidIdByItem,
     shortFirstOrder,
     optimizeRoutes,
     startTime,
@@ -1088,6 +1298,7 @@ export function routeGrid(
     const altAttempt = runRoutingAttempt(
       floorplan,
       specs,
+      fluidIdByItem,
       longFirstOrder,
       optimizeRoutes,
       startTime,
@@ -1114,7 +1325,7 @@ export function routeGrid(
     const beltSpec = BELT_SPECS[pin.beltTier];
     entities.push({
       id: `pin-stub:${pin.id}`,
-      name: beltSpec.beltName,
+      name: pin.isFluid ? PIPE_SPEC.pipeName : beltSpec.beltName,
       tx: pin.x,
       ty: pin.y,
       w: 1,
@@ -1122,7 +1333,7 @@ export function routeGrid(
       direction: pin.dir,
       netId: pin.netId,
       item: pin.item,
-      role: 'belt-route',
+      role: pin.isFluid ? 'pipe-route' : 'belt-route',
     });
   }
 
@@ -1136,6 +1347,7 @@ export function routeGrid(
         netId: spec.netId,
         item: spec.item,
         beltTier: spec.beltTier,
+        isFluid: spec.isFluid || undefined,
         tiles: [],
         routed: false,
         length: 0,
@@ -1151,6 +1363,55 @@ export function routeGrid(
       const tx = st.tileIdx % W;
       const ty = (st.tileIdx - tx) / W;
       const dir = idx4ToDir(st.dirIdx);
+
+      if (spec.isFluid) {
+        if (st.kind === 1) {
+          entities.push({
+            id: `r:${rid++}`,
+            name: PIPE_SPEC.pipeName,
+            tx,
+            ty,
+            w: 1,
+            h: 1,
+            direction: dir,
+            netId: spec.netId,
+            item: spec.item,
+            role: 'pipe-route',
+          });
+          segTiles.push({ tx, ty, dir, kind: 'belt' });
+        } else if (st.kind === 2) {
+          ugCount++;
+          entities.push({
+            id: `r:${rid++}`,
+            name: PIPE_SPEC.undergroundName,
+            tx,
+            ty,
+            w: 1,
+            h: 1,
+            direction: oppositeDir(dir),
+            netId: spec.netId,
+            item: spec.item,
+            role: 'pipe-ug-route',
+          });
+          segTiles.push({ tx, ty, dir, kind: 'ug-in', jumpDist: st.jumpDist });
+        } else {
+          ugCount++;
+          entities.push({
+            id: `r:${rid++}`,
+            name: PIPE_SPEC.undergroundName,
+            tx,
+            ty,
+            w: 1,
+            h: 1,
+            direction: dir,
+            netId: spec.netId,
+            item: spec.item,
+            role: 'pipe-ug-route',
+          });
+          segTiles.push({ tx, ty, dir, kind: 'ug-out' });
+        }
+        continue;
+      }
 
       if (st.kind === 1) {
         entities.push({
@@ -1205,6 +1466,7 @@ export function routeGrid(
       netId: spec.netId,
       item: spec.item,
       beltTier: spec.beltTier,
+      isFluid: spec.isFluid || undefined,
       tiles: segTiles,
       routed: true,
       length: steps.length,

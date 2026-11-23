@@ -22,6 +22,14 @@ export interface RouterBuffers {
   ugHorizOcc: Uint16Array;
   /** Vertical underground span occupancy count */
   ugVertOcc: Uint16Array;
+  /** Static fluid ID (>0) at tile from macro pipes & perimeter fluid stubs */
+  staticFluidId: Int16Array;
+  /** Static underground-pipe fluid ID (>0) at tile */
+  staticPipeUgFluid: Int16Array;
+  /** Open surface port direction (0..3, -1 if none) of static pipe-to-ground at tile */
+  staticPipeUgDir: Int8Array;
+  /** Routed fluid ID (>0) occupying surface tile */
+  routedFluidId: Int16Array;
   /** PathFinder historical congestion penalty */
   histCost: Float32Array;
   /** Per-tile present sharing factor */
@@ -61,6 +69,10 @@ export function createRouterBuffers(width: number, height: number): RouterBuffer
     surfaceKind: new Uint8Array(size),
     ugHorizOcc: new Uint16Array(size),
     ugVertOcc: new Uint16Array(size),
+    staticFluidId: new Int16Array(size),
+    staticPipeUgFluid: new Int16Array(size),
+    staticPipeUgDir: new Int8Array(size).fill(-1),
+    routedFluidId: new Int16Array(size),
     histCost: new Float32Array(size),
     presFactor: 1.5,
     gScore: new Float32Array(numStates),

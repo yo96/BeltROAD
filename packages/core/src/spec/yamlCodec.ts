@@ -84,6 +84,7 @@ export function defaultPdkConfig(): PdkConfig {
     },
     allowBeltWeaving: false,
     portMarkers: 'display-panel',
+    enableFluids: false,
   };
 }
 
@@ -145,6 +146,7 @@ export function normalizeSpec(raw: Partial<DesignSpec>): DesignSpec {
     },
     allowBeltWeaving: false,
     portMarkers: rawPdk.portMarkers ?? defPdk.portMarkers,
+    enableFluids: Boolean(rawPdk.enableFluids),
   };
 
   if (!pdk.allowedBeltTiers.includes(pdk.defaultBeltTier)) {

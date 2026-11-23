@@ -7,6 +7,7 @@ export interface RecipeCatalog {
   recipesById: Record<string, RecipeDef>;
   recipesByOutput: Record<string, RecipeDef[]>;
   solidTargets: RecipeDef[];
+  allTargets: RecipeDef[];
 }
 
 export interface RawCatalogJson {
@@ -165,6 +166,7 @@ export function buildCatalog(raw: RawCatalogJson): RecipeCatalog {
   }
 
   const solidTargets = raw.recipes.filter((r) => !r.hasFluid);
+  const allTargets = [...raw.recipes];
 
   return {
     version: raw.version,
@@ -172,6 +174,7 @@ export function buildCatalog(raw: RawCatalogJson): RecipeCatalog {
     recipesById,
     recipesByOutput,
     solidTargets,
+    allTargets,
   };
 }
 
@@ -209,6 +212,10 @@ export function getItemMeta(itemId: string): ItemMeta {
     category: 'other',
     stackSize: 50,
   };
+}
+
+export function isFluidItem(itemId: string): boolean {
+  return getItemMeta(itemId).category === 'fluid';
 }
 
 export function getDefaultRecipeForItem(itemId: string): RecipeDef | undefined {

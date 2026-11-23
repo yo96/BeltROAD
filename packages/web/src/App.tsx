@@ -154,13 +154,15 @@ export default function App() {
   const catalogInputRef = useRef<HTMLInputElement | null>(null);
 
   const catalog = useMemo(() => getCatalog(), [catalogVersion]);
-  const targetOptions = useMemo(
-    () => [...catalog.solidTargets].sort((a, b) => a.name.localeCompare(b.name)),
-    [catalog],
-  );
-
   const initial = useMemo(() => getInitialSpecState(), []);
   const [spec, setSpec] = useState<DesignSpec>(initial.spec);
+  const targetOptions = useMemo(
+    () =>
+      [...(spec.pdk.enableFluids ? catalog.allTargets : catalog.solidTargets)].sort((a, b) =>
+        a.name.localeCompare(b.name),
+      ),
+    [catalog, spec.pdk.enableFluids],
+  );
   const [activePresetId, setActivePresetId] = useState<string>(initial.presetId);
   const [lastRunSpecSig, setLastRunSpecSig] = useState<string>(() => JSON.stringify(initial.spec));
 
@@ -1466,6 +1468,22 @@ export default function App() {
                     }
                   />
                   Space Age buildings
+                </label>
+                <label
+                  style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 11.5 }}
+                  title="Synthesize fluid-dependent recipes (Plastic, Sulfur, Battery, Processing Unit, Blue & Yellow Science) with Chemical Plants and dedicated pipe routing"
+                >
+                  <input
+                    type="checkbox"
+                    checked={spec.pdk.enableFluids ?? false}
+                    onChange={(e) =>
+                      updateSpec((prev) => ({
+                        ...prev,
+                        pdk: { ...prev.pdk, enableFluids: e.target.checked },
+                      }))
+                    }
+                  />
+                  Enable fluids &amp; chemical plants
                 </label>
               </div>
             </div>

@@ -1994,11 +1994,422 @@ function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): Compil
   };
 }
 
+function fluidPortOffset(
+  machineName: MachineName,
+  fluidIndex: number,
+  dir: Dir,
+): number {
+  if (dir === Dir.SOUTH) {
+    return machineName === 'chemical-plant' || machineName === 'cryogenic-plant' ? 2 : 1;
+  }
+  return fluidIndex === 0 ? 0 : 2;
+}
+
+function buildFluidRecipeMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledMacro {
+  const catalog = getCatalog();
+  const recipe = catalog.recipesById[spec.recipeId];
+  const beltSpec = BELT_SPECS[spec.beltTier];
+  const poleSpec = POLE_SPECS[pdk.defaultPoleTier];
+  const beltCap = effectiveBeltCapacity(spec.beltTier, pdk);
+  const ms = MACHINE_SPECS[spec.machineName].size;
+  const preferStackOut = (pdk.beltStackSize ?? 1) > 1;
+  const fluids = spec.fluidInputs ?? [];
+  const isTwoFluid = fluids.length >= 2;
+  const M = spec.machineCount;
+
+  const solidIngs = [...spec.ingredientRates].sort((a, b) => b.ratePerSec - a.ratePerSec);
+  const northNear = !isTwoFluid ? solidIngs[0] ?? null : null;
+  const northFar = !isTwoFluid ? solidIngs[1] ?? null : null;
+
+  const northFarIns = northFar
+    ? selectInserterKind(northFar.ratePerSec / M, 2, pdk, ms)
+    : null;
+  const northNearIns = northNear
+    ? selectInserterKind(northNear.ratePerSec / M, 1, pdk, ms)
+    : null;
+  const outSlotsMax = isTwoFluid ? ms : Math.max(1, ms - 1);
+  const outIns = selectInserterKind(
+    spec.outputRatePerSec / M,
+    1,
+    pdk,
+    outSlotsMax,
+    preferStackOut,
+  );
+
+  const needsLaneBalance =
+    Boolean(spec.balanceOutputLanes) || spec.outputRatePerSec > beltCap * 0.49;
+  const laneFlipAfterIdx =
+    needsLaneBalance && M >= 2 ? Math.floor(M / 2) - 1 : undefined;
+  const tailW = needsLaneBalance && M === 1 ? 2 : 0;
+
+  const poleGap = poleSpec.name === 'substation' ? 2 : 1;
+  const xStart = poleGap;
+  const stride = ms + poleGap;
+  const splitExtra = poleSpec.name === 'substation' ? 3 : 4;
+
+  const machineXs: number[] = [];
+  for (let i = 0; i < M; i++) {
+    const gapSplit =
+      laneFlipAfterIdx !== undefined && i > laneFlipAfterIdx ? splitExtra : 0;
+    machineXs.push(xStart + i * stride + gapSplit);
+  }
+  const lastEndX =
+    M > 0 ? machineXs[M - 1] + ms + poleGap : xStart + poleGap;
+  const laneFlipX =
+    laneFlipAfterIdx !== undefined && M >= 2
+      ? machineXs[laneFlipAfterIdx] + ms + poleGap
+      : undefined;
+  const width = Math.max(lastEndX + tailW, xStart + 1);
+
+  const entities: EntityInstance[] = [];
+  const pins: MacroPin[] = [];
+  let hid = 0;
+
+  const mkBelt = (
+    tx: number,
+    ty: number,
+    direction: Dir,
+    item?: string,
+    intentionalSideLoad?: boolean,
+  ): EntityInstance => ({
+    id: `${spec.id}:fh:${hid++}`,
+    name: beltSpec.beltName,
+    tx,
+    ty,
+    w: 1,
+    h: 1,
+    direction,
+    macroId: spec.id,
+    item,
+    role: 'belt-macro',
+    intentionalSideLoad,
+  });
+
+  const mkPipe = (tx: number, ty: number, item: string) => {
+    entities.push({
+      id: `${spec.id}:fp:${hid++}`,
+      name: 'pipe',
+      tx,
+      ty,
+      w: 1,
+      h: 1,
+      direction: Dir.NORTH,
+      macroId: spec.id,
+      item,
+      role: 'pipe-macro',
+    });
+  };
+
+  const mkPipeUg = (tx: number, ty: number, direction: Dir, item: string) => {
+    entities.push({
+      id: `${spec.id}:fpu:${hid++}`,
+      name: 'pipe-to-ground',
+      tx,
+      ty,
+      w: 1,
+      h: 1,
+      direction,
+      macroId: spec.id,
+      item,
+      role: 'pipe-ug-macro',
+    });
+  };
+
+  const addInPin = (
+    item: string,
+    ratePerSec: number,
+    x: number,
+    y: number,
+    dir: Dir,
+    isFluid = false,
+  ) => {
+    const out = pinOutsideOffset(x, y, dir, 'input');
+    pins.push({
+      id: `in:${item}`,
+      item,
+      direction: dir,
+      kind: 'input',
+      x,
+      y,
+      portX: out.portX,
+      portY: out.portY,
+      ratePerSec,
+      beltTier: spec.beltTier,
+      isFluid: isFluid || undefined,
+    });
+  };
+
+  const yFarN = isTwoFluid ? 0 : 0;
+  const yNearN = isTwoFluid ? 0 : northFar ? 1 : 0;
+  const northTracks = !isTwoFluid ? (northFar ? 1 : 0) + (northNear ? 1 : 0) : 0;
+  const yInsN = isTwoFluid ? 3 : northTracks > 0 ? northTracks : 0;
+  const yMachine = isTwoFluid ? 4 : northTracks > 0 ? northTracks + 1 : 1;
+  const yInsS = yMachine + ms;
+  const yOut = yInsS + 1;
+  const yFluidDrop = yOut + 1;
+  const yFluidSouth = yOut + 2;
+  const height = isTwoFluid ? yOut + 1 : yFluidSouth + 1;
+
+  const machDir = isTwoFluid ? Dir.NORTH : Dir.SOUTH;
+  const fOff0 = isTwoFluid
+    ? fluidPortOffset(spec.machineName, 0, Dir.NORTH)
+    : fluidPortOffset(spec.machineName, 0, Dir.SOUTH);
+  const fOff1 = isTwoFluid ? fluidPortOffset(spec.machineName, 1, Dir.NORTH) : 0;
+
+  let maxNorthInX = 0;
+  const placedPoles = new Set<string>();
+  const mkPole = (px: number, py: number) => {
+    const k = `${px},${py}`;
+    if (placedPoles.has(k)) return;
+    placedPoles.add(k);
+    entities.push({
+      id: `${spec.id}:fpole:${hid++}`,
+      name: poleSpec.name,
+      tx: px,
+      ty: py,
+      w: poleSpec.size,
+      h: poleSpec.size,
+      direction: Dir.NORTH,
+      macroId: spec.id,
+      role: 'pole-macro',
+    });
+  };
+
+  // Initial poles before machine 0
+  if (poleSpec.name === 'substation') {
+    mkPole(0, yMachine);
+  } else {
+    mkPole(0, yInsN);
+    mkPole(0, yInsS);
+  }
+
+  for (let i = 0; i < M; i++) {
+    const mx = machineXs[i];
+    entities.push({
+      id: `${spec.id}:fm:${i}`,
+      name: spec.machineName,
+      tx: mx,
+      ty: yMachine,
+      w: ms,
+      h: ms,
+      direction: machDir,
+      hasFluidBox: true,
+      recipe: spec.recipeId,
+      quality: spec.quality,
+      items: spec.modules.length > 0 ? [...spec.modules] : undefined,
+      macroId: spec.id,
+      item: spec.outputItem,
+      role: 'machine',
+    });
+
+    // North solid inserters (when 1-fluid)
+    if (!isTwoFluid && (northNearIns || northFarIns)) {
+      const slotPool = Array.from({ length: ms }, (_, k) => mx + k).filter(
+        (x) => !(ms === 5 && poleSpec.tier === 'small' && x === mx + 2),
+      );
+      let cursor = 0;
+      if (northNearIns && northNear) {
+        const nearLim = northFarIns ? Math.max(1, slotPool.length - 1) : slotPool.length;
+        for (let c = 0; c < northNearIns.count && cursor < nearLim; c++) {
+          const ix = slotPool[cursor++];
+          if (ix > maxNorthInX) maxNorthInX = ix;
+          entities.push({
+            id: `${spec.id}:finn:${hid++}`,
+            name: INSERTER_SPECS[northNearIns.kind].name,
+            tx: ix,
+            ty: yInsN,
+            w: 1,
+            h: 1,
+            direction: Dir.NORTH,
+            macroId: spec.id,
+            role: 'inserter-in',
+          });
+        }
+      }
+      if (northFarIns && northFar) {
+        for (let c = 0; c < northFarIns.count && cursor < slotPool.length; c++) {
+          const ix = slotPool[cursor++];
+          if (ix > maxNorthInX) maxNorthInX = ix;
+          entities.push({
+            id: `${spec.id}:finf:${hid++}`,
+            name: INSERTER_SPECS[northFarIns.kind].name,
+            tx: ix,
+            ty: yInsN,
+            w: 1,
+            h: 1,
+            direction: Dir.NORTH,
+            macroId: spec.id,
+            role: 'inserter-in',
+          });
+        }
+      }
+    }
+
+    // Fluid taps per machine
+    if (isTwoFluid) {
+      mkPipe(mx + fOff0, yInsN, fluids[0].item);
+      mkPipeUg(mx + fOff1, 1, Dir.NORTH, fluids[1].item);
+      mkPipeUg(mx + fOff1, yInsN, Dir.SOUTH, fluids[1].item);
+    } else if (fluids[0]) {
+      mkPipeUg(mx + fOff0, yInsS, Dir.NORTH, fluids[0].item);
+      mkPipeUg(mx + fOff0, yFluidDrop, Dir.SOUTH, fluids[0].item);
+    }
+
+    // Output inserters along yInsS avoiding fluid port slot if 1-fluid
+    const outSlots = Array.from({ length: ms }, (_, k) => k)
+      .filter((k) => (isTwoFluid ? true : k !== fOff0))
+      .filter((k) => !(ms === 5 && poleSpec.tier === 'small' && k === 2));
+    for (let c = 0; c < outIns.count && c < outSlots.length; c++) {
+      entities.push({
+        id: `${spec.id}:fout:${hid++}`,
+        name: INSERTER_SPECS[outIns.kind].name,
+        tx: mx + outSlots[c],
+        ty: yInsS,
+        w: 1,
+        h: 1,
+        direction: Dir.NORTH,
+        macroId: spec.id,
+        role: 'inserter-out',
+      });
+    }
+
+    // Gap pole after each machine
+    if (poleSpec.name === 'substation') {
+      mkPole(mx + ms, yMachine);
+    } else {
+      mkPole(mx + ms, yInsN);
+      mkPole(mx + ms, yInsS);
+    }
+  }
+
+  if (laneFlipX !== undefined && poleSpec.name !== 'substation') {
+    mkPole(laneFlipX + 3, yInsN);
+    mkPole(laneFlipX + 3, yInsS);
+  }
+
+  // North solid belts
+  if (!isTwoFluid) {
+    const inEndX = M > 0 ? Math.min(lastEndX, maxNorthInX + 1) : xStart;
+    if (northFar) {
+      for (let x = 0; x < inEndX; x++) {
+        entities.push(mkBelt(x, yFarN, Dir.EAST, northFar.item));
+      }
+      addInPin(northFar.item, northFar.ratePerSec, 0, yFarN, Dir.EAST);
+    }
+    if (northNear) {
+      for (let x = 0; x < inEndX; x++) {
+        entities.push(mkBelt(x, yNearN, Dir.EAST, northNear.item));
+      }
+      addInPin(northNear.item, northNear.ratePerSec, 0, yNearN, Dir.EAST);
+    }
+  }
+
+  // Horizontal fluid headers
+  if (isTwoFluid) {
+    const f0End = M > 0 ? machineXs[M - 1] + fOff0 + 1 : xStart + 1;
+    for (let x = 0; x < f0End; x++) {
+      mkPipe(x, 2, fluids[0].item);
+    }
+    addInPin(fluids[0].item, fluids[0].ratePerSec, 0, 2, Dir.EAST, true);
+
+    const f1End = M > 0 ? machineXs[M - 1] + fOff1 + 1 : xStart + 1;
+    for (let x = 0; x < f1End; x++) {
+      mkPipe(x, 0, fluids[1].item);
+    }
+    addInPin(fluids[1].item, fluids[1].ratePerSec, 0, 0, Dir.EAST, true);
+  } else if (fluids[0]) {
+    const f0End = M > 0 ? machineXs[M - 1] + fOff0 + 1 : xStart + 1;
+    for (let x = 0; x < f0End; x++) {
+      mkPipe(x, yFluidSouth, fluids[0].item);
+    }
+    addInPin(fluids[0].item, fluids[0].ratePerSec, 0, yFluidSouth, Dir.EAST, true);
+  }
+
+  // Output belt + mid-row jog / tail splitter
+  for (let x = xStart; x < lastEndX; x++) {
+    if (laneFlipX !== undefined && x >= laneFlipX && x <= laneFlipX + 2) {
+      if (x === laneFlipX) {
+        entities.push(mkBelt(x, yOut, Dir.NORTH, spec.outputItem));
+      } else if (x === laneFlipX + 2) {
+        entities.push(mkBelt(x, yOut, Dir.EAST, spec.outputItem, true));
+      }
+      continue;
+    }
+    entities.push(mkBelt(x, yOut, Dir.EAST, spec.outputItem));
+  }
+  if (laneFlipX !== undefined) {
+    entities.push(mkBelt(laneFlipX, yInsS, Dir.EAST, spec.outputItem));
+    entities.push(mkBelt(laneFlipX + 1, yInsS, Dir.EAST, spec.outputItem));
+    entities.push(mkBelt(laneFlipX + 2, yInsS, Dir.SOUTH, spec.outputItem));
+  }
+  if (tailW === 2) {
+    entities.push({
+      id: `${spec.id}:ftail:sp`,
+      name: beltSpec.splitterName,
+      tx: lastEndX,
+      ty: yInsS,
+      w: 1,
+      h: 2,
+      direction: Dir.EAST,
+      macroId: spec.id,
+      role: 'splitter-macro',
+    });
+    entities.push(mkBelt(lastEndX + 1, yInsS, Dir.SOUTH, spec.outputItem));
+    entities.push(mkBelt(lastEndX + 1, yOut, Dir.EAST, spec.outputItem, true));
+  }
+  for (let x = lastEndX + tailW; x < width; x++) {
+    entities.push(mkBelt(x, yOut, Dir.EAST, spec.outputItem));
+  }
+
+  const outPort = pinOutsideOffset(width - 1, yOut, Dir.EAST, 'output');
+  pins.push({
+    id: `out:${spec.outputItem}`,
+    item: spec.outputItem,
+    direction: Dir.EAST,
+    kind: 'output',
+    x: width - 1,
+    y: yOut,
+    portX: outPort.portX,
+    portY: outPort.portY,
+    ratePerSec: spec.outputRatePerSec,
+    beltTier: spec.beltTier,
+  });
+
+  const powerTargets = entities
+    .filter(
+      (e) =>
+        e.role === 'machine' ||
+        e.role === 'inserter-in' ||
+        e.role === 'inserter-out',
+    )
+    .map((e) => ({ tx: e.tx, ty: e.ty, w: e.w, h: e.h }));
+
+  return {
+    id: spec.id,
+    kind: 'recipe-macro',
+    label: recipe?.name ?? spec.outputItem,
+    sublabel: `${spec.machineCount}× ${machineShortLabel(spec.machineName, spec.quality)}`,
+    recipeId: spec.recipeId,
+    outputItem: spec.outputItem,
+    rows: 1,
+    width,
+    height,
+    rotation: 0,
+    noFlipY: true,
+    entities,
+    pins,
+    powerTargets,
+  };
+}
+
 export function compileRecipeMacroVariants(
   spec: RecipeMacroSpec,
   pdk: PdkConfig,
   compactMacros = true,
 ): CompiledMacro[] {
+  if ((spec.fluidInputs?.length ?? 0) > 0) {
+    return [buildFluidRecipeMacro(spec, pdk)];
+  }
   const single = buildSingleRowMacro(spec, pdk);
   const twoRow = buildMirroredTwoRowMacro(spec, pdk);
   if (spec.preferredRows === 2 && twoRow) {

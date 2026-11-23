@@ -6,6 +6,7 @@ import {
   EntityInstance,
   FloorplanResult,
   INSERTER_BY_ENTITY_NAME,
+  PIPE_SPEC,
   POLE_BY_ENTITY_NAME,
   PerimeterPin,
   PlacedMacro,
@@ -18,8 +19,11 @@ import {
   dirDelta,
   getItemMeta,
   isMachineName,
+  isPipeName,
+  isPipeUndergroundName,
   isSplitterName,
   isUndergroundName,
+  oppositeDir,
 } from '@factorio-eda/core';
 import { ArrowUpDown, HelpCircle, Maximize2, RotateCw, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { subscribeAssets } from '../sprites/factorioAssets';
@@ -170,7 +174,13 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
           if (!byTile.has(key)) byTile.set(key, e);
           if (e.netId) {
             const prev = netByTile.get(key);
-            if (!prev || e.role === 'belt-route' || e.role === 'ug-route') {
+            if (
+              !prev ||
+              e.role === 'belt-route' ||
+              e.role === 'ug-route' ||
+              e.role === 'pipe-route' ||
+              e.role === 'pipe-ug-route'
+            ) {
               netByTile.set(key, e);
             }
           }
@@ -626,6 +636,7 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
 
         if (isMachineName(e.name)) {
           const isFurnace = e.name === 'electric-furnace';
+          const isChem = e.name === 'chemical-plant';
           const isFoundry = e.name === 'foundry';
           const isEmPlant = e.name === 'electromagnetic-plant';
           const isCryo = e.name === 'cryogenic-plant';
@@ -635,34 +646,40 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
                 ? utilColor(macroUtilMap.get(e.macroId)!)
                 : isFurnace
                   ? '#475569'
-                  : isFoundry
-                    ? '#9a3412'
-                    : isEmPlant
-                      ? '#6d28d9'
-                      : isCryo
-                        ? '#0e7490'
-                        : '#1d4ed8';
+                  : isChem
+                    ? '#0d9488'
+                    : isFoundry
+                      ? '#9a3412'
+                      : isEmPlant
+                        ? '#6d28d9'
+                        : isCryo
+                          ? '#0e7490'
+                          : '#1d4ed8';
             ctx.fillRect(ex + 0.4, ey + 0.4, Math.max(1.5, ew - 0.8), Math.max(1.5, eh - 0.8));
             continue;
           }
           ctx.fillStyle = isFurnace
             ? '#2b3445'
-            : isFoundry
-              ? '#431a0d'
-              : isEmPlant
-                ? '#2d1552'
-                : isCryo
-                  ? '#113a4a'
-                  : '#1b385c';
+            : isChem
+              ? '#0f4c5c'
+              : isFoundry
+                ? '#431a0d'
+                : isEmPlant
+                  ? '#2d1552'
+                  : isCryo
+                    ? '#113a4a'
+                    : '#1b385c';
           ctx.fillRect(ex + 1, ey + 1, ew - 2, eh - 2);
           ctx.strokeStyle =
             isFurnace || isFoundry
               ? '#fb923c'
-              : isEmPlant
-                ? '#e879f9'
-                : isCryo
-                  ? '#22d3ee'
-                  : '#7dd3fc';
+              : isChem
+                ? '#2dd4bf'
+                : isEmPlant
+                  ? '#e879f9'
+                  : isCryo
+                    ? '#22d3ee'
+                    : '#7dd3fc';
           ctx.lineWidth = Math.max(1, s * 0.08);
           ctx.strokeRect(ex + 1, ey + 1, ew - 2, eh - 2);
 
@@ -677,11 +694,13 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
           ctx.strokeStyle =
             isFurnace || isFoundry
               ? 'rgba(251,146,60,0.45)'
-              : isEmPlant
-                ? 'rgba(232,121,249,0.45)'
-                : isCryo
-                  ? 'rgba(34,211,238,0.45)'
-                  : 'rgba(186,230,253,0.35)';
+              : isChem
+                ? 'rgba(45,212,191,0.5)'
+                : isEmPlant
+                  ? 'rgba(232,121,249,0.45)'
+                  : isCryo
+                    ? 'rgba(34,211,238,0.45)'
+                    : 'rgba(186,230,253,0.35)';
           ctx.lineWidth = 1;
           ctx.beginPath();
           ctx.arc(cx, cy, Math.min(ew, eh) * 0.32, 0, Math.PI * 2);
@@ -705,13 +724,15 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
             ctx.textAlign = 'left';
             const badge = isFurnace
               ? 'EF'
-              : isFoundry
-                ? 'FND'
-                : isEmPlant
-                  ? 'EMP'
-                  : isCryo
-                    ? 'CRY'
-                    : `A${e.name.slice(-1)}`;
+              : isChem
+                ? 'CP'
+                : isFoundry
+                  ? 'FND'
+                  : isEmPlant
+                    ? 'EMP'
+                    : isCryo
+                      ? 'CRY'
+                      : `A${e.name.slice(-1)}`;
             ctx.fillText(badge, ex + 3, ey + Math.max(10, s * 0.38));
 
             // Module pips (bottom-left)
@@ -872,6 +893,27 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
           ctx.lineTo(cx + dx * s * 0.24, cy + dy * s * 0.24);
           ctx.lineTo(cx - dx * s * 0.18 - px * s * 0.2, cy - dy * s * 0.18 - py * s * 0.2);
           ctx.stroke();
+          continue;
+        }
+
+        if (isPipeName(e.name)) {
+          if (!layers.belts) continue;
+          const fCol = e.item ? getItemMeta(e.item).color : PIPE_SPEC.color;
+          if (fastLod) {
+            ctx.fillStyle = fCol;
+            ctx.fillRect(ex + 0.3, ey + 0.3, Math.max(1.2, ew - 0.6), Math.max(1.2, eh - 0.6));
+            continue;
+          }
+          const isUg = isPipeUndergroundName(e.name);
+          ctx.fillStyle = isUg ? '#1e293b' : '#334155';
+          ctx.strokeStyle = fCol;
+          ctx.lineWidth = Math.max(1.2, s * 0.08);
+          ctx.fillRect(ex + s * 0.18, ey + s * 0.18, ew - s * 0.36, eh - s * 0.36);
+          ctx.strokeRect(ex + s * 0.18, ey + s * 0.18, ew - s * 0.36, eh - s * 0.36);
+          ctx.fillStyle = fCol;
+          ctx.beginPath();
+          ctx.arc(ex + ew / 2, ey + eh / 2, Math.max(1.8, s * 0.14), 0, Math.PI * 2);
+          ctx.fill();
           continue;
         }
 
@@ -1498,18 +1540,25 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
       }
 
       if (netSt) {
-        const left = netSt.leftRatePerSec ?? netSt.ratePerSec / 2;
-        const right = netSt.rightRatePerSec ?? netSt.ratePerSec / 2;
-        const halfCap = netSt.capacityPerSec * 0.5;
-        const lPct = halfCap > 0 ? (left / halfCap) * 100 : 0;
-        const rPct = halfCap > 0 ? (right / halfCap) * 100 : 0;
-        lines.push({
-          text: `Total: ${netSt.ratePerSec.toFixed(2)}/s (${(netSt.utilization * 100).toFixed(0)}% of ${netSt.beltTier}) — click to trace`,
-        });
-        lines.push({
-          text: `L Lane: ${left.toFixed(2)}/s (${lPct.toFixed(0)}%) | R Lane: ${right.toFixed(2)}/s (${rPct.toFixed(0)}%)`,
-          color: laneColor(Math.max(lPct, rPct)),
-        });
+        if (isPipeName(hitEnt.name)) {
+          lines.push({
+            text: `Pipe Flow: ${netSt.ratePerSec.toFixed(1)}/s (${(netSt.utilization * 100).toFixed(1)}% of ${PIPE_SPEC.capacityPerSec}/s)`,
+            color: '#38bdf8',
+          });
+        } else {
+          const left = netSt.leftRatePerSec ?? netSt.ratePerSec / 2;
+          const right = netSt.rightRatePerSec ?? netSt.ratePerSec / 2;
+          const halfCap = netSt.capacityPerSec * 0.5;
+          const lPct = halfCap > 0 ? (left / halfCap) * 100 : 0;
+          const rPct = halfCap > 0 ? (right / halfCap) * 100 : 0;
+          lines.push({
+            text: `Total: ${netSt.ratePerSec.toFixed(2)}/s (${(netSt.utilization * 100).toFixed(0)}% of ${netSt.beltTier}) — click to trace`,
+          });
+          lines.push({
+            text: `L Lane: ${left.toFixed(2)}/s (${lPct.toFixed(0)}%) | R Lane: ${right.toFixed(2)}/s (${rPct.toFixed(0)}%)`,
+            color: laneColor(Math.max(lPct, rPct)),
+          });
+        }
       } else if (entLane) {
         const total = entLane.leftRatePerSec + entLane.rightRatePerSec;
         const utilPct =

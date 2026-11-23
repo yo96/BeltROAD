@@ -92,7 +92,14 @@
     "stack-inserter": { "id": "stack-inserter", "name": "Stack Inserter", "color": "#f8fafc", "category": "logistics", "stackSize": 50 },
     "foundry": { "id": "foundry", "name": "Foundry", "color": "#f97316", "category": "production", "stackSize": 20 },
     "electromagnetic-plant": { "id": "electromagnetic-plant", "name": "Electromagnetic Plant", "color": "#e879f9", "category": "production", "stackSize": 20 },
-    "cryogenic-plant": { "id": "cryogenic-plant", "name": "Cryogenic Plant", "color": "#22d3ee", "category": "production", "stackSize": 20 }
+    "cryogenic-plant": { "id": "cryogenic-plant", "name": "Cryogenic Plant", "color": "#22d3ee", "category": "production", "stackSize": 20 },
+    "water": { "id": "water", "name": "Water", "color": "#0ea5e9", "category": "fluid", "stackSize": 1 },
+    "crude-oil": { "id": "crude-oil", "name": "Crude Oil", "color": "#334155", "category": "fluid", "stackSize": 1 },
+    "heavy-oil": { "id": "heavy-oil", "name": "Heavy Oil", "color": "#d97706", "category": "fluid", "stackSize": 1 },
+    "light-oil": { "id": "light-oil", "name": "Light Oil", "color": "#f59e0b", "category": "fluid", "stackSize": 1 },
+    "petroleum-gas": { "id": "petroleum-gas", "name": "Petroleum Gas", "color": "#c084fc", "category": "fluid", "stackSize": 1 },
+    "sulfuric-acid": { "id": "sulfuric-acid", "name": "Sulfuric Acid", "color": "#eab308", "category": "fluid", "stackSize": 1 },
+    "lubricant": { "id": "lubricant", "name": "Lubricant", "color": "#22c55e", "category": "fluid", "stackSize": 1 }
   },
   "recipes": [
     {

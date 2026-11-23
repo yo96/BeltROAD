@@ -6,6 +6,7 @@ import {
   EntityInstance,
   FloorplanResult,
   INSERTER_BY_ENTITY_NAME,
+  PIPE_SPEC,
   POLE_BY_ENTITY_NAME,
   QUALITY_SPECS,
   StaNetReport,
@@ -13,8 +14,11 @@ import {
   dirDelta,
   getItemMeta,
   isMachineName,
+  isPipeName,
+  isPipeUndergroundName,
   isSplitterName,
   isUndergroundName,
+  oppositeDir,
 } from '@factorio-eda/core';
 import {
   drawCroppedIcon,
@@ -531,13 +535,32 @@ function drawMachineEntity(
     const isFoundry = e.name === 'foundry';
     const isEmPlant = e.name === 'electromagnetic-plant';
     const isCryo = e.name === 'cryogenic-plant';
+    const isChem = e.name === 'chemical-plant';
     const margin = Math.max(1.5, s * 0.08);
     const bx = ex + margin;
     const by = ey + margin;
     const bw = ew - margin * 2;
     const bh = eh - margin * 2;
 
-    if (isFurnace || isFoundry) {
+    if (isChem) {
+      ctx.fillStyle = '#0f4c5c';
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.strokeStyle = '#2dd4bf';
+      ctx.lineWidth = Math.max(1.4, s * 0.08);
+      ctx.strokeRect(bx, by, bw, bh);
+
+      ctx.fillStyle = '#082f3a';
+      ctx.fillRect(bx + bw * 0.14, by + bh * 0.14, bw * 0.72, bh * 0.72);
+      // Twin chemical distillation domes
+      ctx.fillStyle = '#14b8a6';
+      ctx.beginPath();
+      ctx.arc(cx - bw * 0.18, cy, bw * 0.16, 0, Math.PI * 2);
+      ctx.arc(cx + bw * 0.18, cy, bw * 0.16, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#99f6e4';
+      ctx.lineWidth = Math.max(1, s * 0.05);
+      ctx.stroke();
+    } else if (isFurnace || isFoundry) {
       // Heavy steel Electric Furnace or Space Age molten Foundry
       ctx.fillStyle = isFoundry ? '#5c2410' : '#3f454f';
       ctx.fillRect(bx, by, bw, bh);
@@ -981,6 +1004,71 @@ function drawPoleEntity(
   ctx.fill();
 }
 
+function drawPipeSprite(
+  ctx: CanvasRenderingContext2D,
+  e: EntityInstance,
+  pipeCoords: Set<string>,
+  ox: number,
+  oy: number,
+  s: number,
+): void {
+  const ex = ox + e.tx * s;
+  const ey = oy + e.ty * s;
+  const cx = ex + s * 0.5;
+  const cy = ey + s * 0.5;
+  const fluidCol = e.item ? getItemMeta(e.item).color : PIPE_SPEC.color;
+  const isUg = isPipeUndergroundName(e.name);
+  const armW = Math.max(2, s * 0.36);
+
+  ctx.fillStyle = '#475569';
+  ctx.strokeStyle = '#94a3b8';
+  ctx.lineWidth = Math.max(1, s * 0.06);
+
+  if (isUg) {
+    const { dx, dy } = dirDelta(e.direction);
+    // Surface stub towards open connection
+    ctx.fillRect(
+      cx - armW / 2 + (dx > 0 ? 0 : dx * s * 0.5),
+      cy - armW / 2 + (dy > 0 ? 0 : dy * s * 0.5),
+      dx !== 0 ? s * 0.5 + armW / 2 : armW,
+      dy !== 0 ? s * 0.5 + armW / 2 : armW,
+    );
+    // Underground armored cap
+    ctx.fillStyle = '#1e293b';
+    ctx.strokeStyle = fluidCol;
+    ctx.lineWidth = Math.max(1.3, s * 0.09);
+    ctx.beginPath();
+    ctx.roundRect(ex + s * 0.16, ey + s * 0.16, s * 0.68, s * 0.68, s * 0.12);
+    ctx.fill();
+    ctx.stroke();
+  } else {
+    // Connect to orthogonal fluid neighbors or draw cross core
+    for (const [dx, dy] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ] as const) {
+      if (pipeCoords.has(`${e.tx + dx},${e.ty + dy}`)) {
+        ctx.fillRect(
+          cx - armW / 2 + (dx < 0 ? -s * 0.5 + armW / 2 : 0),
+          cy - armW / 2 + (dy < 0 ? -s * 0.5 + armW / 2 : 0),
+          dx !== 0 ? s * 0.5 : armW,
+          dy !== 0 ? s * 0.5 : armW,
+        );
+      }
+    }
+    ctx.fillRect(ex + s * 0.24, ey + s * 0.24, s * 0.52, s * 0.52);
+    ctx.strokeRect(ex + s * 0.24, ey + s * 0.24, s * 0.52, s * 0.52);
+  }
+
+  // Fluid sighting glass
+  ctx.fillStyle = fluidCol;
+  ctx.beginPath();
+  ctx.arc(cx, cy, Math.max(1.8, s * 0.15), 0, Math.PI * 2);
+  ctx.fill();
+}
+
 export function renderFactorioScene(
   ctx: CanvasRenderingContext2D,
   canvasW: number,
@@ -1119,6 +1207,7 @@ export function renderFactorioScene(
   // Classify visible entity draw order (belts -> machines -> inserters -> port markers -> poles & wires)
   const belts: EntityInstance[] = [];
   const ugs: EntityInstance[] = [];
+  const pipes: EntityInstance[] = [];
   const splitters: EntityInstance[] = [];
   const machines: EntityInstance[] = [];
   const beacons: EntityInstance[] = [];
@@ -1127,9 +1216,17 @@ export function renderFactorioScene(
   const markers: EntityInstance[] = [];
   const ugInputs: EntityInstance[] = [];
   const ugOutputs: EntityInstance[] = [];
+  const pipeUgs: EntityInstance[] = [];
+  const pipeCoords = new Set<string>();
 
   for (const e of entities) {
-    if (isUndergroundName(e.name)) {
+    if (isPipeName(e.name)) {
+      pipeCoords.add(`${e.tx},${e.ty}`);
+      if (isPipeUndergroundName(e.name) && isVis(e.tx, e.ty, e.w, e.h, 10)) {
+        pipeUgs.push(e);
+      }
+      if (isVis(e.tx, e.ty, e.w, e.h, 1)) pipes.push(e);
+    } else if (isUndergroundName(e.name)) {
       if (e.type === 'input') {
         if (isVis(e.tx, e.ty, e.w, e.h, 10)) ugInputs.push(e);
       } else {
@@ -1243,6 +1340,41 @@ export function renderFactorioScene(
     }
   }
 
+  // Layer 2b: Fluid Pipes & Pipe-to-Ground Links
+  if (layers.belts) {
+    for (const p of pipes) {
+      if (fastLod) {
+        ctx.fillStyle = p.item ? getItemMeta(p.item).color : PIPE_SPEC.color;
+        ctx.fillRect(ox + p.tx * s + 0.3, oy + p.ty * s + 0.3, Math.max(1.2, s - 0.6), Math.max(1.2, s - 0.6));
+        continue;
+      }
+      drawPipeSprite(ctx, p, pipeCoords, ox, oy, s);
+    }
+    if (layers.undergrounds && s >= 2.5 && pipeUgs.length > 0) {
+      const puMap = new Map(pipeUgs.map((u) => [`${u.tx},${u.ty}`, u]));
+      ctx.save();
+      ctx.setLineDash([3, 2]);
+      ctx.lineWidth = Math.max(1.2, s * 0.1);
+      for (const u of pipeUgs) {
+        const opp = oppositeDir(u.direction);
+        const { dx, dy } = dirDelta(opp);
+        if (dx + dy <= 0) continue;
+        for (let step = 1; step <= PIPE_SPEC.maxUgDistance; step++) {
+          const partner = puMap.get(`${u.tx + dx * step},${u.ty + dy * step}`);
+          if (partner && partner.direction === opp) {
+            ctx.strokeStyle = u.item ? getItemMeta(u.item).color : PIPE_SPEC.color;
+            ctx.beginPath();
+            ctx.moveTo(ox + (u.tx + 0.5) * s, oy + (u.ty + 0.5) * s);
+            ctx.lineTo(ox + (partner.tx + 0.5) * s, oy + (partner.ty + 0.5) * s);
+            ctx.stroke();
+            break;
+          }
+        }
+      }
+      ctx.restore();
+    }
+  }
+
   // Layer 3: Assembling Machines & Electric Furnaces
   for (const m of machines) {
     const hColor =
@@ -1253,13 +1385,15 @@ export function renderFactorioScene(
       const mColor =
         m.name === 'electric-furnace'
           ? '#64748b'
-          : m.name === 'foundry'
-            ? '#9a3412'
-            : m.name === 'electromagnetic-plant'
-              ? '#6d28d9'
-              : m.name === 'cryogenic-plant'
-                ? '#0e7490'
-                : '#2a5f82';
+          : m.name === 'chemical-plant'
+            ? '#0d9488'
+            : m.name === 'foundry'
+              ? '#9a3412'
+              : m.name === 'electromagnetic-plant'
+                ? '#6d28d9'
+                : m.name === 'cryogenic-plant'
+                  ? '#0e7490'
+                  : '#2a5f82';
       ctx.fillStyle = hColor ?? mColor;
       ctx.fillRect(
         ox + m.tx * s + 0.3,

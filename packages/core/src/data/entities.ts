@@ -136,6 +136,14 @@ export const MACHINE_SPECS: Record<MachineName, MachineSpec> = {
     powerKw: 180,
     drainKw: 6,
   },
+  'chemical-plant': {
+    name: 'chemical-plant',
+    size: 3,
+    craftingSpeed: 1.0,
+    moduleSlots: 3,
+    powerKw: 210,
+    drainKw: 7,
+  },
   foundry: {
     name: 'foundry',
     size: 4,
@@ -230,6 +238,14 @@ export function selectMachineForRecipe(recipe: RecipeDef, pdk: PdkConfig): Machi
     ) {
       return 'cryogenic-plant';
     }
+  }
+  if (recipe.category === 'chemistry') {
+    return 'chemical-plant';
+  }
+  if (recipe.category === 'crafting-with-fluid') {
+    return pdk.defaultAssemblerTier === 1
+      ? 'assembling-machine-2'
+      : assemblerNameForTier(pdk.defaultAssemblerTier);
   }
   return recipe.category === 'smelting'
     ? 'electric-furnace'
@@ -449,6 +465,22 @@ export function isSplitterName(name: string): boolean {
     name === 'express-splitter' ||
     name === 'turbo-splitter'
   );
+}
+
+export const PIPE_SPEC = {
+  pipeName: 'pipe' as const,
+  undergroundName: 'pipe-to-ground' as const,
+  maxUgDistance: 10,
+  capacityPerSec: 1200,
+  color: '#38bdf8',
+};
+
+export function isPipeName(name: string): boolean {
+  return name === 'pipe' || name === 'pipe-to-ground';
+}
+
+export function isPipeUndergroundName(name: string): boolean {
+  return name === 'pipe-to-ground';
 }
 
 export function isMachineName(name: string): boolean {

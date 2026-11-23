@@ -31,9 +31,10 @@ export function rotateMacro(macro: CompiledMacro, rot90: Rot90): CompiledMacro {
   const entities: EntityInstance[] = macro.entities.map((ent) => {
     const rb = rotateBox(ent.tx, ent.ty, ent.w, ent.h, W, H, rot90);
     const isDirectional =
-      ent.role !== 'machine' &&
       ent.role !== 'pole-macro' &&
       ent.role !== 'pole-pdn' &&
+      (ent.role !== 'machine' || Boolean(ent.hasFluidBox)) &&
+      ent.role !== 'beacon-macro' &&
       ent.role !== 'port-marker';
     return {
       ...ent,
@@ -82,9 +83,10 @@ export function mirrorMacroY(macro: CompiledMacro): CompiledMacro {
 
   const entities: EntityInstance[] = macro.entities.map((ent) => {
     const isDirectional =
-      ent.role !== 'machine' &&
       ent.role !== 'pole-macro' &&
       ent.role !== 'pole-pdn' &&
+      (ent.role !== 'machine' || Boolean(ent.hasFluidBox)) &&
+      ent.role !== 'beacon-macro' &&
       ent.role !== 'port-marker';
     return {
       ...ent,

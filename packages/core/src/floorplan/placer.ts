@@ -528,8 +528,9 @@ export function runFloorplanAndPlacement(
       const idx = vs.variants.findIndex((v) => v.rows === ov.rows);
       if (idx >= 0) variantIdx = idx;
     }
+    const noFlip = vs.variants.some((v) => v.noFlipY);
     const rot: Rot90 = ov?.rotation ?? 0;
-    const flipY: 0 | 1 = ov?.flipY ? 1 : 0;
+    const flipY: 0 | 1 = noFlip ? 0 : ov?.flipY ? 1 : 0;
     return {
       id: vs.id,
       variants: vs.variants,
@@ -541,7 +542,7 @@ export function runFloorplanAndPlacement(
       y: ov?.y ?? margin,
       locked: Boolean(ov?.locked && ov?.x !== undefined && ov?.y !== undefined),
       rotLocked: ov?.rotation !== undefined,
-      flipLocked: ov?.flipY !== undefined,
+      flipLocked: noFlip || ov?.flipY !== undefined,
       rowsLocked: ov?.rows !== undefined,
       rank: ranks.get(vs.id) ?? 1,
     };
