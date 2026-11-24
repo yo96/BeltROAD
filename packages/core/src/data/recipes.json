@@ -1,5 +1,5 @@
 {
-  "version": "2.0-base",
+  "version": "2.0-space-age",
   "items": {
     "iron-ore": { "id": "iron-ore", "name": "Iron Ore", "color": "#64748b", "category": "raw", "stackSize": 50 },
     "copper-ore": { "id": "copper-ore", "name": "Copper Ore", "color": "#ea580c", "category": "raw", "stackSize": 50 },
@@ -89,17 +89,50 @@
     "turbo-transport-belt": { "id": "turbo-transport-belt", "name": "Turbo Transport Belt", "color": "#22c55e", "category": "logistics", "stackSize": 100 },
     "turbo-underground-belt": { "id": "turbo-underground-belt", "name": "Turbo Underground Belt", "color": "#16a34a", "category": "logistics", "stackSize": 50 },
     "turbo-splitter": { "id": "turbo-splitter", "name": "Turbo Splitter", "color": "#22c55e", "category": "logistics", "stackSize": 50 },
+    "express-transport-belt": { "id": "express-transport-belt", "name": "Express Transport Belt", "color": "#38bdf8", "category": "logistics", "stackSize": 100 },
+    "express-underground-belt": { "id": "express-underground-belt", "name": "Express Underground Belt", "color": "#0284c7", "category": "logistics", "stackSize": 50 },
+    "express-splitter": { "id": "express-splitter", "name": "Express Splitter", "color": "#38bdf8", "category": "logistics", "stackSize": 50 },
+    "refined-concrete": { "id": "refined-concrete", "name": "Refined Concrete", "color": "#cbd5e1", "category": "logistics", "stackSize": 100 },
     "stack-inserter": { "id": "stack-inserter", "name": "Stack Inserter", "color": "#f8fafc", "category": "logistics", "stackSize": 50 },
     "foundry": { "id": "foundry", "name": "Foundry", "color": "#f97316", "category": "production", "stackSize": 20 },
     "electromagnetic-plant": { "id": "electromagnetic-plant", "name": "Electromagnetic Plant", "color": "#e879f9", "category": "production", "stackSize": 20 },
     "cryogenic-plant": { "id": "cryogenic-plant", "name": "Cryogenic Plant", "color": "#22d3ee", "category": "production", "stackSize": 20 },
+    "quality-module": { "id": "quality-module", "name": "Quality Module", "color": "#f472b6", "category": "modules", "stackSize": 50 },
+    "quality-module-2": { "id": "quality-module-2", "name": "Quality Module 2", "color": "#ec4899", "category": "modules", "stackSize": 50 },
+    "quality-module-3": { "id": "quality-module-3", "name": "Quality Module 3", "color": "#db2777", "category": "modules", "stackSize": 50 },
+    "tungsten-ore": { "id": "tungsten-ore", "name": "Tungsten Ore", "color": "#71717a", "category": "raw", "stackSize": 50 },
+    "calcite": { "id": "calcite", "name": "Calcite", "color": "#f5f5f4", "category": "raw", "stackSize": 50 },
+    "carbon": { "id": "carbon", "name": "Carbon", "color": "#1e293b", "category": "chemical", "stackSize": 50 },
+    "tungsten-carbide": { "id": "tungsten-carbide", "name": "Tungsten Carbide", "color": "#52525b", "category": "intermediate", "stackSize": 50 },
+    "tungsten-plate": { "id": "tungsten-plate", "name": "Tungsten Plate", "color": "#a1a1aa", "category": "plates", "stackSize": 50 },
+    "big-mining-drill": { "id": "big-mining-drill", "name": "Big Mining Drill", "color": "#fb923c", "category": "production", "stackSize": 20 },
+    "metallurgic-science-pack": { "id": "metallurgic-science-pack", "name": "Metallurgic Science Pack", "color": "#f97316", "category": "science", "stackSize": 200 },
+    "holmium-plate": { "id": "holmium-plate", "name": "Holmium Plate", "color": "#f472b6", "category": "plates", "stackSize": 100 },
+    "superconductor": { "id": "superconductor", "name": "Superconductor", "color": "#38bdf8", "category": "intermediate", "stackSize": 200 },
+    "supercapacitor": { "id": "supercapacitor", "name": "Supercapacitor", "color": "#e879f9", "category": "intermediate", "stackSize": 100 },
+    "electromagnetic-science-pack": { "id": "electromagnetic-science-pack", "name": "Electromagnetic Science Pack", "color": "#e879f9", "category": "science", "stackSize": 200 },
+    "yumako-mash": { "id": "yumako-mash", "name": "Yumako Mash", "color": "#f87171", "category": "raw", "stackSize": 100 },
+    "jelly": { "id": "jelly", "name": "Jelly", "color": "#84cc16", "category": "raw", "stackSize": 100 },
+    "carbon-fiber": { "id": "carbon-fiber", "name": "Carbon Fiber", "color": "#334155", "category": "intermediate", "stackSize": 100 },
+    "bioflux": { "id": "bioflux", "name": "Bioflux", "color": "#ec4899", "category": "raw", "stackSize": 100 },
+    "pentapod-egg": { "id": "pentapod-egg", "name": "Pentapod Egg", "color": "#a3e635", "category": "raw", "stackSize": 20 },
+    "agricultural-science-pack": { "id": "agricultural-science-pack", "name": "Agricultural Science Pack", "color": "#84cc16", "category": "science", "stackSize": 200 },
+    "ice": { "id": "ice", "name": "Ice", "color": "#bae6fd", "category": "raw", "stackSize": 50 },
+    "lithium": { "id": "lithium", "name": "Lithium", "color": "#e2e8f0", "category": "raw", "stackSize": 50 },
+    "lithium-plate": { "id": "lithium-plate", "name": "Lithium Plate", "color": "#f1f5f9", "category": "plates", "stackSize": 100 },
+    "cryogenic-science-pack": { "id": "cryogenic-science-pack", "name": "Cryogenic Science Pack", "color": "#38bdf8", "category": "science", "stackSize": 200 },
     "water": { "id": "water", "name": "Water", "color": "#0ea5e9", "category": "fluid", "stackSize": 1 },
     "crude-oil": { "id": "crude-oil", "name": "Crude Oil", "color": "#334155", "category": "fluid", "stackSize": 1 },
     "heavy-oil": { "id": "heavy-oil", "name": "Heavy Oil", "color": "#d97706", "category": "fluid", "stackSize": 1 },
     "light-oil": { "id": "light-oil", "name": "Light Oil", "color": "#f59e0b", "category": "fluid", "stackSize": 1 },
     "petroleum-gas": { "id": "petroleum-gas", "name": "Petroleum Gas", "color": "#c084fc", "category": "fluid", "stackSize": 1 },
     "sulfuric-acid": { "id": "sulfuric-acid", "name": "Sulfuric Acid", "color": "#eab308", "category": "fluid", "stackSize": 1 },
-    "lubricant": { "id": "lubricant", "name": "Lubricant", "color": "#22c55e", "category": "fluid", "stackSize": 1 }
+    "lubricant": { "id": "lubricant", "name": "Lubricant", "color": "#22c55e", "category": "fluid", "stackSize": 1 },
+    "molten-iron": { "id": "molten-iron", "name": "Molten Iron", "color": "#f97316", "category": "fluid", "stackSize": 1 },
+    "molten-copper": { "id": "molten-copper", "name": "Molten Copper", "color": "#fb7185", "category": "fluid", "stackSize": 1 },
+    "holmium-solution": { "id": "holmium-solution", "name": "Holmium Solution", "color": "#f472b6", "category": "fluid", "stackSize": 1 },
+    "electrolyte": { "id": "electrolyte", "name": "Electrolyte", "color": "#fb7185", "category": "fluid", "stackSize": 1 },
+    "fluoroketone-cold": { "id": "fluoroketone-cold", "name": "Fluoroketone (Cold)", "color": "#38bdf8", "category": "fluid", "stackSize": 1 }
   },
   "recipes": [
     {
@@ -1207,6 +1240,452 @@
       "outputCount": 1,
       "allowProductivity": false,
       "hasFluid": false
+    },
+    {
+      "id": "solid-fuel-from-light-oil",
+      "name": "Solid Fuel",
+      "category": "chemistry",
+      "energyRequired": 1,
+      "ingredients": [
+        { "item": "light-oil", "amount": 10, "type": "fluid" }
+      ],
+      "outputItem": "solid-fuel",
+      "outputCount": 1,
+      "allowProductivity": true,
+      "hasFluid": true
+    },
+    {
+      "id": "express-transport-belt",
+      "name": "Express Transport Belt",
+      "category": "crafting-with-fluid",
+      "energyRequired": 0.5,
+      "ingredients": [
+        { "item": "iron-gear-wheel", "amount": 10 },
+        { "item": "fast-transport-belt", "amount": 1 },
+        { "item": "lubricant", "amount": 20, "type": "fluid" }
+      ],
+      "outputItem": "express-transport-belt",
+      "outputCount": 1,
+      "allowProductivity": false,
+      "hasFluid": true
+    },
+    {
+      "id": "express-underground-belt",
+      "name": "Express Underground Belt",
+      "category": "crafting-with-fluid",
+      "energyRequired": 2,
+      "ingredients": [
+        { "item": "iron-gear-wheel", "amount": 80 },
+        { "item": "fast-underground-belt", "amount": 2 },
+        { "item": "lubricant", "amount": 40, "type": "fluid" }
+      ],
+      "outputItem": "express-underground-belt",
+      "outputCount": 2,
+      "allowProductivity": false,
+      "hasFluid": true
+    },
+    {
+      "id": "express-splitter",
+      "name": "Express Splitter",
+      "category": "crafting-with-fluid",
+      "energyRequired": 2,
+      "ingredients": [
+        { "item": "fast-splitter", "amount": 1 },
+        { "item": "iron-gear-wheel", "amount": 10 },
+        { "item": "advanced-circuit", "amount": 10 },
+        { "item": "lubricant", "amount": 80, "type": "fluid" }
+      ],
+      "outputItem": "express-splitter",
+      "outputCount": 1,
+      "allowProductivity": false,
+      "hasFluid": true
+    },
+    {
+      "id": "refined-concrete",
+      "name": "Refined Concrete",
+      "category": "crafting-with-fluid",
+      "energyRequired": 15,
+      "ingredients": [
+        { "item": "concrete", "amount": 20 },
+        { "item": "iron-stick", "amount": 8 },
+        { "item": "steel-plate", "amount": 1 },
+        { "item": "water", "amount": 100, "type": "fluid" }
+      ],
+      "outputItem": "refined-concrete",
+      "outputCount": 10,
+      "allowProductivity": false,
+      "hasFluid": true
+    },
+    {
+      "id": "quality-module",
+      "name": "Quality Module",
+      "category": "crafting",
+      "energyRequired": 15,
+      "ingredients": [
+        { "item": "electronic-circuit", "amount": 5 },
+        { "item": "advanced-circuit", "amount": 5 }
+      ],
+      "outputItem": "quality-module",
+      "outputCount": 1,
+      "allowProductivity": false,
+      "hasFluid": false,
+      "group": "space-age"
+    },
+    {
+      "id": "quality-module-2",
+      "name": "Quality Module 2",
+      "category": "crafting",
+      "energyRequired": 30,
+      "ingredients": [
+        { "item": "quality-module", "amount": 4 },
+        { "item": "advanced-circuit", "amount": 5 },
+        { "item": "processing-unit", "amount": 5 }
+      ],
+      "outputItem": "quality-module-2",
+      "outputCount": 1,
+      "allowProductivity": false,
+      "hasFluid": false,
+      "group": "space-age"
+    },
+    {
+      "id": "quality-module-3",
+      "name": "Quality Module 3",
+      "category": "crafting",
+      "energyRequired": 60,
+      "ingredients": [
+        { "item": "quality-module-2", "amount": 4 },
+        { "item": "advanced-circuit", "amount": 5 },
+        { "item": "processing-unit", "amount": 5 }
+      ],
+      "outputItem": "quality-module-3",
+      "outputCount": 1,
+      "allowProductivity": false,
+      "hasFluid": false,
+      "group": "space-age"
+    },
+    {
+      "id": "carbon",
+      "name": "Carbon",
+      "category": "chemistry",
+      "energyRequired": 1,
+      "ingredients": [
+        { "item": "coal", "amount": 2 },
+        { "item": "sulfuric-acid", "amount": 20, "type": "fluid" }
+      ],
+      "outputItem": "carbon",
+      "outputCount": 1,
+      "allowProductivity": true,
+      "hasFluid": true,
+      "group": "space-age"
+    },
+    {
+      "id": "tungsten-carbide",
+      "name": "Tungsten Carbide",
+      "category": "crafting-with-fluid",
+      "energyRequired": 1,
+      "ingredients": [
+        { "item": "tungsten-ore", "amount": 2 },
+        { "item": "carbon", "amount": 1 },
+        { "item": "sulfuric-acid", "amount": 10, "type": "fluid" }
+      ],
+      "outputItem": "tungsten-carbide",
+      "outputCount": 1,
+      "allowProductivity": true,
+      "hasFluid": true,
+      "group": "space-age"
+    },
+    {
+      "id": "tungsten-plate",
+      "name": "Tungsten Plate",
+      "category": "metallurgy",
+      "energyRequired": 10,
+      "ingredients": [
+        { "item": "tungsten-ore", "amount": 4 },
+        { "item": "molten-iron", "amount": 10, "type": "fluid" }
+      ],
+      "outputItem": "tungsten-plate",
+      "outputCount": 1,
+      "allowProductivity": true,
+      "hasFluid": true,
+      "group": "space-age"
+    },
+    {
+      "id": "metallurgic-science-pack",
+      "name": "Metallurgic Science Pack",
+      "category": "metallurgy",
+      "energyRequired": 10,
+      "ingredients": [
+        { "item": "tungsten-carbide", "amount": 3 },
+        { "item": "tungsten-plate", "amount": 2 },
+        { "item": "molten-copper", "amount": 200, "type": "fluid" }
+      ],
+      "outputItem": "metallurgic-science-pack",
+      "outputCount": 1,
+      "allowProductivity": true,
+      "hasFluid": true,
+      "group": "space-age"
+    },
+    {
+      "id": "turbo-transport-belt",
+      "name": "Turbo Transport Belt",
+      "category": "metallurgy",
+      "energyRequired": 0.5,
+      "ingredients": [
+        { "item": "tungsten-plate", "amount": 5 },
+        { "item": "express-transport-belt", "amount": 1 },
+        { "item": "lubricant", "amount": 20, "type": "fluid" }
+      ],
+      "outputItem": "turbo-transport-belt",
+      "outputCount": 1,
+      "allowProductivity": false,
+      "hasFluid": true,
+      "group": "space-age"
+    },
+    {
+      "id": "turbo-underground-belt",
+      "name": "Turbo Underground Belt",
+      "category": "metallurgy",
+      "energyRequired": 2,
+      "ingredients": [
+        { "item": "tungsten-plate", "amount": 40 },
+        { "item": "express-underground-belt", "amount": 2 },
+        { "item": "lubricant", "amount": 40, "type": "fluid" }
+      ],
+      "outputItem": "turbo-underground-belt",
+      "outputCount": 2,
+      "allowProductivity": false,
+      "hasFluid": true,
+      "group": "space-age"
+    },
+    {
+      "id": "turbo-splitter",
+      "name": "Turbo Splitter",
+      "category": "metallurgy",
+      "energyRequired": 2,
+      "ingredients": [
+        { "item": "express-splitter", "amount": 1 },
+        { "item": "tungsten-plate", "amount": 15 },
+        { "item": "processing-unit", "amount": 2 },
+        { "item": "lubricant", "amount": 80, "type": "fluid" }
+      ],
+      "outputItem": "turbo-splitter",
+      "outputCount": 1,
+      "allowProductivity": false,
+      "hasFluid": true,
+      "group": "space-age"
+    },
+    {
+      "id": "foundry",
+      "name": "Foundry",
+      "category": "metallurgy",
+      "energyRequired": 10,
+      "ingredients": [
+        { "item": "tungsten-carbide", "amount": 50 },
+        { "item": "steel-plate", "amount": 50 },
+        { "item": "electronic-circuit", "amount": 30 },
+        { "item": "refined-concrete", "amount": 20 },
+        { "item": "lubricant", "amount": 20, "type": "fluid" }
+      ],
+      "outputItem": "foundry",
+      "outputCount": 1,
+      "allowProductivity": false,
+      "hasFluid": true,
+      "group": "space-age"
+    },
+    {
+      "id": "big-mining-drill",
+      "name": "Big Mining Drill",
+      "category": "metallurgy",
+      "energyRequired": 30,
+      "ingredients": [
+        { "item": "electric-mining-drill", "amount": 1 },
+        { "item": "tungsten-carbide", "amount": 20 },
+        { "item": "electric-engine-unit", "amount": 10 },
+        { "item": "advanced-circuit", "amount": 10 },
+        { "item": "molten-iron", "amount": 200, "type": "fluid" }
+      ],
+      "outputItem": "big-mining-drill",
+      "outputCount": 1,
+      "allowProductivity": false,
+      "hasFluid": true,
+      "group": "space-age"
+    },
+    {
+      "id": "holmium-plate",
+      "name": "Holmium Plate",
+      "category": "metallurgy",
+      "energyRequired": 1,
+      "ingredients": [
+        { "item": "holmium-solution", "amount": 20, "type": "fluid" }
+      ],
+      "outputItem": "holmium-plate",
+      "outputCount": 1,
+      "allowProductivity": true,
+      "hasFluid": true,
+      "group": "space-age"
+    },
+    {
+      "id": "superconductor",
+      "name": "Superconductor",
+      "category": "electromagnetics",
+      "energyRequired": 5,
+      "ingredients": [
+        { "item": "holmium-plate", "amount": 1 },
+        { "item": "copper-plate", "amount": 1 },
+        { "item": "plastic-bar", "amount": 1 },
+        { "item": "light-oil", "amount": 5, "type": "fluid" }
+      ],
+      "outputItem": "superconductor",
+      "outputCount": 2,
+      "allowProductivity": true,
+      "hasFluid": true,
+      "group": "space-age"
+    },
+    {
+      "id": "supercapacitor",
+      "name": "Supercapacitor",
+      "category": "electromagnetics",
+      "energyRequired": 10,
+      "ingredients": [
+        { "item": "holmium-plate", "amount": 2 },
+        { "item": "superconductor", "amount": 2 },
+        { "item": "electronic-circuit", "amount": 4 },
+        { "item": "battery", "amount": 1 },
+        { "item": "electrolyte", "amount": 10, "type": "fluid" }
+      ],
+      "outputItem": "supercapacitor",
+      "outputCount": 1,
+      "allowProductivity": true,
+      "hasFluid": true,
+      "group": "space-age"
+    },
+    {
+      "id": "electromagnetic-plant",
+      "name": "Electromagnetic Plant",
+      "category": "electromagnetics",
+      "energyRequired": 10,
+      "ingredients": [
+        { "item": "holmium-plate", "amount": 150 },
+        { "item": "steel-plate", "amount": 50 },
+        { "item": "processing-unit", "amount": 50 },
+        { "item": "refined-concrete", "amount": 50 }
+      ],
+      "outputItem": "electromagnetic-plant",
+      "outputCount": 1,
+      "allowProductivity": false,
+      "hasFluid": false,
+      "group": "space-age"
+    },
+    {
+      "id": "electromagnetic-science-pack",
+      "name": "Electromagnetic Science Pack",
+      "category": "electromagnetics",
+      "energyRequired": 10,
+      "ingredients": [
+        { "item": "supercapacitor", "amount": 1 },
+        { "item": "accumulator", "amount": 1 },
+        { "item": "electrolyte", "amount": 25, "type": "fluid" },
+        { "item": "holmium-solution", "amount": 25, "type": "fluid" }
+      ],
+      "outputItem": "electromagnetic-science-pack",
+      "outputCount": 1,
+      "allowProductivity": true,
+      "hasFluid": true,
+      "group": "space-age"
+    },
+    {
+      "id": "carbon-fiber",
+      "name": "Carbon Fiber",
+      "category": "crafting",
+      "energyRequired": 5,
+      "ingredients": [
+        { "item": "yumako-mash", "amount": 10 },
+        { "item": "carbon", "amount": 1 }
+      ],
+      "outputItem": "carbon-fiber",
+      "outputCount": 1,
+      "allowProductivity": true,
+      "hasFluid": false,
+      "group": "space-age"
+    },
+    {
+      "id": "stack-inserter",
+      "name": "Stack Inserter",
+      "category": "crafting",
+      "energyRequired": 0.5,
+      "ingredients": [
+        { "item": "bulk-inserter", "amount": 1 },
+        { "item": "processing-unit", "amount": 1 },
+        { "item": "carbon-fiber", "amount": 2 },
+        { "item": "jelly", "amount": 10 }
+      ],
+      "outputItem": "stack-inserter",
+      "outputCount": 1,
+      "allowProductivity": false,
+      "hasFluid": false,
+      "group": "space-age"
+    },
+    {
+      "id": "agricultural-science-pack",
+      "name": "Agricultural Science Pack",
+      "category": "crafting",
+      "energyRequired": 4,
+      "ingredients": [
+        { "item": "bioflux", "amount": 1 },
+        { "item": "pentapod-egg", "amount": 1 }
+      ],
+      "outputItem": "agricultural-science-pack",
+      "outputCount": 1,
+      "allowProductivity": true,
+      "hasFluid": false,
+      "group": "space-age"
+    },
+    {
+      "id": "lithium-plate",
+      "name": "Lithium Plate",
+      "category": "smelting",
+      "energyRequired": 6.4,
+      "ingredients": [
+        { "item": "lithium", "amount": 1 }
+      ],
+      "outputItem": "lithium-plate",
+      "outputCount": 1,
+      "allowProductivity": true,
+      "hasFluid": false,
+      "group": "space-age"
+    },
+    {
+      "id": "cryogenic-plant",
+      "name": "Cryogenic Plant",
+      "category": "cryogenics",
+      "energyRequired": 10,
+      "ingredients": [
+        { "item": "refined-concrete", "amount": 40 },
+        { "item": "superconductor", "amount": 20 },
+        { "item": "processing-unit", "amount": 20 },
+        { "item": "lithium-plate", "amount": 20 }
+      ],
+      "outputItem": "cryogenic-plant",
+      "outputCount": 1,
+      "allowProductivity": false,
+      "hasFluid": false,
+      "group": "space-age"
+    },
+    {
+      "id": "cryogenic-science-pack",
+      "name": "Cryogenic Science Pack",
+      "category": "cryogenics",
+      "energyRequired": 20,
+      "ingredients": [
+        { "item": "ice", "amount": 3 },
+        { "item": "lithium-plate", "amount": 1 },
+        { "item": "fluoroketone-cold", "amount": 6, "type": "fluid" }
+      ],
+      "outputItem": "cryogenic-science-pack",
+      "outputCount": 1,
+      "allowProductivity": true,
+      "hasFluid": true,
+      "group": "space-age"
     }
   ]
 }

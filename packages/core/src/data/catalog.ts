@@ -122,9 +122,17 @@ function normalizeAndValidateCatalog(raw: unknown): RawCatalogJson {
 
     const category =
       typeof r.category === 'string' &&
-      ['crafting', 'advanced-crafting', 'crafting-with-fluid', 'smelting', 'chemistry', 'oil-processing'].includes(
-        r.category,
-      )
+      [
+        'crafting',
+        'advanced-crafting',
+        'crafting-with-fluid',
+        'smelting',
+        'chemistry',
+        'oil-processing',
+        'metallurgy',
+        'electromagnetics',
+        'cryogenics',
+      ].includes(r.category)
         ? (r.category as RecipeDef['category'])
         : 'crafting';
 

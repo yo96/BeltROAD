@@ -4,12 +4,77 @@
  * optionally accepts a user-selected local Factorio/data/base/graphics folder.
  */
 
-const CDN_ICON_BASE =
-  'https://cdn.jsdelivr.net/gh/deniszholob/icons-factorio@main/factorio-icons/base/icons';
+const CDN_ICON_ROOT =
+  'https://cdn.jsdelivr.net/gh/deniszholob/icons-factorio@main/factorio-icons';
 
 const ICON_FILENAME_ALIASES: Record<string, string> = {
   'stone-wall': 'wall',
+  'straight-rail': 'rail',
+  'solid-fuel-from-light-oil': 'solid-fuel',
 };
+
+const BASE_FLUID_ICONS = new Set([
+  'water',
+  'crude-oil',
+  'heavy-oil',
+  'light-oil',
+  'petroleum-gas',
+  'sulfuric-acid',
+  'lubricant',
+  'steam',
+]);
+
+const SPACE_AGE_FLUID_ICONS = new Set([
+  'molten-iron',
+  'molten-copper',
+  'holmium-solution',
+  'electrolyte',
+  'fluoroketone-cold',
+  'fluoroketone-hot',
+  'ammonia',
+  'lava',
+  'lithium-brine',
+  'fluorine',
+]);
+
+const SPACE_AGE_ICONS = new Set([
+  'turbo-transport-belt',
+  'turbo-underground-belt',
+  'turbo-splitter',
+  'stack-inserter',
+  'foundry',
+  'electromagnetic-plant',
+  'cryogenic-plant',
+  'tungsten-ore',
+  'calcite',
+  'carbon',
+  'tungsten-carbide',
+  'tungsten-plate',
+  'big-mining-drill',
+  'metallurgic-science-pack',
+  'holmium-plate',
+  'superconductor',
+  'supercapacitor',
+  'electromagnetic-science-pack',
+  'yumako-mash',
+  'jelly',
+  'carbon-fiber',
+  'bioflux',
+  'pentapod-egg',
+  'agricultural-science-pack',
+  'ice',
+  'lithium',
+  'lithium-plate',
+  'cryogenic-science-pack',
+  'quantum-processor',
+]);
+
+const QUALITY_ICONS = new Set([
+  'quality-module',
+  'quality-module-2',
+  'quality-module-3',
+  'recycler',
+]);
 
 type IconEntry =
   | { status: 'loading'; img: HTMLImageElement }
@@ -49,7 +114,20 @@ export function subscribeAssets(listener: () => void): () => void {
 
 export function resolveIconUrl(itemOrEntityId: string): string {
   const filename = ICON_FILENAME_ALIASES[itemOrEntityId] ?? itemOrEntityId;
-  return `${CDN_ICON_BASE}/${encodeURIComponent(filename)}.png`;
+  const encoded = encodeURIComponent(filename);
+  if (BASE_FLUID_ICONS.has(filename)) {
+    return `${CDN_ICON_ROOT}/base/icons/fluid/${encoded}.png`;
+  }
+  if (SPACE_AGE_FLUID_ICONS.has(filename)) {
+    return `${CDN_ICON_ROOT}/space-age/icons/fluid/${encoded}.png`;
+  }
+  if (SPACE_AGE_ICONS.has(filename)) {
+    return `${CDN_ICON_ROOT}/space-age/icons/${encoded}.png`;
+  }
+  if (QUALITY_ICONS.has(filename)) {
+    return `${CDN_ICON_ROOT}/quality/icons/${encoded}.png`;
+  }
+  return `${CDN_ICON_ROOT}/base/icons/${encoded}.png`;
 }
 
 export function getIcon(itemOrEntityId: string): HTMLImageElement | null {

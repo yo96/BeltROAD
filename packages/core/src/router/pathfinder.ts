@@ -525,6 +525,61 @@ function ripUpNetPath(
   }
 }
 
+/** Prevents a single net from stepping or landing onto tiles already used in its own ancestor chain (including skipped ug-out tiles). */
+function isAncestorTileUsed(
+  buf: RouterBuffers,
+  state: number,
+  activeStamp: number,
+  targetTile: number,
+  tx: number,
+  ty: number,
+): boolean {
+  const cs = buf.closedStamp;
+  const pj = buf.parentJump;
+  const base = targetTile << 2;
+  let mightCollide =
+    cs[base] === activeStamp ||
+    cs[base | 1] === activeStamp ||
+    cs[base | 2] === activeStamp ||
+    cs[base | 3] === activeStamp;
+
+  const W = buf.width;
+  const H = buf.height;
+  if (!mightCollide) {
+    for (let d = 0; d < 4; d++) {
+      const nx = tx + DX4[d];
+      const ny = ty + DY4[d];
+      if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+      const aState = ((ny * W + nx) << 2) | d;
+      if (cs[aState] === activeStamp && (pj[aState] & 0x7f) >= 2 && (pj[aState] & 0x80) === 0) {
+        mightCollide = true;
+        break;
+      }
+    }
+  }
+  if (!mightCollide) return false;
+
+  const ps = buf.parentState;
+  let cur = state;
+  while (cur >= 0) {
+    if ((cur >> 2) === targetTile) return true;
+    const j = pj[cur];
+    const jLen = j & 0x7f;
+    const p = ps[cur];
+    if (jLen >= 2 && (j & 0x80) === 0 && p >= 0) {
+      const pTile = p >> 2;
+      const pDir = p & 3;
+      const px = pTile % W;
+      const py = (pTile - px) / W;
+      const ex = px + DX4[pDir] * jLen;
+      const ey = py + DY4[pDir] * jLen;
+      if (ey * W + ex === targetTile) return true;
+    }
+    cur = p;
+  }
+  return false;
+}
+
 function routeSingleNet(
   buf: RouterBuffers,
   spec: RouteNetSpec,
@@ -534,6 +589,7 @@ function routeSingleNet(
   ugBasePenalty = 3.8,
   hWeight = 1.0,
   corridorPad = 14,
+  preventSelfLoop = false,
 ): PlacedTileStep[] | null {
   const W = buf.width;
   const H = buf.height;
@@ -625,6 +681,8 @@ function routeSingleNet(
 
       const nextBaseCost = tileSurfaceCost(buf, nTile, spec.netIdx, allowCongestion);
       if (nextBaseCost === Infinity) continue;
+
+      if (preventSelfLoop && isAncestorTileUsed(buf, state, activeStamp, nTile, nx, ny)) continue;
 
       const slPen = sideLoadPenalty(buf, x, y, nd, spec, allowCongestion);
       if (slPen === Infinity) continue;
@@ -731,6 +789,7 @@ function routeSingleNet(
 
       // Case A: landing directly on goalTile heading dstDirIdx
       if (eTile === goalTile && dIdx === dstDirIdx) {
+        if (preventSelfLoop && isAncestorTileUsed(buf, state, activeStamp, eTile, ex, ey)) continue;
         const slPen = sideLoadPenalty(buf, ex, ey, dIdx, spec, allowCongestion);
         const exitFluidPenA = spec.isFluid
           ? fluidMixingPenalty(buf, ex, ey, 3, dIdx, spec.fluidId, allowCongestion).penalty
@@ -771,6 +830,14 @@ function routeSingleNet(
 
       const aCost = tileSurfaceCost(buf, aTile, spec.netIdx, allowCongestion);
       if (aCost === Infinity) continue;
+
+      if (
+        preventSelfLoop &&
+        (isAncestorTileUsed(buf, state, activeStamp, eTile, ex, ey) ||
+          isAncestorTileUsed(buf, state, activeStamp, aTile, ax, ay))
+      ) {
+        continue;
+      }
 
       const slExit = sideLoadPenalty(buf, ex, ey, dIdx, spec, allowCongestion);
       if (slExit === Infinity) continue;
@@ -872,6 +939,38 @@ function routeSingleNet(
       // Surface step: tile's belt faces the direction we moved to reach next
       const nextDir = next.state & 3;
       steps.push({ tileIdx: tile, dirIdx: nextDir, kind: 1, jumpDist: 0 });
+    }
+  }
+
+  if (!preventSelfLoop && steps.length > 1) {
+    let dupCheckStamp = ++buf.currentStamp;
+    if (dupCheckStamp >= 0x7ffffff0) {
+      buf.closedStamp.fill(0);
+      buf.openStamp.fill(0);
+      buf.currentStamp = 1;
+      dupCheckStamp = 1;
+    }
+    let hasSelfLoop = false;
+    for (let i = 0; i < steps.length; i++) {
+      const slot = steps[i].tileIdx << 2;
+      if (buf.openStamp[slot] === dupCheckStamp) {
+        hasSelfLoop = true;
+        break;
+      }
+      buf.openStamp[slot] = dupCheckStamp;
+    }
+    if (hasSelfLoop) {
+      return routeSingleNet(
+        buf,
+        spec,
+        allowCongestion,
+        useCorridor,
+        turnPenalty,
+        ugBasePenalty,
+        hWeight,
+        corridorPad,
+        true,
+      );
     }
   }
 

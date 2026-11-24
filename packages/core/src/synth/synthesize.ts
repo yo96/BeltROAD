@@ -8,6 +8,8 @@ import {
   MachineName,
   ModuleName,
   PdkConfig,
+  PoleTier,
+  QualityTier,
   RecipeDef,
   RecipeMacroSpec,
   SynthInputNode,
@@ -69,13 +71,118 @@ export function maxBeltTier(a: BeltTier, b: BeltTier): BeltTier {
   return TIER_ORDER.indexOf(a) >= TIER_ORDER.indexOf(b) ? a : b;
 }
 
+function computeMinIoMachines(params: {
+  outRate: number;
+  ingList: ReadonlyArray<{ item: string; ratePerSec: number }>;
+  ms: number;
+  maxReach1: number;
+  maxReach2: number;
+  beaconsPerMachine: number;
+  fluidCount: number;
+  machineName: MachineName;
+  poleTier: PoleTier;
+  qualityTier: QualityTier;
+}): number {
+  const {
+    outRate,
+    ingList,
+    ms,
+    maxReach1,
+    maxReach2,
+    beaconsPerMachine,
+    fluidCount,
+    machineName,
+    poleTier,
+    qualityTier,
+  } = params;
+  const isFluidMach = fluidCount > 0;
+  const isEmSplit = machineName === 'electromagnetic-plant' && fluidCount >= 2;
+  const skipSmallSlot = isFluidMach && ms === 5 && poleTier === 'small';
+  const outSlotsMax = Math.max(1, ms - (isFluidMach ? 1 : 0) - (skipSmallSlot ? 1 : 0));
+  const northSlotsMax = Math.max(1, ms - (isEmSplit ? 1 : 0) - (skipSmallSlot ? 1 : 0));
+
+  const totalIng = ingList.reduce((a, b) => a + b.ratePerSec, 0);
+  const maxOutPerMach =
+    (isFluidMach ? outSlotsMax : ingList.length <= 2 ? ms : Math.max(2, ms - 1)) * maxReach1;
+  const maxInPerMach =
+    ingList.length <= 1
+      ? ms * maxReach1
+      : ingList.length === 2
+        ? Math.min(
+            (ms - 1) * maxReach1 + maxReach2,
+            (ms - 1.5) * maxReach1 + 1.5 * maxReach2,
+          )
+        : (ms - 1) * maxReach1 + 2 * maxReach2;
+
+  let mReq = Math.max(
+    1,
+    Math.ceil(outRate / Math.max(0.1, maxOutPerMach)),
+    Math.ceil(totalIng / Math.max(0.1, maxInPerMach)),
+  );
+
+  const isV2HighIo =
+    ms >= 4 ||
+    qualityTier !== 'normal' ||
+    maxReach1 > 10 ||
+    beaconsPerMachine > 0 ||
+    isFluidMach;
+  if (!isV2HighIo || ingList.length === 0) return mReq;
+
+  const sorted = [...ingList].sort((a, b) => b.ratePerSec - a.ratePerSec);
+  while (mReq < 64) {
+    if (isEmSplit) {
+      const cNeed = Math.ceil(totalIng / mReq / maxReach1);
+      if (cNeed <= northSlotsMax && totalIng / mReq <= northSlotsMax * maxReach1 + 1e-4) {
+        break;
+      }
+      mReq++;
+      continue;
+    }
+    if (isFluidMach && sorted.length >= 3) {
+      const nearRate =
+        sorted.length === 3
+          ? sorted[0].ratePerSec
+          : sorted[0].ratePerSec + sorted[3].ratePerSec;
+      const farRate = sorted[1].ratePerSec + sorted[2].ratePerSec;
+      const cNear = Math.max(1, Math.ceil(nearRate / mReq / maxReach1));
+      const cFar = Math.max(1, Math.ceil(farRate / mReq / maxReach2));
+      if (cNear + cFar <= northSlotsMax) break;
+      mReq++;
+      continue;
+    }
+    if (sorted.length <= 2) {
+      const rNear = sorted[0].ratePerSec / mReq;
+      const cNear = Math.min(northSlotsMax, Math.max(1, Math.ceil(rNear / maxReach1)));
+      let capPerMach = cNear * maxReach1;
+      if (sorted.length === 2 && beaconsPerMachine < 8) {
+        const cNearBounded = Math.min(Math.max(1, northSlotsMax - 1), cNear);
+        const cFar = Math.min(
+          isFluidMach ? Math.max(1, northSlotsMax - cNearBounded) : 2,
+          Math.max(1, northSlotsMax - cNearBounded),
+        );
+        capPerMach = cNearBounded * maxReach1 + cFar * maxReach2;
+      }
+      if (mReq * capPerMach + 1e-4 >= totalIng) break;
+      mReq++;
+      continue;
+    }
+    break;
+  }
+  return mReq;
+}
+
 interface ItemDecision {
   mode: 'input-pin' | 'synthesize';
   forcedInputReason?: 'no-recipe' | 'fluid-v1' | 'preset';
   recipe?: RecipeDef;
 }
 
-function decideItemMode(item: string, spec: DesignSpec, fluidsEnabled: boolean): ItemDecision {
+function decideItemMode(
+  item: string,
+  spec: DesignSpec,
+  fluidsEnabled: boolean,
+  isExplicitTarget = false,
+): ItemDecision {
   const recipe = getDefaultRecipeForItem(item);
   if (!recipe) {
     return { mode: 'input-pin', forcedInputReason: 'no-recipe' };
@@ -90,7 +197,7 @@ function decideItemMode(item: string, spec: DesignSpec, fluidsEnabled: boolean):
   if (override === 'synthesize') {
     return { mode: 'synthesize', recipe };
   }
-  if (isPresetInputItem(item, spec.inputPreset)) {
+  if (!isExplicitTarget && isPresetInputItem(item, spec.inputPreset)) {
     return { mode: 'input-pin', forcedInputReason: 'preset', recipe };
   }
   return { mode: 'synthesize', recipe };
@@ -158,7 +265,7 @@ export function synthesizeDesign(
     }
     visiting.add(item);
 
-    const dec = decideItemMode(item, spec, fluidsEnabled);
+    const dec = decideItemMode(item, spec, fluidsEnabled, targetRates.has(item));
     decisions.set(item, dec);
     if (!inDegree.has(item)) inDegree.set(item, 0);
 
@@ -568,43 +675,18 @@ export function synthesizeDesign(
     );
     const maxReach2 = INSERTER_SPECS.long.itemsPerSec;
     const ms = machineSpec.size;
-    const totalIngRate = ingredients.reduce((a, b) => a + b.ratePerSec, 0);
-    const maxOutPerMach = (ingredients.length <= 2 ? ms : Math.max(2, ms - 1)) * maxReach1;
-    const maxInPerMach =
-      ingredients.length <= 1
-        ? ms * maxReach1
-        : ingredients.length === 2
-          ? Math.min((ms - 1) * maxReach1 + maxReach2, (ms - 1.5) * maxReach1 + 1.5 * maxReach2)
-          : (ms - 1) * maxReach1 + 2 * maxReach2;
-
-    const minSliceMachinesForIo = (outRate: number, totalIng: number, ingList: typeof ingredients): number => {
-      let mReq = Math.max(
-        1,
-        Math.ceil(outRate / Math.max(0.1, maxOutPerMach)),
-        Math.ceil(totalIng / Math.max(0.1, maxInPerMach)),
-      );
-      // When using Space Age or beaconed high-rate builds, verify actual placed per-machine inserter count meets STA.
-      const isV2HighIo =
-        ms >= 4 || qualityTier !== 'normal' || maxReach1 > 10 || beaconsPerMachine > 0;
-      if (isV2HighIo && ingList.length > 0 && ingList.length <= 2) {
-        const sorted = [...ingList].sort((a, b) => b.ratePerSec - a.ratePerSec);
-        while (mReq < 64) {
-          const rNear = sorted[0].ratePerSec / mReq;
-          const cNear = Math.min(ms, Math.max(1, Math.ceil(rNear / maxReach1)));
-          let capPerMach = cNear * maxReach1;
-          if (sorted.length === 2 && beaconsPerMachine < 8) {
-            const cNearBounded = Math.min(Math.max(1, ms - 1), cNear);
-            const cFar = Math.min(2, Math.max(1, ms - cNearBounded));
-            capPerMach = cNearBounded * maxReach1 + cFar * maxReach2;
-          }
-          if (mReq * capPerMach + 1e-4 >= totalIng) break;
-          mReq++;
-        }
-      }
-      return mReq;
-    };
-
-    const minMachinesForIo = minSliceMachinesForIo(demand, totalIngRate, ingredients);
+    const minMachinesForIo = computeMinIoMachines({
+      outRate: demand,
+      ingList: ingredients,
+      ms,
+      maxReach1,
+      maxReach2,
+      beaconsPerMachine,
+      fluidCount: fluidIngredients.length,
+      machineName,
+      poleTier: spec.pdk.defaultPoleTier,
+      qualityTier,
+    });
     const finalExactMachines = fusedExactMachines ?? exactMachines;
     const machineCount =
       fusedMachineCount ?? Math.max(1, Math.ceil(exactMachines), minMachinesForIo);
@@ -876,13 +958,24 @@ export function synthesizeDesign(
       continue;
     }
 
+    const isFluidComp = comp.fluidInputs.length > 0;
+    const isEmSplitComp =
+      comp.machineName === 'electromagnetic-plant' && comp.fluidInputs.length >= 2;
     let sliceCount = Math.max(
       1,
       Math.ceil(comp.demandPerSec / maxBeltCap),
       Math.ceil(comp.machineCount / MAX_MACHINES_PER_SLICE),
     );
-    for (const ing of comp.ingredients) {
-      sliceCount = Math.max(sliceCount, Math.ceil(ing.ratePerSec / maxBeltCap));
+    const sortedCompIngs = [...comp.ingredients].sort((a, b) => b.ratePerSec - a.ratePerSec);
+    for (let idx = 0; idx < sortedCompIngs.length; idx++) {
+      const ing = sortedCompIngs[idx];
+      const isPairedDualLane =
+        (isEmSplitComp && sortedCompIngs.length >= 2) ||
+        (isFluidComp &&
+          !isEmSplitComp &&
+          (sortedCompIngs.length >= 4 || (sortedCompIngs.length === 3 && idx >= 1)));
+      const laneCap = isPairedDualLane ? 0.48 * maxBeltCap : maxBeltCap;
+      sliceCount = Math.max(sliceCount, Math.ceil(ing.ratePerSec / laneCap));
     }
     for (const fl of comp.fluidInputs) {
       sliceCount = Math.max(sliceCount, Math.ceil(fl.ratePerSec / PIPE_SPEC.capacityPerSec));
@@ -912,11 +1005,6 @@ export function synthesizeDesign(
     );
     const maxReach2Slice = INSERTER_SPECS.long.itemsPerSec;
     const msSlice = MACHINE_SPECS[comp.machineName].size;
-    const isV2HighIoSlice =
-      msSlice >= 4 ||
-      (spec.pdk.machineQuality ?? 'normal') !== 'normal' ||
-      maxReach1Slice > 10 ||
-      comp.beaconsPerMachine > 0;
 
     for (let s = 0; s < sliceCount; s++) {
       let mCount = useUniformCeil
@@ -929,24 +1017,25 @@ export function synthesizeDesign(
       const frac = sliceCount > 1 ? equalFrac : mCount / comp.machineCount;
       const sliceOutRate = comp.demandPerSec * frac;
       const sliceExactMachines = comp.exactMachines * frac;
-      const sliceIngTotal = comp.ingredients.reduce((acc, ing) => acc + ing.ratePerSec * frac, 0);
-      if (isV2HighIoSlice && comp.ingredients.length > 0 && comp.ingredients.length <= 2) {
-        const sortedSlice = [...comp.ingredients]
-          .map((ing) => ing.ratePerSec * frac)
-          .sort((a, b) => b - a);
-        while (mCount < 64) {
-          const rNear = sortedSlice[0] / mCount;
-          const cNear = Math.min(msSlice, Math.max(1, Math.ceil(rNear / maxReach1Slice)));
-          let capPerMach = cNear * maxReach1Slice;
-          if (sortedSlice.length === 2 && comp.beaconsPerMachine < 8) {
-            const cNearBounded = Math.min(Math.max(1, msSlice - 1), cNear);
-            const cFar = Math.min(2, Math.max(1, msSlice - cNearBounded));
-            capPerMach = cNearBounded * maxReach1Slice + cFar * maxReach2Slice;
-          }
-          if (mCount * capPerMach + 1e-4 >= sliceIngTotal) break;
-          mCount++;
-        }
-      }
+      const sliceIngs = comp.ingredients.map((ing) => ({
+        item: ing.item,
+        ratePerSec: ing.ratePerSec * frac,
+      }));
+      mCount = Math.max(
+        mCount,
+        computeMinIoMachines({
+          outRate: sliceOutRate,
+          ingList: sliceIngs,
+          ms: msSlice,
+          maxReach1: maxReach1Slice,
+          maxReach2: maxReach2Slice,
+          beaconsPerMachine: comp.beaconsPerMachine,
+          fluidCount: comp.fluidInputs.length,
+          machineName: comp.machineName,
+          poleTier: spec.pdk.defaultPoleTier,
+          qualityTier: comp.quality ?? 'normal',
+        }),
+      );
       const outTier = pickBeltTierForRate(sliceOutRate, spec.pdk);
       const sliceBeltCap = effectiveBeltCapacity(outTier, spec.pdk);
       if (sliceOutRate > sliceBeltCap * 0.5 + 1e-4 && mCount % 2 === 1) {

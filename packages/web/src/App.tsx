@@ -159,10 +159,8 @@ export default function App() {
   const [spec, setSpec] = useState<DesignSpec>(initial.spec);
   const targetOptions = useMemo(
     () =>
-      [...(spec.pdk.enableFluids ? catalog.allTargets : catalog.solidTargets)].sort((a, b) =>
-        a.name.localeCompare(b.name),
-      ),
-    [catalog, spec.pdk.enableFluids],
+      [...catalog.allTargets].sort((a, b) => a.name.localeCompare(b.name)),
+    [catalog],
   );
   const [activePresetId, setActivePresetId] = useState<string>(initial.presetId);
   const [lastRunSpecSig, setLastRunSpecSig] = useState<string>(() => JSON.stringify(initial.spec));
@@ -823,7 +821,7 @@ export default function App() {
 
         <select
           className="select"
-          style={{ width: 215 }}
+          style={{ width: 240 }}
           value={activePresetId}
           aria-label="Design preset"
           onChange={(e) => {
@@ -1107,8 +1105,26 @@ export default function App() {
                       value={t.item}
                       options={targetOptions}
                       onChange={(val) => {
+                        const rec = catalog.recipesByOutput[val]?.[0];
+                        const needsFluids = Boolean(
+                          rec?.hasFluid ||
+                            rec?.category === 'chemistry' ||
+                            rec?.category === 'metallurgy' ||
+                            rec?.category === 'electromagnetics' ||
+                            rec?.category === 'cryogenics' ||
+                            val === 'chemical-science-pack' ||
+                            val === 'utility-science-pack',
+                        );
+                        const needsSpaceAge = rec?.group === 'space-age';
                         updateSpec((prev) => ({
                           ...prev,
+                          pdk: {
+                            ...prev.pdk,
+                            enableFluids: needsFluids ? true : prev.pdk.enableFluids,
+                            spaceAgeBuildings: needsSpaceAge
+                              ? true
+                              : prev.pdk.spaceAgeBuildings,
+                          },
                           targets: prev.targets.map((item, i) =>
                             i === idx ? { ...item, item: val } : item,
                           ),

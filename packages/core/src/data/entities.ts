@@ -146,7 +146,7 @@ export const MACHINE_SPECS: Record<MachineName, MachineSpec> = {
   },
   foundry: {
     name: 'foundry',
-    size: 4,
+    size: 5,
     craftingSpeed: 4.0,
     moduleSlots: 4,
     baseProductivity: 0.5,
@@ -193,6 +193,9 @@ export const EM_PLANT_RECIPES = new Set([
   'efficiency-module',
   'efficiency-module-2',
   'efficiency-module-3',
+  'quality-module',
+  'quality-module-2',
+  'quality-module-3',
 ]);
 
 export const FOUNDRY_RECIPES = new Set([
@@ -219,11 +222,21 @@ export const CRYO_PLANT_RECIPES = new Set([
   'sulfur',
   'explosives',
   'solid-fuel',
+  'solid-fuel-from-light-oil',
   'sulfuric-acid',
   'lubricant',
 ]);
 
 export function selectMachineForRecipe(recipe: RecipeDef, pdk: PdkConfig): MachineName {
+  if (recipe.category === 'metallurgy') {
+    return 'foundry';
+  }
+  if (recipe.category === 'electromagnetics') {
+    return 'electromagnetic-plant';
+  }
+  if (recipe.category === 'cryogenics') {
+    return 'cryogenic-plant';
+  }
   if (pdk.spaceAgeBuildings) {
     if (EM_PLANT_RECIPES.has(recipe.id) || EM_PLANT_RECIPES.has(recipe.outputItem)) {
       return 'electromagnetic-plant';

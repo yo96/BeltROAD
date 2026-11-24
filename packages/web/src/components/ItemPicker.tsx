@@ -23,11 +23,19 @@ export const ItemPicker: React.FC<ItemPickerProps> = ({ value, options, onChange
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return options;
-    return options.filter(
-      (r) =>
+    return options.filter((r) => {
+      const metaCat = getItemMeta(r.outputItem).category.toLowerCase();
+      return (
         r.name.toLowerCase().includes(q) ||
-        r.outputItem.toLowerCase().includes(q),
-    );
+        r.outputItem.toLowerCase().includes(q) ||
+        r.category.toLowerCase().includes(q) ||
+        metaCat.includes(q) ||
+        (r.group && r.group.toLowerCase().includes(q)) ||
+        (q.includes('space') && r.group === 'space-age') ||
+        (q.includes('fluid') && r.hasFluid) ||
+        (q.includes('chem') && (r.category === 'chemistry' || metaCat === 'chemical'))
+      );
+    });
   }, [options, query]);
 
   useEffect(() => {
@@ -137,6 +145,18 @@ export const ItemPicker: React.FC<ItemPickerProps> = ({ value, options, onChange
                       <span className="item-picker-option-name">{r.name}</span>
                       <span className="item-picker-option-id">{r.outputItem}</span>
                     </span>
+                    {(r.group === 'space-age' || r.hasFluid || r.category === 'chemistry') && (
+                      <span className="item-picker-badges">
+                        {(r.category === 'chemistry' || r.hasFluid) && (
+                          <span className="item-badge item-badge-fluid">
+                            {r.category === 'chemistry' ? 'Chem' : 'Fluid'}
+                          </span>
+                        )}
+                        {r.group === 'space-age' && (
+                          <span className="item-badge item-badge-sa">Space Age</span>
+                        )}
+                      </span>
+                    )}
                   </button>
                 );
               })

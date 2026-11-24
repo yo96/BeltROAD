@@ -113,7 +113,7 @@ describe('v2.2 Space Age Tech Tiers, Belt Stacking, Quality & 4x4/5x5 Buildings'
     expect(legMachines.every((m) => m.quality === 'legendary')).toBe(true);
   });
 
-  it('compiles 4x4 Electromagnetic Plants and Foundries cleanly under both medium and small poles', () => {
+  it('compiles 4x4 Electromagnetic Plants and 5x5 Foundries cleanly under both medium and small poles', () => {
     const gcSpec = structuredClone(BUILTIN_PRESETS[0].spec);
     gcSpec.pdk.spaceAgeBuildings = true;
     gcSpec.pdk.defaultBeltTier = 'blue';
@@ -154,7 +154,7 @@ describe('v2.2 Space Age Tech Tiers, Belt Stacking, Quality & 4x4/5x5 Buildings'
     expect(sciRes.drc.passed).toBe(true);
     expect(sciRes.drc.errorCount).toBe(0);
     expect(sciRes.sta.passed).toBe(true);
-    expect(sciRes.allEntities.some((e) => e.name === 'foundry' && e.w === 4 && e.h === 4)).toBe(true);
+    expect(sciRes.allEntities.some((e) => e.name === 'foundry' && e.w === 5 && e.h === 5)).toBe(true);
     expect(
       sciRes.allEntities.some((e) => e.name === 'electromagnetic-plant' && e.w === 4 && e.h === 4),
     ).toBe(true);

@@ -189,7 +189,16 @@ export interface RecipeIngredient {
 export interface RecipeDef {
   id: string;
   name: string;
-  category: 'crafting' | 'advanced-crafting' | 'crafting-with-fluid' | 'smelting' | 'chemistry' | 'oil-processing';
+  category:
+    | 'crafting'
+    | 'advanced-crafting'
+    | 'crafting-with-fluid'
+    | 'smelting'
+    | 'chemistry'
+    | 'oil-processing'
+    | 'metallurgy'
+    | 'electromagnetics'
+    | 'cryogenics';
   energyRequired: number;
   ingredients: RecipeIngredient[];
   outputItem: string;

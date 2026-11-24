@@ -1999,8 +1999,18 @@ function fluidPortOffset(
   fluidIndex: number,
   dir: Dir,
 ): number {
+  if (machineName === 'foundry') {
+    return fluidIndex === 0 ? 1 : 3;
+  }
+  if (machineName === 'cryogenic-plant') {
+    return fluidIndex === 0 ? 0 : 4;
+  }
+  if (machineName === 'electromagnetic-plant') {
+    if (dir === Dir.SOUTH) return 2;
+    return fluidIndex === 0 ? 2 : 1;
+  }
   if (dir === Dir.SOUTH) {
-    return machineName === 'chemical-plant' || machineName === 'cryogenic-plant' ? 2 : 1;
+    return machineName === 'chemical-plant' ? 2 : 1;
   }
   return fluidIndex === 0 ? 0 : 2;
 }
@@ -2015,19 +2025,68 @@ function buildFluidRecipeMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledM
   const preferStackOut = (pdk.beltStackSize ?? 1) > 1;
   const fluids = spec.fluidInputs ?? [];
   const isTwoFluid = fluids.length >= 2;
+  const isSplitTwoFluid = isTwoFluid && spec.machineName === 'electromagnetic-plant';
+  const hasSouthFluid = !isTwoFluid || isSplitTwoFluid;
   const M = spec.machineCount;
 
   const solidIngs = [...spec.ingredientRates].sort((a, b) => b.ratePerSec - a.ratePerSec);
-  const northNear = !isTwoFluid ? solidIngs[0] ?? null : null;
-  const northFar = !isTwoFluid ? solidIngs[1] ?? null : null;
+  let northNearTrack: IngredientTrack | null = null;
+  let northFarTrack: IngredientTrack | null = null;
+  if (!isTwoFluid) {
+    if (solidIngs.length >= 4) {
+      northNearTrack = {
+        items: [solidIngs[0], solidIngs[3]],
+        isDualLane: true,
+      };
+      northFarTrack = {
+        items: [solidIngs[1], solidIngs[2]],
+        isDualLane: true,
+      };
+    } else if (solidIngs.length === 3) {
+      northNearTrack = {
+        items: [solidIngs[0]],
+        isDualLane: false,
+      };
+      northFarTrack = {
+        items: [solidIngs[1], solidIngs[2]],
+        isDualLane: true,
+      };
+    } else {
+      northNearTrack = solidIngs[0]
+        ? { items: [solidIngs[0]], isDualLane: false }
+        : null;
+      northFarTrack = solidIngs[1]
+        ? { items: [solidIngs[1]], isDualLane: false }
+        : null;
+    }
+  } else if (isSplitTwoFluid) {
+    if (solidIngs.length >= 2) {
+      northNearTrack = {
+        items: [solidIngs[0], solidIngs[1]],
+        isDualLane: true,
+      };
+    } else if (solidIngs.length === 1) {
+      northNearTrack = {
+        items: [solidIngs[0]],
+        isDualLane: false,
+      };
+    }
+  }
 
-  const northFarIns = northFar
-    ? selectInserterKind(northFar.ratePerSec / M, 2, pdk, ms)
+  const northFarRate = northFarTrack
+    ? northFarTrack.items.reduce((a, b) => a + b.ratePerSec, 0)
+    : 0;
+  const northNearRate = northNearTrack
+    ? northNearTrack.items.reduce((a, b) => a + b.ratePerSec, 0)
+    : 0;
+
+  const northFarIns = northFarTrack
+    ? selectInserterKind(northFarRate / M, 2, pdk, ms)
     : null;
-  const northNearIns = northNear
-    ? selectInserterKind(northNear.ratePerSec / M, 1, pdk, ms)
+  const northNearIns = northNearTrack
+    ? selectInserterKind(northNearRate / M, 1, pdk, ms)
     : null;
-  const outSlotsMax = isTwoFluid ? ms : Math.max(1, ms - 1);
+  const outSlotsMax = hasSouthFluid ? Math.max(1, ms - 1) : ms;
   const outIns = selectInserterKind(
     spec.outputRatePerSec / M,
     1,
@@ -2042,8 +2101,15 @@ function buildFluidRecipeMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledM
     needsLaneBalance && M >= 2 ? Math.floor(M / 2) - 1 : undefined;
   const tailW = needsLaneBalance && M === 1 ? 2 : 0;
 
+  const hasDualNorth =
+    !isTwoFluid &&
+    Boolean(northFarTrack?.isDualLane || northNearTrack?.isDualLane);
+  const isCompactDualNorthNear =
+    isSplitTwoFluid && Boolean(northNearTrack?.isDualLane);
+
   const poleGap = poleSpec.name === 'substation' ? 2 : 1;
-  const xStart = poleGap;
+  const poleX0 = hasDualNorth ? 5 : isCompactDualNorthNear ? 2 : 0;
+  const xStart = poleX0 + poleGap;
   const stride = ms + poleGap;
   const splitExtra = poleSpec.name === 'substation' ? 3 : 4;
 
@@ -2071,6 +2137,7 @@ function buildFluidRecipeMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledM
     direction: Dir,
     item?: string,
     intentionalSideLoad?: boolean,
+    laneItems?: [string, string],
   ): EntityInstance => ({
     id: `${spec.id}:fh:${hid++}`,
     name: beltSpec.beltName,
@@ -2081,6 +2148,7 @@ function buildFluidRecipeMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledM
     direction,
     macroId: spec.id,
     item,
+    laneItems,
     role: 'belt-macro',
     intentionalSideLoad,
   });
@@ -2139,18 +2207,51 @@ function buildFluidRecipeMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledM
     });
   };
 
-  const yFarN = isTwoFluid ? 0 : 0;
-  const yNearN = isTwoFluid ? 0 : northFar ? 1 : 0;
-  const northTracks = !isTwoFluid ? (northFar ? 1 : 0) + (northNear ? 1 : 0) : 0;
-  const yInsN = isTwoFluid ? 3 : northTracks > 0 ? northTracks : 0;
-  const yMachine = isTwoFluid ? 4 : northTracks > 0 ? northTracks + 1 : 1;
+  const northTracks =
+    !isTwoFluid && !hasDualNorth
+      ? (northFarTrack ? 1 : 0) + (northNearTrack ? 1 : 0)
+      : 0;
+  const yFarN = isTwoFluid ? 0 : hasDualNorth ? 1 : 0;
+  const yNearN = isSplitTwoFluid
+    ? 2
+    : isTwoFluid
+      ? 0
+      : hasDualNorth
+        ? 2
+        : northFarTrack
+          ? 1
+          : 0;
+  const yInsN = isTwoFluid
+    ? 3
+    : hasDualNorth
+      ? 3
+      : northTracks > 0
+        ? northTracks
+        : 0;
+  const yMachine = isTwoFluid
+    ? 4
+    : hasDualNorth
+      ? 4
+      : northTracks > 0
+        ? northTracks + 1
+        : 1;
   const yInsS = yMachine + ms;
   const yOut = yInsS + 1;
   const yFluidDrop = yOut + 1;
   const yFluidSouth = yOut + 2;
-  const height = isTwoFluid ? yOut + 1 : yFluidSouth + 1;
+  const height = hasSouthFluid ? yFluidSouth + 1 : yOut + 1;
 
-  const machDir = isTwoFluid ? Dir.NORTH : Dir.SOUTH;
+  const machDir = isSplitTwoFluid
+    ? Dir.WEST
+    : isTwoFluid
+      ? spec.machineName === 'foundry' || spec.machineName === 'cryogenic-plant'
+        ? Dir.SOUTH
+        : Dir.NORTH
+      : spec.machineName === 'foundry' || spec.machineName === 'cryogenic-plant'
+        ? Dir.NORTH
+        : spec.machineName === 'electromagnetic-plant'
+          ? Dir.WEST
+          : Dir.SOUTH;
   const fOff0 = isTwoFluid
     ? fluidPortOffset(spec.machineName, 0, Dir.NORTH)
     : fluidPortOffset(spec.machineName, 0, Dir.SOUTH);
@@ -2177,10 +2278,10 @@ function buildFluidRecipeMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledM
 
   // Initial poles before machine 0
   if (poleSpec.name === 'substation') {
-    mkPole(0, yMachine);
+    mkPole(poleX0, yMachine);
   } else {
-    mkPole(0, yInsN);
-    mkPole(0, yInsS);
+    mkPole(poleX0, yInsN);
+    mkPole(poleX0, yInsS);
   }
 
   for (let i = 0; i < M; i++) {
@@ -2202,13 +2303,13 @@ function buildFluidRecipeMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledM
       role: 'machine',
     });
 
-    // North solid inserters (when 1-fluid)
-    if (!isTwoFluid && (northNearIns || northFarIns)) {
-      const slotPool = Array.from({ length: ms }, (_, k) => mx + k).filter(
-        (x) => !(ms === 5 && poleSpec.tier === 'small' && x === mx + 2),
-      );
+    // North solid inserters (when 1-fluid or split 2-fluid EM Plant)
+    if ((!isTwoFluid || isSplitTwoFluid) && (northNearIns || northFarIns)) {
+      const slotPool = Array.from({ length: ms }, (_, k) => mx + k)
+        .filter((x) => !(isSplitTwoFluid && x === mx + fOff1))
+        .filter((x) => !(ms === 5 && poleSpec.tier === 'small' && x === mx + 2));
       let cursor = 0;
-      if (northNearIns && northNear) {
+      if (northNearIns && northNearTrack) {
         const nearLim = northFarIns ? Math.max(1, slotPool.length - 1) : slotPool.length;
         for (let c = 0; c < northNearIns.count && cursor < nearLim; c++) {
           const ix = slotPool[cursor++];
@@ -2226,7 +2327,7 @@ function buildFluidRecipeMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledM
           });
         }
       }
-      if (northFarIns && northFar) {
+      if (northFarIns && northFarTrack) {
         for (let c = 0; c < northFarIns.count && cursor < slotPool.length; c++) {
           const ix = slotPool[cursor++];
           if (ix > maxNorthInX) maxNorthInX = ix;
@@ -2246,7 +2347,12 @@ function buildFluidRecipeMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledM
     }
 
     // Fluid taps per machine
-    if (isTwoFluid) {
+    if (isSplitTwoFluid) {
+      mkPipeUg(mx + fOff0, yInsS, Dir.NORTH, fluids[0].item);
+      mkPipeUg(mx + fOff0, yFluidDrop, Dir.SOUTH, fluids[0].item);
+      mkPipeUg(mx + fOff1, 1, Dir.NORTH, fluids[1].item);
+      mkPipeUg(mx + fOff1, yInsN, Dir.SOUTH, fluids[1].item);
+    } else if (isTwoFluid) {
       mkPipe(mx + fOff0, yInsN, fluids[0].item);
       mkPipeUg(mx + fOff1, 1, Dir.NORTH, fluids[1].item);
       mkPipeUg(mx + fOff1, yInsN, Dir.SOUTH, fluids[1].item);
@@ -2255,9 +2361,9 @@ function buildFluidRecipeMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledM
       mkPipeUg(mx + fOff0, yFluidDrop, Dir.SOUTH, fluids[0].item);
     }
 
-    // Output inserters along yInsS avoiding fluid port slot if 1-fluid
+    // Output inserters along yInsS avoiding fluid port slot if South fluid is present
     const outSlots = Array.from({ length: ms }, (_, k) => k)
-      .filter((k) => (isTwoFluid ? true : k !== fOff0))
+      .filter((k) => (!hasSouthFluid ? true : k !== fOff0))
       .filter((k) => !(ms === 5 && poleSpec.tier === 'small' && k === 2));
     for (let c = 0; c < outIns.count && c < outSlots.length; c++) {
       entities.push({
@@ -2287,25 +2393,140 @@ function buildFluidRecipeMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledM
     mkPole(laneFlipX + 3, yInsS);
   }
 
-  // North solid belts
-  if (!isTwoFluid) {
+  // North solid belts & merge headers
+  if ((!isTwoFluid || isSplitTwoFluid) && (northFarTrack || northNearTrack)) {
     const inEndX = M > 0 ? Math.min(lastEndX, maxNorthInX + 1) : xStart;
-    if (northFar) {
-      for (let x = 0; x < inEndX; x++) {
-        entities.push(mkBelt(x, yFarN, Dir.EAST, northFar.item));
+    const trackMeta = (t: IngredientTrack | null) =>
+      t
+        ? t.items.length === 2
+          ? { laneItems: [t.items[0].item, t.items[1].item] as [string, string] }
+          : { item: t.items[0]?.item }
+        : {};
+
+    if (hasDualNorth) {
+      if (northFarTrack) {
+        if (northFarTrack.isDualLane) {
+          const [a1, a2] = northFarTrack.items;
+          entities.push(mkBelt(0, 0, Dir.EAST, a1.item));
+          addInPin(a1.item, a1.ratePerSec, 0, 0, Dir.EAST);
+          entities.push(mkBelt(1, 0, Dir.SOUTH, a1.item));
+
+          entities.push(mkBelt(0, 2, Dir.EAST, a2.item));
+          addInPin(a2.item, a2.ratePerSec, 0, 2, Dir.EAST);
+          entities.push(mkBelt(1, 2, Dir.NORTH, a2.item));
+
+          entities.push(mkBelt(1, 1, Dir.EAST, undefined, true, [a1.item, a2.item]));
+        } else {
+          const [a1] = northFarTrack.items;
+          entities.push(mkBelt(0, 1, Dir.EAST, a1.item));
+          addInPin(a1.item, a1.ratePerSec, 0, 1, Dir.EAST);
+          entities.push(mkBelt(1, 1, Dir.EAST, a1.item));
+        }
+        entities.push({
+          id: `${spec.id}:fh:${hid++}`,
+          name: beltSpec.undergroundName,
+          tx: 2,
+          ty: 1,
+          w: 1,
+          h: 1,
+          direction: Dir.EAST,
+          type: 'input',
+          macroId: spec.id,
+          role: 'ug-macro',
+        });
+        entities.push({
+          id: `${spec.id}:fh:${hid++}`,
+          name: beltSpec.undergroundName,
+          tx: 4,
+          ty: 1,
+          w: 1,
+          h: 1,
+          direction: Dir.EAST,
+          type: 'output',
+          macroId: spec.id,
+          role: 'ug-macro',
+        });
+        const farMeta = trackMeta(northFarTrack);
+        for (let x = 5; x < inEndX; x++) {
+          entities.push(mkBelt(x, yFarN, Dir.EAST, farMeta.item, false, farMeta.laneItems));
+        }
       }
-      addInPin(northFar.item, northFar.ratePerSec, 0, yFarN, Dir.EAST);
-    }
-    if (northNear) {
-      for (let x = 0; x < inEndX; x++) {
-        entities.push(mkBelt(x, yNearN, Dir.EAST, northNear.item));
+
+      if (northNearTrack) {
+        if (northNearTrack.isDualLane) {
+          const [b1, b2] = northNearTrack.items;
+          entities.push(mkBelt(3, 0, Dir.SOUTH, b1.item));
+          addInPin(b1.item, b1.ratePerSec, 3, 0, Dir.SOUTH);
+          entities.push(mkBelt(3, 1, Dir.SOUTH, b1.item));
+
+          entities.push(mkBelt(0, 4, Dir.EAST, b2.item));
+          addInPin(b2.item, b2.ratePerSec, 0, 4, Dir.EAST);
+          entities.push(mkBelt(1, 4, Dir.EAST, b2.item));
+          entities.push(mkBelt(2, 4, Dir.EAST, b2.item));
+          entities.push(mkBelt(3, 4, Dir.NORTH, b2.item));
+          entities.push(mkBelt(3, 3, Dir.NORTH, b2.item));
+
+          entities.push(mkBelt(3, 2, Dir.EAST, undefined, true, [b1.item, b2.item]));
+          entities.push(mkBelt(4, 2, Dir.EAST, undefined, false, [b1.item, b2.item]));
+        } else {
+          const [b1] = northNearTrack.items;
+          entities.push(mkBelt(3, 0, Dir.SOUTH, b1.item));
+          addInPin(b1.item, b1.ratePerSec, 3, 0, Dir.SOUTH);
+          entities.push(mkBelt(3, 1, Dir.SOUTH, b1.item));
+          entities.push(mkBelt(3, 2, Dir.EAST, b1.item));
+          entities.push(mkBelt(4, 2, Dir.EAST, b1.item));
+        }
+        const nearMeta = trackMeta(northNearTrack);
+        for (let x = 5; x < inEndX; x++) {
+          entities.push(mkBelt(x, yNearN, Dir.EAST, nearMeta.item, false, nearMeta.laneItems));
+        }
       }
-      addInPin(northNear.item, northNear.ratePerSec, 0, yNearN, Dir.EAST);
+    } else if (isCompactDualNorthNear && northNearTrack) {
+      const [a1, a2] = northNearTrack.items;
+      entities.push(mkBelt(0, yNearN, Dir.EAST, a1.item));
+      addInPin(a1.item, a1.ratePerSec, 0, yNearN, Dir.EAST);
+      entities.push(mkBelt(1, yNearN, Dir.EAST, undefined, true, [a1.item, a2.item]));
+
+      entities.push(mkBelt(0, yMachine, Dir.EAST, a2.item));
+      addInPin(a2.item, a2.ratePerSec, 0, yMachine, Dir.EAST);
+      entities.push(mkBelt(1, yMachine, Dir.NORTH, a2.item));
+      entities.push(mkBelt(1, yInsN, Dir.NORTH, a2.item));
+
+      for (let x = 2; x < inEndX; x++) {
+        entities.push(mkBelt(x, yNearN, Dir.EAST, undefined, false, [a1.item, a2.item]));
+      }
+    } else {
+      if (northFarTrack) {
+        const a1 = northFarTrack.items[0];
+        for (let x = 0; x < inEndX; x++) {
+          entities.push(mkBelt(x, yFarN, Dir.EAST, a1.item));
+        }
+        addInPin(a1.item, a1.ratePerSec, 0, yFarN, Dir.EAST);
+      }
+      if (northNearTrack) {
+        const b1 = northNearTrack.items[0];
+        for (let x = 0; x < inEndX; x++) {
+          entities.push(mkBelt(x, yNearN, Dir.EAST, b1.item));
+        }
+        addInPin(b1.item, b1.ratePerSec, 0, yNearN, Dir.EAST);
+      }
     }
   }
 
   // Horizontal fluid headers
-  if (isTwoFluid) {
+  if (isSplitTwoFluid) {
+    const f0End = M > 0 ? machineXs[M - 1] + fOff0 + 1 : xStart + 1;
+    for (let x = 0; x < f0End; x++) {
+      mkPipe(x, yFluidSouth, fluids[0].item);
+    }
+    addInPin(fluids[0].item, fluids[0].ratePerSec, 0, yFluidSouth, Dir.EAST, true);
+
+    const f1End = M > 0 ? machineXs[M - 1] + fOff1 + 1 : xStart + 1;
+    for (let x = 0; x < f1End; x++) {
+      mkPipe(x, 0, fluids[1].item);
+    }
+    addInPin(fluids[1].item, fluids[1].ratePerSec, 0, 0, Dir.EAST, true);
+  } else if (isTwoFluid) {
     const f0End = M > 0 ? machineXs[M - 1] + fOff0 + 1 : xStart + 1;
     for (let x = 0; x < f0End; x++) {
       mkPipe(x, 2, fluids[0].item);
