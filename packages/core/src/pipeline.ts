@@ -260,6 +260,7 @@ export function runFlatPipeline(
     floorplan.height,
     route,
     true,
+    floorplan,
   );
   const sta: StaReport = runSta(synthesis, allEntities, spec.pdk);
   const bom = computeActualBom(allEntities, synthesis.bom);
@@ -337,7 +338,7 @@ export function runFromFloorplan(
   );
   const allEntities = collectLayoutEntities(floorplan, route, pdn, spec);
   onProgress?.({ stage: 'signoff', message: 'Running DRC & STA signoff verification...' });
-  const drc = runDrc(allEntities, floorplan.width, floorplan.height, route, true);
+  const drc = runDrc(allEntities, floorplan.width, floorplan.height, route, true, floorplan);
   const sta = runSta(synthesis, allEntities, spec.pdk);
   const bom = computeActualBom(allEntities, synthesis.bom);
 

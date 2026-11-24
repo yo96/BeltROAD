@@ -117,6 +117,7 @@ export function resolvePerimeterPins(
     const minOff = 1;
     const maxOff = Math.max(1, edgeLen - 2);
     const used = new Set<number>();
+    const usedFluid = new Set<number>();
 
     const fixed = edgeDrafts.filter((d) => d.fixedOffset !== undefined);
     const floating = edgeDrafts
@@ -141,6 +142,7 @@ export function resolvePerimeterPins(
         }
       }
       used.add(off);
+      if (d.node.isFluid) usedFluid.add(off);
       assigned.set(d, off);
     }
 
@@ -171,20 +173,35 @@ export function resolvePerimeterPins(
         if (i > 0) {
           cursor += floating[i].busKey === floating[i - 1].busKey ? 2 : pitchInter;
         }
-        // Find nearest free offset avoiding direct adjacency with fixed pins
+        const isFl = Boolean(floating[i].node.isFluid);
+        // Find nearest free offset avoiding direct adjacency with fixed pins and any fluid-fluid adjacency
         let off = Math.max(minOff, Math.min(maxOff, cursor));
         while (
           off <= maxOff &&
-          (used.has(off) || used.has(off - 1) || used.has(off + 1))
+          (used.has(off) ||
+            used.has(off - 1) ||
+            used.has(off + 1) ||
+            (isFl && (usedFluid.has(off - 1) || usedFluid.has(off + 1))))
         ) {
           off++;
         }
         if (off > maxOff) {
           off = minOff;
-          while (off <= maxOff && used.has(off)) off++;
+          while (
+            off <= maxOff &&
+            (used.has(off) ||
+              (isFl && (usedFluid.has(off - 1) || usedFluid.has(off + 1))))
+          ) {
+            off++;
+          }
+          if (off > maxOff) {
+            off = minOff;
+            while (off <= maxOff && used.has(off)) off++;
+          }
         }
         off = Math.min(maxOff, off);
         used.add(off);
+        if (isFl) usedFluid.add(off);
         assigned.set(floating[i], off);
         cursor = off;
       }
@@ -345,49 +362,72 @@ export function alignFloatingPinsToMacros(
     const iso = isotonicNonDecreasing(shifted);
 
     const lockedSet = new Set(locked.map((p) => p.offset));
-    const isBlocked = (pos: number): boolean => {
+    const placedFluidSet = new Set(locked.filter((p) => p.isFluid).map((p) => p.offset));
+    const placedFloatingSet = new Set<number>();
+    const isBlocked = (pos: number, isFluidPin: boolean): boolean => {
       if (pos < minOff || pos > maxOff) return true;
-      if (lockedSet.has(pos)) return true;
+      if (lockedSet.has(pos) || placedFloatingSet.has(pos)) return true;
       if (pitch >= 2 && (lockedSet.has(pos - 1) || lockedSet.has(pos + 1))) return true;
+      if (isFluidPin && (placedFluidSet.has(pos - 1) || placedFluidSet.has(pos + 1))) {
+        return true;
+      }
       return false;
     };
 
     let prev = minOff - pitch;
     for (let i = 0; i < floating.length; i++) {
+      const pin = floating[i];
+      const isFl = Boolean(pin.isFluid);
       const remAfter = floating.length - 1 - i;
       const maxAllowed = maxOff - remAfter * pitch;
       let pos = Math.round(iso[i] + pitch * i);
       pos = Math.max(prev + pitch, Math.min(maxAllowed, pos));
 
-      if (isBlocked(pos)) {
+      if (isBlocked(pos, isFl)) {
         // Search nearest unblocked slot >= prev + pitch (preferring small shift)
         let found = -1;
         for (let d = 1; d <= edgeLen; d++) {
-          if (pos + d <= maxAllowed && pos + d >= prev + pitch && !isBlocked(pos + d)) {
+          if (pos + d <= maxAllowed && pos + d >= prev + pitch && !isBlocked(pos + d, isFl)) {
             found = pos + d;
             break;
           }
-          if (pos - d >= prev + pitch && pos - d <= maxAllowed && !isBlocked(pos - d)) {
+          if (pos - d >= prev + pitch && pos - d <= maxAllowed && !isBlocked(pos - d, isFl)) {
             found = pos - d;
             break;
           }
         }
         if (found >= 0) pos = found;
         else {
-          // Fallback: scan forward ignoring pitch-1 gap around locked pins if super tight
+          // Fallback: scan forward keeping fluid pins >= 2 apart even on tight edges
+          let qFound = -1;
           for (let q = Math.max(minOff, prev + 1); q <= maxOff; q++) {
-            if (!lockedSet.has(q)) {
-              pos = q;
+            if (
+              !lockedSet.has(q) &&
+              !placedFloatingSet.has(q) &&
+              (!isFl || (!placedFluidSet.has(q - 1) && !placedFluidSet.has(q + 1)))
+            ) {
+              qFound = q;
               break;
+            }
+          }
+          if (qFound >= 0) {
+            pos = qFound;
+          } else {
+            for (let q = Math.max(minOff, prev + 1); q <= maxOff; q++) {
+              if (!lockedSet.has(q) && !placedFloatingSet.has(q)) {
+                pos = q;
+                break;
+              }
             }
           }
         }
       }
 
-      const pin = floating[i];
       pin.offset = pos;
       pin.x = edge === 'W' ? 0 : edge === 'E' ? width - 1 : pos;
       pin.y = edge === 'N' ? 0 : edge === 'S' ? height - 1 : pos;
+      placedFloatingSet.add(pos);
+      if (isFl) placedFluidSet.add(pos);
       prev = pos;
     }
   }

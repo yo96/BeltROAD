@@ -203,10 +203,15 @@ export function normalizeSpec(raw: Partial<DesignSpec>): DesignSpec {
     directInsertion: raw.optimization?.directInsertion ?? optDef.directInsertion ?? false,
   };
 
-  const targets: TargetSpec[] = (raw.targets ?? []).map((t) => ({
-    item: String(t.item),
-    ratePerMin: Number(t.ratePerMin),
-  }));
+  const targets: TargetSpec[] = (raw.targets ?? []).map((t) => {
+    const hasMachines =
+      typeof t.machines === 'number' && Number.isFinite(t.machines) && t.machines > 0;
+    return {
+      item: String(t.item),
+      ratePerMin: Number(t.ratePerMin ?? 0),
+      ...(hasMachines ? { machines: Math.max(1, Math.round(t.machines!)) } : {}),
+    };
+  });
 
   const pins: PinConstraint[] = (raw.pins ?? []).map((p) => ({ ...p }));
 
@@ -238,8 +243,11 @@ export function validateSpec(spec: DesignSpec): string[] {
       } else if (!catalog.items[t.item] && !catalog.recipesByOutput[t.item]) {
         errors.push(`Unknown target item "${t.item}".`);
       }
-      if (!Number.isFinite(t.ratePerMin) || t.ratePerMin <= 0) {
-        errors.push(`Target "${t.item}" ratePerMin must be > 0.`);
+      const hasRate = Number.isFinite(t.ratePerMin) && t.ratePerMin > 0;
+      const hasMachines =
+        typeof t.machines === 'number' && Number.isFinite(t.machines) && t.machines > 0;
+      if (!hasRate && !hasMachines) {
+        errors.push(`Target "${t.item}" ratePerMin (or machines) must be > 0.`);
       }
     }
   }

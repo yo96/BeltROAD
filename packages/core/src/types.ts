@@ -82,6 +82,8 @@ export interface PdkConfig {
 export interface TargetSpec {
   item: string;
   ratePerMin: number;
+  /** Optional exact machine count at 100% full throughput under active PDK */
+  machines?: number;
 }
 
 export interface FloorplanConfig {
@@ -342,6 +344,7 @@ export interface RecipeMacroSpec {
   beltTier: BeltTier;
   ingredientRates: { item: string; ratePerSec: number; beltTier: BeltTier }[];
   fluidInputs?: { item: string; ratePerSec: number }[];
+  outputIsFluid?: boolean;
   preferredRows?: number;
   balanceOutputLanes?: boolean;
   sliceIndex: number;
@@ -513,6 +516,7 @@ export type DrcCode =
   | 'DIE_BOUNDS'
   | 'UNROUTED_NET'
   | 'NO_FLUID_MIXING'
+  | 'NO_ADJACENT_PIPES'
   | 'PIPE_UG_PAIR';
 
 export interface DrcViolation {

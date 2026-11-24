@@ -23,7 +23,7 @@ import {
 import type { PipelineOptions } from '../pipeline.js';
 import { BELT_SPECS, MACHINE_SPECS, effectiveBeltCapacity } from '../data/entities.js';
 import { dirDelta, flipDirX } from '../geometry.js';
-import { synthesizeDesign } from '../synth/synthesize.js';
+import { computeRecipeThroughputPerMachine, synthesizeDesign } from '../synth/synthesize.js';
 import { buildPowerGrid } from '../pdn/powerGrid.js';
 import { runDrc } from '../verify/drc.js';
 import { runSta } from '../verify/sta.js';
@@ -95,10 +95,17 @@ function scaleSpecTargets(spec: DesignSpec, scale: number, suffix: string): Desi
   return {
     ...spec,
     name: `${spec.name} (${suffix})`,
-    targets: spec.targets.map((t) => ({
-      item: t.item,
-      ratePerMin: t.ratePerMin * scale,
-    })),
+    targets: spec.targets.map((t) => {
+      let baseRate = t.ratePerMin;
+      if (t.machines && t.machines > 0) {
+        const info = computeRecipeThroughputPerMachine(t.item, spec.pdk, t.machines);
+        if (info) baseRate = t.machines * info.itemsPerMin;
+      }
+      return {
+        item: t.item,
+        ratePerMin: baseRate * scale,
+      };
+    }),
     pins: [],
     macroOverrides: {},
   };
@@ -131,8 +138,9 @@ function chooseCandidateTileCounts(
   const maxK = Math.max(64, Math.min(512, estMinK * 2));
 
   for (const t of spec.targets) {
-    if (Number.isInteger(t.ratePerMin) && t.ratePerMin >= 2) {
-      const n = t.ratePerMin;
+    const intVal = t.machines && t.machines >= 2 ? t.machines : t.ratePerMin;
+    if (Number.isInteger(intVal) && intVal >= 2) {
+      const n = intVal;
       for (let d = 2; d <= maxK; d++) {
         if (n % d === 0) {
           candSet.add(d);

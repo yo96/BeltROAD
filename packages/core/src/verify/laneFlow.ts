@@ -224,6 +224,16 @@ export function simulateMacroOutputLanes(
   rm: RecipeMacroSpec,
   macroEnts: EntityInstance[],
 ): MacroLaneSummary {
+  if (rm.outputIsFluid) {
+    return {
+      outLeft: 0,
+      outRight: 0,
+      peakLeft: 0,
+      peakRight: 0,
+      entityRates: new Map(),
+      reachableIds: new Set(),
+    };
+  }
   if (macroEnts.length === 0) {
     const half = rm.outputRatePerSec / 2;
     return {

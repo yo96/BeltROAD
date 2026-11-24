@@ -52,6 +52,7 @@ const SPACE_AGE_ICONS = new Set([
   'tungsten-plate',
   'big-mining-drill',
   'metallurgic-science-pack',
+  'holmium-ore',
   'holmium-plate',
   'superconductor',
   'supercapacitor',

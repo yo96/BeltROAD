@@ -2,6 +2,7 @@ import {
   DrcReport,
   DrcViolation,
   EntityInstance,
+  FloorplanResult,
   RouteResult,
 } from '../types.js';
 import {
@@ -27,6 +28,7 @@ export function runDrc(
   height: number,
   routeResult?: RouteResult,
   allowOutOfBoundsMarkers = true,
+  floorplan?: FloorplanResult,
 ): DrcReport {
   const violations: DrcViolation[] = [];
   let vid = 0;
@@ -369,7 +371,22 @@ export function runDrc(
     }
   }
 
-  // 4b. Fluid mixing check (NO_FLUID_MIXING)
+  // 4b. Fluid mixing & non-adjacent distinct pipes check (NO_FLUID_MIXING, NO_ADJACENT_PIPES)
+  const allowedMacroPipeContacts = new Set<string>();
+  if (floorplan) {
+    for (const pm of floorplan.macros) {
+      for (const mp of pm.macro.pins) {
+        if (!mp.isFluid) continue;
+        const ix = pm.x + mp.x;
+        const iy = pm.y + mp.y;
+        const px = pm.x + mp.portX;
+        const py = pm.y + mp.portY;
+        allowedMacroPipeContacts.add(`${ix},${iy}|${px},${py}`);
+        allowedMacroPipeContacts.add(`${px},${py}|${ix},${iy}`);
+      }
+    }
+  }
+
   const pipeEntities = entities.filter((e) => isPipeName(e.name));
   if (pipeEntities.length > 0) {
     const pipeByTile = new Map<string, EntityInstance>();
@@ -388,13 +405,9 @@ export function runDrc(
       ] as const) {
         const b = pipeByTile.get(`${a.tx + dx},${a.ty + dy}`);
         if (!b) continue;
-        if (
-          pipeHasPort(a, dx, dy) &&
-          pipeHasPort(b, -dx, -dy) &&
-          a.item &&
-          b.item &&
-          a.item !== b.item
-        ) {
+        if (!pipeHasPort(a, dx, dy) || !pipeHasPort(b, -dx, -dy)) continue;
+
+        if (a.item && b.item && a.item !== b.item) {
           addV(
             'NO_FLUID_MIXING',
             'error',
@@ -402,6 +415,71 @@ export function runDrc(
             a.tx,
             a.ty,
             [a.id, b.id],
+          );
+          continue;
+        }
+
+        if (a.netId && b.netId && a.netId !== b.netId) {
+          addV(
+            'NO_ADJACENT_PIPES',
+            'error',
+            `Adjacent pipes from distinct nets ("${a.netId}" and "${b.netId}") at (${a.tx},${a.ty}) and (${b.tx},${b.ty}).`,
+            a.tx,
+            a.ty,
+            [a.id, b.id],
+          );
+          continue;
+        }
+
+        if (a.macroId && b.macroId && a.macroId !== b.macroId) {
+          addV(
+            'NO_ADJACENT_PIPES',
+            'error',
+            `Adjacent pipes from distinct macros ("${a.macroId}" and "${b.macroId}") at (${a.tx},${a.ty}) and (${b.tx},${b.ty}).`,
+            a.tx,
+            a.ty,
+            [a.id, b.id],
+          );
+          continue;
+        }
+
+        if (floorplan && ((a.netId && b.macroId) || (b.netId && a.macroId))) {
+          if (!allowedMacroPipeContacts.has(`${a.tx},${a.ty}|${b.tx},${b.ty}`)) {
+            addV(
+              'NO_ADJACENT_PIPES',
+              'error',
+              `Routed pipe touches macro pipe away from fluid pin at (${a.tx},${a.ty}) and (${b.tx},${b.ty}).`,
+              a.tx,
+              a.ty,
+              [a.id, b.id],
+            );
+          }
+        }
+      }
+
+      // Check 2x2 surface pipe cluster on the same routed net
+      if (!isPipeUndergroundName(a.name) && a.netId) {
+        const b = pipeByTile.get(`${a.tx + 1},${a.ty}`);
+        const c = pipeByTile.get(`${a.tx},${a.ty + 1}`);
+        const d = pipeByTile.get(`${a.tx + 1},${a.ty + 1}`);
+        if (
+          b &&
+          c &&
+          d &&
+          !isPipeUndergroundName(b.name) &&
+          !isPipeUndergroundName(c.name) &&
+          !isPipeUndergroundName(d.name) &&
+          b.netId === a.netId &&
+          c.netId === a.netId &&
+          d.netId === a.netId
+        ) {
+          addV(
+            'NO_ADJACENT_PIPES',
+            'error',
+            `Self-adjacent 2x2 pipe cluster on net "${a.netId}" at (${a.tx},${a.ty}).`,
+            a.tx,
+            a.ty,
+            [a.id, b.id, c.id, d.id],
           );
         }
       }

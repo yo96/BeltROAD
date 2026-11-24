@@ -42,7 +42,9 @@ export interface RouteNetSpec {
   tx: number;
   ty: number;
   dstDirIdx: number;
-  /** Exact macro tile fed by (tx, ty) if sink is a macro pin, else -1 */
+  /** Exact macro/perimeter tile fed out of (sx, sy) */
+  sourcePipeTile: number;
+  /** Exact macro/perimeter tile fed into from (tx, ty) */
   allowedTargetTile: number;
   /** Fixed perimeter stub (if source/sink is a perimeter pin) */
   fixedStartPin?: PerimeterPin;
@@ -82,6 +84,7 @@ function buildRouteSpecs(
     let sx = 0;
     let sy = 0;
     let srcDir = Dir.EAST;
+    let sourcePipeTile = -1;
     let fixedStartPin: PerimeterPin | undefined;
 
     if (net.source.nodeId.startsWith('in:')) {
@@ -92,6 +95,7 @@ function buildRouteSpecs(
       sy = p.y + d.dy;
       srcDir = p.dir;
       fixedStartPin = p;
+      sourcePipeTile = p.y * floorplan.width + p.x;
     } else {
       const pm = macroById.get(net.source.nodeId);
       const mp = pm?.macro.pins.find((p) => p.id === net.source.pinId);
@@ -99,6 +103,7 @@ function buildRouteSpecs(
       sx = pm.x + mp.portX;
       sy = pm.y + mp.portY;
       srcDir = mp.direction;
+      sourcePipeTile = (pm.y + mp.y) * floorplan.width + (pm.x + mp.x);
     }
 
     let tx = 0;
@@ -143,6 +148,7 @@ function buildRouteSpecs(
       tx,
       ty,
       dstDirIdx: dirToIdx4(dstDir),
+      sourcePipeTile,
       allowedTargetTile,
       fixedStartPin,
       fixedEndPin,
@@ -361,11 +367,14 @@ function fluidMixingPenalty(
   y: number,
   myKind: number,
   myDirIdx: number,
-  myFluidId: number,
+  spec: RouteNetSpec,
   allowCongestion: boolean,
 ): { penalty: number; conflictNet: number } {
   const W = buf.width;
   const H = buf.height;
+  const myFluidId = spec.fluidId;
+  const isStartTile = x === spec.sx && y === spec.sy;
+  const isGoalTile = x === spec.tx && y === spec.ty;
   for (let k = 0; k < 4; k++) {
     if (!hasSurfaceFluidPort(myKind, myDirIdx, k)) continue;
     const nx = x + DX4[k];
@@ -373,26 +382,30 @@ function fluidMixingPenalty(
     if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
     const nIdx = ny * W + nx;
     const opp = (k + 2) & 3;
+    const isEndpointStaticPin =
+      (isStartTile && nIdx === spec.sourcePipeTile) ||
+      (isGoalTile && nIdx === spec.allowedTargetTile);
 
     const sf = buf.staticFluidId[nIdx];
-    if (sf > 0 && sf !== myFluidId) {
+    if (sf > 0 && (sf !== myFluidId || !isEndpointStaticPin)) {
       return { penalty: Infinity, conflictNet: -1 };
     }
     const suf = buf.staticPipeUgFluid[nIdx];
-    if (suf > 0 && suf !== myFluidId && buf.staticPipeUgDir[nIdx] === opp) {
+    if (suf > 0 && buf.staticPipeUgDir[nIdx] === opp && (suf !== myFluidId || !isEndpointStaticPin)) {
       return { penalty: Infinity, conflictNet: -1 };
     }
     const rf = buf.routedFluidId[nIdx];
+    const owner = buf.surfaceOwner[nIdx];
     if (
       rf > 0 &&
-      rf !== myFluidId &&
+      owner !== spec.netIdx &&
       buf.surfaceCount[nIdx] > 0 &&
       hasSurfaceFluidPort(buf.surfaceKind[nIdx], buf.surfaceDir[nIdx], opp)
     ) {
       if (!allowCongestion) {
-        return { penalty: Infinity, conflictNet: buf.surfaceOwner[nIdx] };
+        return { penalty: Infinity, conflictNet: owner };
       }
-      return { penalty: buf.presFactor * 16.0, conflictNet: buf.surfaceOwner[nIdx] };
+      return { penalty: buf.presFactor * 32.0, conflictNet: owner };
     }
   }
   return { penalty: 0, conflictNet: -1 };
@@ -580,6 +593,62 @@ function isAncestorTileUsed(
   return false;
 }
 
+/** Prevents a single fluid pipe net from folding orthogonally adjacent to its own earlier surface pipes. */
+function hasAdjacentAncestorSurfacePipe(
+  buf: RouterBuffers,
+  state: number,
+  activeStamp: number,
+  nx: number,
+  ny: number,
+  directPrevTile: number,
+): boolean {
+  const W = buf.width;
+  const H = buf.height;
+  const cs = buf.closedStamp;
+  let mightCollide = false;
+  for (let d = 0; d < 4; d++) {
+    const ax = nx + DX4[d];
+    const ay = ny + DY4[d];
+    if (ax < 0 || ax >= W || ay < 0 || ay >= H) continue;
+    const aTile = ay * W + ax;
+    if (aTile === directPrevTile) continue;
+    const base = aTile << 2;
+    if (
+      cs[base] === activeStamp ||
+      cs[base | 1] === activeStamp ||
+      cs[base | 2] === activeStamp ||
+      cs[base | 3] === activeStamp
+    ) {
+      mightCollide = true;
+      break;
+    }
+  }
+  if (!mightCollide) return false;
+
+  const ps = buf.parentState;
+  const pj = buf.parentJump;
+  let child = state;
+  let cur = ps[state];
+  while (cur >= 0) {
+    const cTile = cur >> 2;
+    const cDir = cur & 3;
+    const jLen = pj[child] & 0x7f;
+    const cx = cTile % W;
+    const cy = (cTile - cx) / W;
+
+    if (jLen >= 2) {
+      // `cur` is ug-in whose only open surface port faces opposite `cDir`
+      const opp = (cDir + 2) & 3;
+      if (cx + DX4[opp] === nx && cy + DY4[opp] === ny) return true;
+    } else if (cTile !== directPrevTile) {
+      if (Math.abs(cx - nx) + Math.abs(cy - ny) === 1) return true;
+    }
+    child = cur;
+    cur = ps[cur];
+  }
+  return false;
+}
+
 function routeSingleNet(
   buf: RouterBuffers,
   spec: RouteNetSpec,
@@ -682,7 +751,12 @@ function routeSingleNet(
       const nextBaseCost = tileSurfaceCost(buf, nTile, spec.netIdx, allowCongestion);
       if (nextBaseCost === Infinity) continue;
 
-      if (preventSelfLoop && isAncestorTileUsed(buf, state, activeStamp, nTile, nx, ny)) continue;
+      if ((preventSelfLoop || spec.isFluid) && isAncestorTileUsed(buf, state, activeStamp, nTile, nx, ny)) {
+        continue;
+      }
+      if (spec.isFluid && hasAdjacentAncestorSurfacePipe(buf, state, activeStamp, nx, ny, tile)) {
+        continue;
+      }
 
       const slPen = sideLoadPenalty(buf, x, y, nd, spec, allowCongestion);
       if (slPen === Infinity) continue;
@@ -691,7 +765,7 @@ function routeSingleNet(
       if (spec.isFluid) {
         const mxStart =
           tile === startTile
-            ? fluidMixingPenalty(buf, x, y, 1, dIdx, spec.fluidId, allowCongestion).penalty
+            ? fluidMixingPenalty(buf, x, y, 1, dIdx, spec, allowCongestion).penalty
             : 0;
         const mxNext = fluidMixingPenalty(
           buf,
@@ -699,7 +773,7 @@ function routeSingleNet(
           ny,
           1,
           nd,
-          spec.fluidId,
+          spec,
           allowCongestion,
         ).penalty;
         fluidPen = mxStart + mxNext;
@@ -722,7 +796,7 @@ function routeSingleNet(
       const aligned =
         isAlignedSide(nx + DX4[p1d], ny + DY4[p1d]) ||
         isAlignedSide(nx + DX4[p2d], ny + DY4[p2d]);
-      const busBias = aligned ? 0 : 0.06;
+      const busBias = spec.isFluid ? 0 : aligned ? 0 : 0.06;
       const candG = curG + nextBaseCost + slPen + fluidPen + turnCost + busBias;
       const nState = (nTile << 2) | nd;
 
@@ -754,7 +828,7 @@ function routeSingleNet(
         y,
         2,
         dIdx,
-        spec.fluidId,
+        spec,
         allowCongestion,
       ).penalty;
       if (entryFluidPen === Infinity) continue;
@@ -789,10 +863,10 @@ function routeSingleNet(
 
       // Case A: landing directly on goalTile heading dstDirIdx
       if (eTile === goalTile && dIdx === dstDirIdx) {
-        if (preventSelfLoop && isAncestorTileUsed(buf, state, activeStamp, eTile, ex, ey)) continue;
+        if ((preventSelfLoop || spec.isFluid) && isAncestorTileUsed(buf, state, activeStamp, eTile, ex, ey)) continue;
         const slPen = sideLoadPenalty(buf, ex, ey, dIdx, spec, allowCongestion);
         const exitFluidPenA = spec.isFluid
-          ? fluidMixingPenalty(buf, ex, ey, 3, dIdx, spec.fluidId, allowCongestion).penalty
+          ? fluidMixingPenalty(buf, ex, ey, 3, dIdx, spec, allowCongestion).penalty
           : 0;
         if (slPen < Infinity && exitFluidPenA < Infinity) {
           let spanPenaltyA = 0;
@@ -832,10 +906,13 @@ function routeSingleNet(
       if (aCost === Infinity) continue;
 
       if (
-        preventSelfLoop &&
+        (preventSelfLoop || spec.isFluid) &&
         (isAncestorTileUsed(buf, state, activeStamp, eTile, ex, ey) ||
           isAncestorTileUsed(buf, state, activeStamp, aTile, ax, ay))
       ) {
+        continue;
+      }
+      if (spec.isFluid && hasAdjacentAncestorSurfacePipe(buf, state, activeStamp, ax, ay, tile)) {
         continue;
       }
 
@@ -845,8 +922,8 @@ function routeSingleNet(
       let exitFluidPen = 0;
       if (spec.isFluid) {
         exitFluidPen =
-          fluidMixingPenalty(buf, ex, ey, 3, dIdx, spec.fluidId, allowCongestion).penalty +
-          fluidMixingPenalty(buf, ax, ay, 1, dIdx, spec.fluidId, allowCongestion).penalty;
+          fluidMixingPenalty(buf, ex, ey, 3, dIdx, spec, allowCongestion).penalty +
+          fluidMixingPenalty(buf, ax, ay, 1, dIdx, spec, allowCongestion).penalty;
         if (exitFluidPen === Infinity) continue;
       }
 
@@ -1043,11 +1120,11 @@ function findConflicts(
         }
       }
 
-      // Check fluid mixing on surface pipe connections
+      // Check fluid mixing / adjacent distinct pipe conflict on surface pipe connections
       if (specs[i].isFluid) {
         const x = st.tileIdx % W;
         const y = (st.tileIdx - x) / W;
-        const mx = fluidMixingPenalty(buf, x, y, st.kind, st.dirIdx, specs[i].fluidId, false);
+        const mx = fluidMixingPenalty(buf, x, y, st.kind, st.dirIdx, specs[i], false);
         if (mx.penalty === Infinity) {
           conflictTiles.add(st.tileIdx);
           netHasConflict = true;

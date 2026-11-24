@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { RecipeDef, getItemMeta } from '@factorio-eda/core';
+import { RecipeDef, getItemMeta, isFluidItem } from '@factorio-eda/core';
 import { ChevronDown, Search } from 'lucide-react';
 import { ItemIcon } from './ItemIcon';
 
@@ -32,7 +32,8 @@ export const ItemPicker: React.FC<ItemPickerProps> = ({ value, options, onChange
         metaCat.includes(q) ||
         (r.group && r.group.toLowerCase().includes(q)) ||
         (q.includes('space') && r.group === 'space-age') ||
-        (q.includes('fluid') && r.hasFluid) ||
+        ((q.includes('fluid') || q.includes('liquid')) &&
+          (r.hasFluid || isFluidItem(r.outputItem))) ||
         (q.includes('chem') && (r.category === 'chemistry' || metaCat === 'chemical'))
       );
     });
@@ -147,12 +148,16 @@ export const ItemPicker: React.FC<ItemPickerProps> = ({ value, options, onChange
                       <span className="item-picker-option-name">{r.name}</span>
                       <span className="item-picker-option-id">{r.outputItem}</span>
                     </span>
-                    {(r.group === 'space-age' || r.hasFluid || r.category === 'chemistry') && (
+                    {(r.group === 'space-age' || r.hasFluid || r.category === 'chemistry' || isFluidItem(r.outputItem)) && (
                       <span className="item-picker-badges">
-                        {(r.category === 'chemistry' || r.hasFluid) && (
-                          <span className="item-badge item-badge-fluid">
-                            {r.category === 'chemistry' ? 'Chem' : 'Fluid'}
-                          </span>
+                        {isFluidItem(r.outputItem) ? (
+                          <span className="item-badge item-badge-fluid">Liquid</span>
+                        ) : (
+                          (r.category === 'chemistry' || r.hasFluid) && (
+                            <span className="item-badge item-badge-fluid">
+                              {r.category === 'chemistry' ? 'Chem' : 'Fluid'}
+                            </span>
+                          )
                         )}
                         {r.group === 'space-age' && (
                           <span className="item-badge item-badge-sa">Space Age</span>

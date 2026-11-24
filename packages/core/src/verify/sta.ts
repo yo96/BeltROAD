@@ -114,7 +114,7 @@ export function runSta(
       (sum, e) => sum + (INSERTER_BY_ENTITY_NAME[e.name]?.itemsPerSec ?? 0),
       0,
     );
-    if (outInserters.length > 0 && totalOutInsCap + 1e-4 < rm.outputRatePerSec) {
+    if (!rm.outputIsFluid && outInserters.length > 0 && totalOutInsCap + 1e-4 < rm.outputRatePerSec) {
       inserterOk = false;
       issues.push(
         `Output inserters capacity ${totalOutInsCap.toFixed(2)}/s < ${rm.outputRatePerSec.toFixed(2)}/s`,
@@ -162,19 +162,33 @@ export function runSta(
       }
     }
 
-    if (rm.outputRatePerSec > beltCap + 1e-4) {
-      laneOk = false;
-      issues.push(
-        `Output rate ${rm.outputRatePerSec.toFixed(2)}/s exceeds ${rm.beltTier} belt (${beltCap}/s)`,
-      );
-    }
+    if (rm.outputIsFluid) {
+      if (rm.outputRatePerSec > PIPE_SPEC.capacityPerSec + 1e-4) {
+        laneOk = false;
+        issues.push(
+          `Fluid output rate ${rm.outputRatePerSec.toFixed(2)}/s exceeds pipe capacity (${PIPE_SPEC.capacityPerSec}/s)`,
+        );
+      }
+      const hasOutPipe = macroEnts.some((e) => isPipeName(e.name) && e.item === rm.outputItem);
+      if (!hasOutPipe) {
+        laneOk = false;
+        issues.push(`Missing output pipe entities for fluid "${rm.outputItem}"`);
+      }
+    } else {
+      if (rm.outputRatePerSec > beltCap + 1e-4) {
+        laneOk = false;
+        issues.push(
+          `Output rate ${rm.outputRatePerSec.toFixed(2)}/s exceeds ${rm.beltTier} belt (${beltCap}/s)`,
+        );
+      }
 
-    const ml = macroLanes.get(rm.id);
-    if (ml && (ml.peakLeft > beltCap * 0.5 + 1e-4 || ml.peakRight > beltCap * 0.5 + 1e-4)) {
-      laneOk = false;
-      issues.push(
-        `Output belt lane overflow: L=${ml.peakLeft.toFixed(2)}/s, R=${ml.peakRight.toFixed(2)}/s > ${(beltCap * 0.5).toFixed(2)}/s (half-${rm.beltTier} belt)`,
-      );
+      const ml = macroLanes.get(rm.id);
+      if (ml && (ml.peakLeft > beltCap * 0.5 + 1e-4 || ml.peakRight > beltCap * 0.5 + 1e-4)) {
+        laneOk = false;
+        issues.push(
+          `Output belt lane overflow: L=${ml.peakLeft.toFixed(2)}/s, R=${ml.peakRight.toFixed(2)}/s > ${(beltCap * 0.5).toFixed(2)}/s (half-${rm.beltTier} belt)`,
+        );
+      }
     }
 
     if (rm.fluidInputs && rm.fluidInputs.length > 0) {
@@ -213,14 +227,15 @@ export function runSta(
       bottlenecks.push(`${rm.id}: ${iss}`);
     }
 
+    const mlSummary = rm.outputIsFluid ? undefined : macroLanes.get(rm.id);
     macros.push({
       macroId: rm.id,
       label: rm.recipeId,
       machineCount: rm.machineCount,
       exactMachines: rm.exactMachines,
       utilization: util,
-      outputLeftPerSec: ml?.outLeft,
-      outputRightPerSec: ml?.outRight,
+      outputLeftPerSec: mlSummary?.outLeft,
+      outputRightPerSec: mlSummary?.outRight,
       inserterOk,
       laneOk,
       issues,

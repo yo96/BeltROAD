@@ -1288,7 +1288,7 @@ textarea {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   font-weight: 600;
-  padding: 2px 6px;
+  padding: 2px 5px;
   border-radius: 3px;
   cursor: pointer;
   white-space: nowrap;

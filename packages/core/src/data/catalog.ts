@@ -148,7 +148,8 @@ function normalizeAndValidateCatalog(raw: unknown): RawCatalogJson {
       hasFluid:
         typeof r.hasFluid === 'boolean'
           ? r.hasFluid
-          : ingredients.some((ing) => ing.type === 'fluid'),
+          : ingredients.some((ing) => ing.type === 'fluid') ||
+            normalizedItems[r.outputItem.trim()]?.category === 'fluid',
       color: typeof r.color === 'string' ? r.color : undefined,
       group: typeof r.group === 'string' ? r.group : undefined,
     };
@@ -240,6 +241,19 @@ const RAW_PRESET_ITEMS = new Set([
   'wood',
   'uranium-ore',
   'solid-fuel',
+  'holmium-ore',
+  'water',
+  'crude-oil',
+  'heavy-oil',
+  'light-oil',
+  'petroleum-gas',
+  'sulfuric-acid',
+  'lubricant',
+  'molten-iron',
+  'molten-copper',
+  'holmium-solution',
+  'electrolyte',
+  'fluoroketone-cold',
 ]);
 
 const PLATES_PRESET_ITEMS = new Set([

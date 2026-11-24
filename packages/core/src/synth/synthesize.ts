@@ -82,6 +82,7 @@ function computeMinIoMachines(params: {
   machineName: MachineName;
   poleTier: PoleTier;
   qualityTier: QualityTier;
+  outputIsFluid?: boolean;
 }): number {
   const {
     outRate,
@@ -94,12 +95,14 @@ function computeMinIoMachines(params: {
     machineName,
     poleTier,
     qualityTier,
+    outputIsFluid = false,
   } = params;
   const isFluidMach = fluidCount > 0;
   const isEmSplit = machineName === 'electromagnetic-plant' && fluidCount >= 2;
   const skipSmallSlot = isFluidMach && ms === 5 && poleTier === 'small';
+  const northFluidOccupied = outputIsFluid ? fluidCount : isEmSplit ? 1 : 0;
   const outSlotsMax = Math.max(1, ms - (isFluidMach ? 1 : 0) - (skipSmallSlot ? 1 : 0));
-  const northSlotsMax = Math.max(1, ms - (isEmSplit ? 1 : 0) - (skipSmallSlot ? 1 : 0));
+  const northSlotsMax = Math.max(1, ms - northFluidOccupied - (skipSmallSlot ? 1 : 0));
 
   const totalIng = ingList.reduce((a, b) => a + b.ratePerSec, 0);
   const maxOutPerMach =
@@ -227,6 +230,135 @@ export interface SynthesizeOptions {
   forceBalancedOutputs?: boolean;
 }
 
+export interface MachineThroughputInfo {
+  recipeId: string;
+  machineName: MachineName;
+  itemsPerSec: number;
+  itemsPerMin: number;
+  effectiveSpeed: number;
+  effectiveProd: number;
+  beaconsPerMachine: number;
+  isFluidOutput: boolean;
+}
+
+function resolveBeaconsForRecipe(
+  recipe: RecipeDef,
+  solidIngredients: { item: string; ratePerSec: number }[],
+  fluidCount: number,
+  pdk: PdkConfig,
+): { beaconsPerMachine: number; beaconModules: NonNullable<PdkConfig['beaconModules']> } {
+  const defaultCap = effectiveBeltCapacity(pdk.defaultBeltTier, pdk);
+  const beaconMode = pdk.beaconMode ?? 'none';
+  const activeBeaconModules = (pdk.beaconModules ?? ['speed-module-3', 'speed-module-3'])
+    .filter((m) => !m.startsWith('productivity-module'))
+    .slice(0, BEACON_SPEC.moduleSlots);
+
+  if (beaconMode === 'none' || activeBeaconModules.length === 0 || fluidCount > 0) {
+    return { beaconsPerMachine: 0, beaconModules: activeBeaconModules };
+  }
+
+  const fullTrackCount = solidIngredients.filter((i) => i.ratePerSec > 0.48 * defaultCap).length;
+  const halfTrackCount = solidIngredients.length - fullTrackCount;
+  const neededTracks = fullTrackCount + Math.ceil(halfTrackCount / 2);
+  if (neededTracks > 2) {
+    return { beaconsPerMachine: 0, beaconModules: activeBeaconModules };
+  }
+
+  if (beaconMode === 'row-8') {
+    const canSingleNorthTrack =
+      solidIngredients.length <= 1 ||
+      (solidIngredients.length === 2 &&
+        solidIngredients.every((r) => r.ratePerSec <= 0.48 * defaultCap));
+    return {
+      beaconsPerMachine: canSingleNorthTrack ? 8 : 4,
+      beaconModules: activeBeaconModules,
+    };
+  }
+  return { beaconsPerMachine: 4, beaconModules: activeBeaconModules };
+}
+
+/**
+ * Computes full-throughput output rate for 1 crafting machine of `itemId` under `pdk`.
+ * Pass `machineCount` > 1 to account for row-8 vs row-4 belt track downgrades at higher rates.
+ */
+export function computeRecipeThroughputPerMachine(
+  itemId: string,
+  pdk: PdkConfig,
+  machineCount = 1,
+): MachineThroughputInfo | null {
+  const recipe = getDefaultRecipeForItem(itemId);
+  if (!recipe) return null;
+
+  const machineName: MachineName = selectMachineForRecipe(recipe, pdk);
+  const machineSpec = MACHINE_SPECS[machineName];
+  const modules = resolveMachineModules(recipe, machineSpec.moduleSlots, pdk, []);
+  const qualityTier = pdk.machineQuality ?? 'normal';
+  const qualityMult = QUALITY_SPECS[qualityTier].speedMultiplier;
+
+  let speedBonus = 0;
+  let prodBonus = 0;
+  for (const m of modules) {
+    const mod = MODULE_SPECS[m];
+    speedBonus += mod.speed;
+    prodBonus += mod.productivity;
+  }
+
+  const baseProd = machineSpec.baseProductivity ?? 0;
+  const effectiveProd = 1 + baseProd + (recipe.allowProductivity ? prodBonus : 0);
+
+  const fluidCount = recipe.ingredients.filter((ing) => ing.type === 'fluid').length;
+  const solidIngDefs = recipe.ingredients.filter((ing) => ing.type !== 'fluid');
+
+  // Evaluate with nominal beacon count first, then verify solid-belt track constraint at machineCount
+  const evalForBeacons = (beacons: number, bMods: NonNullable<PdkConfig['beaconModules']>) => {
+    let bSpd = 0;
+    for (const bm of bMods) bSpd += MODULE_SPECS[bm].speed;
+    const bMult = beaconTransmissionMultiplier(beacons, qualityTier);
+    const effSpeed =
+      machineSpec.craftingSpeed * qualityMult * Math.max(0.2, 1 + speedBonus + bMult * bSpd);
+    const itemsPerSec = (recipe.outputCount * effectiveProd * effSpeed) / recipe.energyRequired;
+    const totalOut = itemsPerSec * Math.max(1, machineCount);
+    const solidRates = solidIngDefs.map((ing) => ({
+      item: ing.item,
+      ratePerSec: totalOut * (ing.amount / (recipe.outputCount * effectiveProd)),
+    }));
+    return { effSpeed, itemsPerSec, solidRates };
+  };
+
+  const activeBeaconModules = (pdk.beaconModules ?? ['speed-module-3', 'speed-module-3'])
+    .filter((m) => !m.startsWith('productivity-module'))
+    .slice(0, BEACON_SPEC.moduleSlots);
+  const beaconMode = pdk.beaconMode ?? 'none';
+  const probeBeacons =
+    beaconMode === 'row-8' && activeBeaconModules.length > 0 && fluidCount === 0
+      ? 8
+      : beaconMode === 'row-4' && activeBeaconModules.length > 0 && fluidCount === 0
+        ? 4
+        : 0;
+  const probed = evalForBeacons(probeBeacons, activeBeaconModules);
+  const { beaconsPerMachine } = resolveBeaconsForRecipe(
+    recipe,
+    probed.solidRates,
+    fluidCount,
+    pdk,
+  );
+  const finalEval =
+    beaconsPerMachine === probeBeacons
+      ? probed
+      : evalForBeacons(beaconsPerMachine, activeBeaconModules);
+
+  return {
+    recipeId: recipe.id,
+    machineName,
+    itemsPerSec: finalEval.itemsPerSec,
+    itemsPerMin: finalEval.itemsPerSec * 60,
+    effectiveSpeed: finalEval.effSpeed,
+    effectiveProd,
+    beaconsPerMachine,
+    isFluidOutput: isFluidItem(itemId),
+  };
+}
+
 export function synthesizeDesign(
   spec: DesignSpec,
   opts?: SynthesizeOptions,
@@ -236,11 +368,18 @@ export function synthesizeDesign(
     throw new Error('At least one target item is required for synthesis.');
   }
 
-  // Merge duplicate targets for the same item
+  // Merge duplicate targets for the same item (supports ratePerMin or exact machine count)
   const targetRates = new Map<string, number>();
   for (const t of spec.targets) {
-    if (t.ratePerMin <= 0) continue;
-    targetRates.set(t.item, (targetRates.get(t.item) ?? 0) + t.ratePerMin / 60);
+    let rps = 0;
+    if (t.machines !== undefined && t.machines > 0) {
+      const info = computeRecipeThroughputPerMachine(t.item, spec.pdk, t.machines);
+      rps = info ? t.machines * info.itemsPerSec : t.ratePerMin / 60;
+    } else {
+      rps = t.ratePerMin / 60;
+    }
+    if (rps <= 0 || !Number.isFinite(rps)) continue;
+    targetRates.set(t.item, (targetRates.get(t.item) ?? 0) + rps);
   }
   if (targetRates.size === 0) {
     throw new Error('All target production rates must be > 0.');
@@ -248,7 +387,7 @@ export function synthesizeDesign(
 
   const fluidsEnabled =
     Boolean(spec.pdk.enableFluids) ||
-    spec.targets.some((t) => getDefaultRecipeForItem(t.item)?.hasFluid);
+    spec.targets.some((t) => isFluidItem(t.item) || Boolean(getDefaultRecipeForItem(t.item)?.hasFluid));
 
   // 1. Discover reachable graph and decide input-pin vs synthesize
   const decisions = new Map<string, ItemDecision>();
@@ -459,7 +598,8 @@ export function synthesizeDesign(
     let fusedExactMachines: number | undefined;
     let fusedMachineCount: number | undefined;
 
-    const diPair = directInsertEnabled ? DIRECT_INSERT_PAIRS[recipe.id] : undefined;
+    const diPair =
+      directInsertEnabled && !isFluidItem(item) ? DIRECT_INSERT_PAIRS[recipe.id] : undefined;
     const diProdDec = diPair ? decisions.get(diPair.producerItem) : undefined;
     if (
       diPair &&
@@ -674,9 +814,10 @@ export function synthesizeDesign(
       ...reach1Pool.map((t) => INSERTER_SPECS[t].itemsPerSec),
     );
     const maxReach2 = INSERTER_SPECS.long.itemsPerSec;
+    const outIsFluid = isFluidItem(item);
     const ms = machineSpec.size;
     const minMachinesForIo = computeMinIoMachines({
-      outRate: demand,
+      outRate: outIsFluid ? 0 : demand,
       ingList: ingredients,
       ms,
       maxReach1,
@@ -686,10 +827,11 @@ export function synthesizeDesign(
       machineName,
       poleTier: spec.pdk.defaultPoleTier,
       qualityTier,
+      outputIsFluid: outIsFluid,
     });
     const finalExactMachines = fusedExactMachines ?? exactMachines;
     const machineCount =
-      fusedMachineCount ?? Math.max(1, Math.ceil(exactMachines), minMachinesForIo);
+      fusedMachineCount ?? Math.max(1, Math.ceil(exactMachines - 1e-6), minMachinesForIo);
 
     computedRecipes.set(item, {
       item,
@@ -818,10 +960,13 @@ export function synthesizeDesign(
 
   // Primary Outputs
   for (const [item, rps] of targetRates.entries()) {
-    const maxCap = effectiveBeltCapacity(spec.pdk.defaultBeltTier, spec.pdk);
-    const beltCount = Math.max(1, Math.ceil(rps / maxCap));
+    const outIsFluid = isFluidItem(item);
+    const maxCap = outIsFluid
+      ? PIPE_SPEC.capacityPerSec
+      : effectiveBeltCapacity(spec.pdk.defaultBeltTier, spec.pdk);
+    const beltCount = Math.max(1, Math.ceil(rps / maxCap - 1e-9));
     const perBeltRate = rps / beltCount;
-    const tier = pickBeltTierForRate(perBeltRate, spec.pdk);
+    const tier = outIsFluid ? spec.pdk.defaultBeltTier : pickBeltTierForRate(perBeltRate, spec.pdk);
     for (let i = 0; i < beltCount; i++) {
       const nodeId = `out:${item}:${i}`;
       const node: SynthOutputNode = {
@@ -831,6 +976,7 @@ export function synthesizeDesign(
         busIndex: i,
         ratePerSec: perBeltRate,
         beltTier: tier,
+        isFluid: outIsFluid || undefined,
         pinId: nodeId,
       };
       nodes.push(node);
@@ -958,12 +1104,14 @@ export function synthesizeDesign(
       continue;
     }
 
+    const outIsFluid = isFluidItem(comp.item);
+    const outCap = outIsFluid ? PIPE_SPEC.capacityPerSec : maxBeltCap;
     const isFluidComp = comp.fluidInputs.length > 0;
     const isEmSplitComp =
       comp.machineName === 'electromagnetic-plant' && comp.fluidInputs.length >= 2;
     let sliceCount = Math.max(
       1,
-      Math.ceil(comp.demandPerSec / maxBeltCap),
+      Math.ceil(comp.demandPerSec / outCap - 1e-9),
       Math.ceil(comp.machineCount / MAX_MACHINES_PER_SLICE),
     );
     const sortedCompIngs = [...comp.ingredients].sort((a, b) => b.ratePerSec - a.ratePerSec);
@@ -987,7 +1135,7 @@ export function synthesizeDesign(
     const baseMachines = Math.floor(comp.machineCount / sliceCount);
     const remMachines = comp.machineCount % sliceCount;
     const maxInputOrOut = Math.max(
-      comp.demandPerSec,
+      outIsFluid ? 0 : comp.demandPerSec,
       ...comp.ingredients.map((i) => i.ratePerSec),
     );
     const unbalancedMax =
@@ -1010,7 +1158,7 @@ export function synthesizeDesign(
       let mCount = useUniformCeil
         ? Math.max(
             1,
-            Math.ceil(comp.exactMachines / sliceCount),
+            Math.ceil(comp.exactMachines / sliceCount - 1e-6),
             Math.ceil(comp.machineCount / sliceCount),
           )
         : baseMachines + (s < remMachines ? 1 : 0);
@@ -1024,7 +1172,7 @@ export function synthesizeDesign(
       mCount = Math.max(
         mCount,
         computeMinIoMachines({
-          outRate: sliceOutRate,
+          outRate: outIsFluid ? 0 : sliceOutRate,
           ingList: sliceIngs,
           ms: msSlice,
           maxReach1: maxReach1Slice,
@@ -1034,17 +1182,20 @@ export function synthesizeDesign(
           machineName: comp.machineName,
           poleTier: spec.pdk.defaultPoleTier,
           qualityTier: comp.quality ?? 'normal',
+          outputIsFluid: outIsFluid,
         }),
       );
-      const outTier = pickBeltTierForRate(sliceOutRate, spec.pdk);
+      const outTier = outIsFluid
+        ? spec.pdk.defaultBeltTier
+        : pickBeltTierForRate(sliceOutRate, spec.pdk);
       const sliceBeltCap = effectiveBeltCapacity(outTier, spec.pdk);
-      if (sliceOutRate > sliceBeltCap * 0.5 + 1e-4 && mCount % 2 === 1) {
+      if (!outIsFluid && sliceOutRate > sliceBeltCap * 0.5 + 1e-4 && mCount % 2 === 1) {
         const heavyLaneRate = (Math.ceil(mCount / 2) / mCount) * sliceOutRate;
         if (heavyLaneRate > sliceBeltCap * 0.5 - 1e-4) {
           mCount += 1;
         }
       }
-      const forceBal = Boolean(opts?.forceBalancedOutputs) && targetRates.has(comp.item);
+      const forceBal = !outIsFluid && Boolean(opts?.forceBalancedOutputs) && targetRates.has(comp.item);
       if (forceBal && mCount >= 3 && mCount % 2 === 1) {
         mCount += 1;
       }
@@ -1084,9 +1235,10 @@ export function synthesizeDesign(
         beltTier: outTier,
         ingredientRates: ingRates,
         fluidInputs,
+        outputIsFluid: outIsFluid || undefined,
         preferredRows:
           override?.rows ?? (comp.beaconsPerMachine >= 8 ? 1 : undefined),
-        balanceOutputLanes: forceBal || sliceOutRate > sliceBeltCap * 0.49,
+        balanceOutputLanes: outIsFluid ? false : forceBal || sliceOutRate > sliceBeltCap * 0.49,
         sliceIndex: s,
         sliceCount,
       };
@@ -1318,7 +1470,7 @@ export function synthesizeDesign(
 
     const balId = `bal:${item}:${S}x${D}`;
 
-    if (S >= 2) {
+    if (S >= 2 && !isFluid) {
       const maxSinkRate = Math.max(...sinks.map((s) => s.ratePerSec));
       const balHalfCap = effectiveBeltCapacity(template.beltTier, spec.pdk) * 0.5;
       if (

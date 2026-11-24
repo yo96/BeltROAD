@@ -16,6 +16,7 @@ import {
   InserterTier,
   ModuleName,
   OptimizationLevel,
+  PIPE_SPEC,
   PerimeterHeaderMode,
   PipelineProgress,
   PipelineResult,
@@ -28,7 +29,9 @@ import {
   RouteResult,
   StaReport,
   SynthesisResult,
+  TargetSpec,
   collectLayoutEntities,
+  computeRecipeThroughputPerMachine,
   decodeSpecFromUrlHash,
   defaultOptimizationConfig,
   edgeToInwardDir,
@@ -38,6 +41,7 @@ import {
   getCatalog,
   getDefaultCatalogRaw,
   getItemMeta,
+  isFluidItem,
   loadCustomCatalog,
   mirrorMacroY,
   pipelineResultToBlueprintBookString,
@@ -195,7 +199,9 @@ export default function App() {
   const [rightOpen, setRightOpen] = useState<boolean>(
     () => typeof window === 'undefined' || window.innerWidth >= 1180,
   );
-  const [targetUnit, setTargetUnit] = useState<'perMin' | 'perSec' | 'belts'>('perMin');
+  const [targetUnit, setTargetUnit] = useState<'perMin' | 'perSec' | 'belts' | 'machines'>(() =>
+    initial.spec.targets.some((t) => (t.machines ?? 0) > 0) ? 'machines' : 'perMin',
+  );
   const [stepsMenuOpen, setStepsMenuOpen] = useState(false);
   const [layersMenuOpen, setLayersMenuOpen] = useState(false);
 
@@ -482,7 +488,24 @@ export default function App() {
   const updateSpec = useCallback(
     (updater: (prev: DesignSpec) => DesignSpec, autoRun = false) => {
       setActivePresetId('custom');
-      const next = updater(specRef.current);
+      const rawNext = updater(specRef.current);
+      // Keep ratePerMin synchronized with any machine-count target under current PDK
+      const syncedTargets = rawNext.targets.map((t) => {
+        if (t.machines && t.machines > 0) {
+          const info = computeRecipeThroughputPerMachine(t.item, rawNext.pdk, t.machines);
+          if (info) {
+            const nextPerMin = Math.max(0.5, Number((t.machines * info.itemsPerMin).toFixed(2)));
+            if (Math.abs(nextPerMin - t.ratePerMin) > 1e-3) {
+              return { ...t, ratePerMin: nextPerMin };
+            }
+          }
+        }
+        return t;
+      });
+      const next =
+        syncedTargets.some((t, i) => t !== rawNext.targets[i])
+          ? { ...rawNext, targets: syncedTargets }
+          : rawNext;
       specRef.current = next;
       setSpec(next);
       if (autoRun) runFull(next);
@@ -491,21 +514,65 @@ export default function App() {
     [runFull],
   );
 
+  const handleTargetUnitChange = useCallback(
+    (nextUnit: 'perMin' | 'perSec' | 'belts' | 'machines') => {
+      setTargetUnit(nextUnit);
+      if (nextUnit === 'machines') {
+        updateSpec((prev) => ({
+          ...prev,
+          targets: prev.targets.map((t) => {
+            const existing = t.machines && t.machines > 0 ? Math.round(t.machines) : undefined;
+            const probe = computeRecipeThroughputPerMachine(t.item, prev.pdk, existing ?? 1);
+            const count =
+              existing ?? Math.max(1, Math.round(t.ratePerMin / (probe?.itemsPerMin ?? 60)));
+            const info = computeRecipeThroughputPerMachine(t.item, prev.pdk, count);
+            return {
+              ...t,
+              machines: count,
+              ratePerMin: info ? Number((count * info.itemsPerMin).toFixed(2)) : t.ratePerMin,
+            };
+          }),
+        }));
+      } else {
+        updateSpec((prev) => {
+          if (!prev.targets.some((t) => t.machines !== undefined)) return prev;
+          return {
+            ...prev,
+            targets: prev.targets.map(({ machines: _m, ...rest }) => rest),
+          };
+        });
+      }
+    },
+    [updateSpec],
+  );
+
   const applyTargetRate = useCallback(
     (idx: number, inputVal: number) =>
-      updateSpec((prev) => {
-        const capPerMin = effectiveBeltCapacity(prev.pdk.defaultBeltTier, prev.pdk) * 60;
-        let nextPerMin = inputVal;
-        if (targetUnit === 'perSec') nextPerMin = inputVal * 60;
-        else if (targetUnit === 'belts') nextPerMin = inputVal * capPerMin;
-        const clamped = Math.max(0.5, Math.round(nextPerMin * 100) / 100);
-        return {
-          ...prev,
-          targets: prev.targets.map((item, i) =>
-            i === idx ? { ...item, ratePerMin: clamped } : item,
-          ),
-        };
-      }),
+      updateSpec((prev) => ({
+        ...prev,
+        targets: prev.targets.map((item, i) => {
+          if (i !== idx) return item;
+          if (targetUnit === 'machines') {
+            const count = Math.max(1, Math.round(inputVal));
+            const info = computeRecipeThroughputPerMachine(item.item, prev.pdk, count);
+            const nextPerMin = info ? Number((count * info.itemsPerMin).toFixed(2)) : item.ratePerMin;
+            return {
+              ...item,
+              machines: count,
+              ratePerMin: Math.max(0.5, nextPerMin),
+            };
+          }
+          const isFluid = isFluidItem(item.item);
+          const capPerMin = isFluid
+            ? PIPE_SPEC.capacityPerSec * 60
+            : effectiveBeltCapacity(prev.pdk.defaultBeltTier, prev.pdk) * 60;
+          let nextPerMin = inputVal;
+          if (targetUnit === 'perSec') nextPerMin = inputVal * 60;
+          else if (targetUnit === 'belts') nextPerMin = inputVal * capPerMin;
+          const clamped = Math.max(0.5, Math.round(nextPerMin * 100) / 100);
+          return { item: item.item, ratePerMin: clamped };
+        }),
+      })),
     [targetUnit, updateSpec],
   );
 
@@ -779,16 +846,27 @@ export default function App() {
 
   const activeLayerCount = Object.values(layers).filter(Boolean).length;
 
-  const formatTargetInputValue = (ratePerMin: number): number => {
-    if (targetUnit === 'perSec') return Number((ratePerMin / 60).toFixed(2));
+  const formatTargetInputValue = (t: TargetSpec): number => {
+    if (targetUnit === 'machines') {
+      if (t.machines && t.machines > 0) return t.machines;
+      const info = computeRecipeThroughputPerMachine(t.item, spec.pdk, 1);
+      return Math.max(1, Math.round(t.ratePerMin / (info?.itemsPerMin ?? 60)));
+    }
+    if (targetUnit === 'perSec') return Number((t.ratePerMin / 60).toFixed(2));
     if (targetUnit === 'belts') {
-      const raw = ratePerMin / beltCapacity;
+      const cap = isFluidItem(t.item) ? PIPE_SPEC.capacityPerSec * 60 : beltCapacity;
+      const raw = t.ratePerMin / cap;
       return raw < 0.05 ? Number(raw.toFixed(3)) : Number(raw.toFixed(2));
     }
-    return Math.round(ratePerMin * 100) / 100;
+    return Math.round(t.ratePerMin * 100) / 100;
   };
 
-  const targetsSummary = `${spec.targets.length} ${spec.targets.length === 1 ? 'target' : 'targets'} · ${Math.round(spec.targets[0]?.ratePerMin ?? 0)}/m`;
+  const firstTarget = spec.targets[0];
+  const targetsSummary = `${spec.targets.length} ${spec.targets.length === 1 ? 'target' : 'targets'} · ${
+    firstTarget?.machines && firstTarget.machines > 0
+      ? `${firstTarget.machines} mach`
+      : `${Math.round(firstTarget?.ratePerMin ?? 0)}/m`
+  }`;
   const beltShort =
     spec.pdk.defaultBeltTier[0].toUpperCase() + spec.pdk.defaultBeltTier.slice(1);
   const pdkSummary = `${beltShort} · Asm${spec.pdk.defaultAssemblerTier}${spec.pdk.spaceAgeBuildings ? ' · SA' : ''}`;
@@ -829,6 +907,9 @@ export default function App() {
               if (p) {
                 pushHistory(specRef.current);
                 const cloned = structuredClone(p.spec);
+                setTargetUnit(
+                  cloned.targets.some((t) => (t.machines ?? 0) > 0) ? 'machines' : 'perMin',
+                );
                 setSpecSynced(cloned);
                 setActivePresetId(p.id);
                 setSelection(null);
@@ -1067,23 +1148,31 @@ export default function App() {
                     <button
                       type="button"
                       className={`unit-btn ${targetUnit === 'perMin' ? 'active' : ''}`}
-                      onClick={() => setTargetUnit('perMin')}
+                      onClick={() => handleTargetUnitChange('perMin')}
                     >
                       /min
                     </button>
                     <button
                       type="button"
                       className={`unit-btn ${targetUnit === 'perSec' ? 'active' : ''}`}
-                      onClick={() => setTargetUnit('perSec')}
+                      onClick={() => handleTargetUnitChange('perSec')}
                     >
                       /s
                     </button>
                     <button
                       type="button"
                       className={`unit-btn ${targetUnit === 'belts' ? 'active' : ''}`}
-                      onClick={() => setTargetUnit('belts')}
+                      onClick={() => handleTargetUnitChange('belts')}
                     >
                       belts
+                    </button>
+                    <button
+                      type="button"
+                      className={`unit-btn ${targetUnit === 'machines' ? 'active' : ''}`}
+                      onClick={() => handleTargetUnitChange('machines')}
+                      title="Target exact number of machines at 100% full throughput"
+                    >
+                      mach
                     </button>
                   </div>
                   <button
@@ -1092,7 +1181,12 @@ export default function App() {
                     onClick={() =>
                       updateSpec((prev) => ({
                         ...prev,
-                        targets: [...prev.targets, { item: 'iron-gear-wheel', ratePerMin: 60 }],
+                        targets: [
+                          ...prev.targets,
+                          targetUnit === 'machines'
+                            ? { item: 'iron-gear-wheel', ratePerMin: 360, machines: 4 }
+                            : { item: 'iron-gear-wheel', ratePerMin: 60 },
+                        ],
                         pins: [],
                         macroOverrides: {},
                       }))
@@ -1103,7 +1197,10 @@ export default function App() {
                 </div>
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-                  {spec.targets.map((t, idx) => (
+                  {spec.targets.map((t, idx) => {
+                    const isFluidTarget = isFluidItem(t.item);
+                    const pipeCapPerMin = PIPE_SPEC.capacityPerSec * 60;
+                    return (
                     <div key={idx} className="target-card">
                       <div className="row">
                         <ItemPicker
@@ -1112,7 +1209,8 @@ export default function App() {
                           onChange={(val) => {
                             const rec = catalog.recipesByOutput[val]?.[0];
                             const needsFluids = Boolean(
-                              rec?.hasFluid ||
+                              isFluidItem(val) ||
+                                rec?.hasFluid ||
                                 rec?.category === 'chemistry' ||
                                 rec?.category === 'metallurgy' ||
                                 rec?.category === 'electromagnetics' ||
@@ -1130,9 +1228,14 @@ export default function App() {
                                   ? true
                                   : prev.pdk.spaceAgeBuildings,
                               },
-                              targets: prev.targets.map((item, i) =>
-                                i === idx ? { ...item, item: val } : item,
-                              ),
+                              targets: prev.targets.map((item, i) => {
+                                if (i !== idx) return item;
+                                if (targetUnit === 'machines' || (item.machines ?? 0) > 0) {
+                                  const count = Math.max(1, Math.round(item.machines ?? 1));
+                                  return { ...item, item: val, machines: count };
+                                }
+                                return { ...item, item: val };
+                              }),
                               pins: [],
                               macroOverrides: {},
                             }));
@@ -1160,36 +1263,58 @@ export default function App() {
                         <div className="target-rate-input-wrap">
                           <NumericInput
                             aria-label={`Target rate for ${getItemMeta(t.item).name}`}
-                            min={targetUnit === 'perMin' ? 0.5 : 0.001}
-                            step={
-                              targetUnit === 'perMin'
-                                ? 15
-                                : targetUnit === 'perSec'
-                                  ? 1
-                                  : 0.25
+                            integer={targetUnit === 'machines'}
+                            min={
+                              targetUnit === 'machines'
+                                ? 1
+                                : targetUnit === 'perMin'
+                                  ? 0.5
+                                  : 0.001
                             }
-                            precision={targetUnit === 'belts' ? 3 : 2}
+                            step={
+                              targetUnit === 'machines'
+                                ? 1
+                                : targetUnit === 'perMin'
+                                  ? 15
+                                  : targetUnit === 'perSec'
+                                    ? 1
+                                    : 0.25
+                            }
+                            precision={
+                              targetUnit === 'machines' ? 0 : targetUnit === 'belts' ? 3 : 2
+                            }
                             suffix={
-                              targetUnit === 'perMin'
-                                ? '/min'
-                                : targetUnit === 'perSec'
-                                  ? '/s'
-                                  : 'belts'
+                              targetUnit === 'machines'
+                                ? 'mach'
+                                : targetUnit === 'perMin'
+                                  ? '/min'
+                                  : targetUnit === 'perSec'
+                                    ? '/s'
+                                    : isFluidTarget
+                                      ? 'pipes'
+                                      : 'belts'
                             }
                             showSteppers
-                            value={formatTargetInputValue(t.ratePerMin)}
+                            value={formatTargetInputValue(t)}
                             onValidChange={(val) => applyTargetRate(idx, val)}
                             onCommit={(val) => applyTargetRate(idx, val)}
                           />
                         </div>
                         <span className="target-rate-meta">
-                          {targetUnit === 'belts'
-                            ? `${Math.round(t.ratePerMin)}/min`
-                            : `${(t.ratePerMin / beltCapacity).toFixed(2)} belts`}
+                          {targetUnit === 'machines'
+                            ? `${Math.round(t.ratePerMin)}/m (${(t.ratePerMin / 60).toFixed(1)}/s)`
+                            : isFluidTarget
+                              ? targetUnit === 'belts'
+                                ? `${Math.round(t.ratePerMin)}/min`
+                                : `${(t.ratePerMin / pipeCapPerMin).toFixed(2)} pipes`
+                              : targetUnit === 'belts'
+                                ? `${Math.round(t.ratePerMin)}/min`
+                                : `${(t.ratePerMin / beltCapacity).toFixed(2)} belts`}
                         </span>
                       </div>
                     </div>
-                  ))}
+                  );
+                  })}
                 </div>
 
                 <div style={{ marginTop: 10 }}>

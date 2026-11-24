@@ -132,7 +132,8 @@
     "molten-copper": { "id": "molten-copper", "name": "Molten Copper", "color": "#fb7185", "category": "fluid", "stackSize": 1 },
     "holmium-solution": { "id": "holmium-solution", "name": "Holmium Solution", "color": "#f472b6", "category": "fluid", "stackSize": 1 },
     "electrolyte": { "id": "electrolyte", "name": "Electrolyte", "color": "#fb7185", "category": "fluid", "stackSize": 1 },
-    "fluoroketone-cold": { "id": "fluoroketone-cold", "name": "Fluoroketone (Cold)", "color": "#38bdf8", "category": "fluid", "stackSize": 1 }
+    "fluoroketone-cold": { "id": "fluoroketone-cold", "name": "Fluoroketone (Cold)", "color": "#38bdf8", "category": "fluid", "stackSize": 1 },
+    "holmium-ore": { "id": "holmium-ore", "name": "Holmium Ore", "color": "#f472b6", "category": "raw", "stackSize": 50 }
   },
   "recipes": [
     {
@@ -1683,6 +1684,126 @@
       ],
       "outputItem": "cryogenic-science-pack",
       "outputCount": 1,
+      "allowProductivity": true,
+      "hasFluid": true,
+      "group": "space-age"
+    },
+    {
+      "id": "sulfuric-acid",
+      "name": "Sulfuric Acid",
+      "category": "chemistry",
+      "energyRequired": 1,
+      "ingredients": [
+        { "item": "sulfur", "amount": 5 },
+        { "item": "iron-plate", "amount": 1 },
+        { "item": "water", "amount": 100, "type": "fluid" }
+      ],
+      "outputItem": "sulfuric-acid",
+      "outputCount": 50,
+      "allowProductivity": true,
+      "hasFluid": true,
+      "group": "chemical"
+    },
+    {
+      "id": "lubricant",
+      "name": "Lubricant",
+      "category": "chemistry",
+      "energyRequired": 1,
+      "ingredients": [
+        { "item": "heavy-oil", "amount": 10, "type": "fluid" }
+      ],
+      "outputItem": "lubricant",
+      "outputCount": 10,
+      "allowProductivity": true,
+      "hasFluid": true,
+      "group": "chemical"
+    },
+    {
+      "id": "heavy-oil-cracking",
+      "name": "Light Oil (Heavy Oil Cracking)",
+      "category": "chemistry",
+      "energyRequired": 2,
+      "ingredients": [
+        { "item": "water", "amount": 30, "type": "fluid" },
+        { "item": "heavy-oil", "amount": 40, "type": "fluid" }
+      ],
+      "outputItem": "light-oil",
+      "outputCount": 30,
+      "allowProductivity": true,
+      "hasFluid": true,
+      "group": "chemical"
+    },
+    {
+      "id": "light-oil-cracking",
+      "name": "Petroleum Gas (Light Oil Cracking)",
+      "category": "chemistry",
+      "energyRequired": 2,
+      "ingredients": [
+        { "item": "water", "amount": 30, "type": "fluid" },
+        { "item": "light-oil", "amount": 30, "type": "fluid" }
+      ],
+      "outputItem": "petroleum-gas",
+      "outputCount": 20,
+      "allowProductivity": true,
+      "hasFluid": true,
+      "group": "chemical"
+    },
+    {
+      "id": "ice-melting",
+      "name": "Water (Ice Melting)",
+      "category": "chemistry",
+      "energyRequired": 1,
+      "ingredients": [
+        { "item": "ice", "amount": 1 }
+      ],
+      "outputItem": "water",
+      "outputCount": 20,
+      "allowProductivity": true,
+      "hasFluid": true,
+      "group": "space-age"
+    },
+    {
+      "id": "iron-ore-melting",
+      "name": "Molten Iron",
+      "category": "metallurgy",
+      "energyRequired": 32,
+      "ingredients": [
+        { "item": "iron-ore", "amount": 50 },
+        { "item": "calcite", "amount": 1 }
+      ],
+      "outputItem": "molten-iron",
+      "outputCount": 500,
+      "allowProductivity": true,
+      "hasFluid": true,
+      "group": "space-age"
+    },
+    {
+      "id": "copper-ore-melting",
+      "name": "Molten Copper",
+      "category": "metallurgy",
+      "energyRequired": 32,
+      "ingredients": [
+        { "item": "copper-ore", "amount": 50 },
+        { "item": "calcite", "amount": 1 }
+      ],
+      "outputItem": "molten-copper",
+      "outputCount": 500,
+      "allowProductivity": true,
+      "hasFluid": true,
+      "group": "space-age"
+    },
+    {
+      "id": "holmium-solution",
+      "name": "Holmium Solution",
+      "category": "chemistry",
+      "energyRequired": 10,
+      "ingredients": [
+        { "item": "holmium-ore", "amount": 2 },
+        { "item": "stone", "amount": 1 },
+        { "item": "water", "amount": 10, "type": "fluid" }
+      ],
+      "outputItem": "holmium-solution",
+      "outputCount": 100,
       "allowProductivity": true,
       "hasFluid": true,
       "group": "space-age"
