@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { DesignSpec, parseSpecYaml, serializeSpecYaml } from '@factorio-eda/core';
-import { Check, Download, Upload } from 'lucide-react';
+import { AlertTriangle, Check, Download, Upload } from 'lucide-react';
 
 interface YamlEditorProps {
   spec: DesignSpec;
@@ -61,22 +61,16 @@ export const YamlEditor: React.FC<YamlEditorProps> = ({ spec, onApplySpec }) => 
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-      <div
-        style={{
-          padding: '8px 12px',
-          background: '#0d2238',
-          borderBottom: '1px solid var(--bp-border)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 8,
-        }}
-      >
-        <div className="row">
-          <button className="btn btn-primary btn-sm" onClick={handleApply}>
-            <Check size={13} /> Apply &amp; Run {dirty ? '*' : ''}
+      <div className="view-toolbar">
+        <div className="row" style={{ flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className={`btn btn-primary btn-sm ${dirty ? 'btn-dirty' : ''}`}
+            onClick={handleApply}
+          >
+            <Check size={13} /> Apply &amp; Run
           </button>
-          <button className="btn btn-sm" onClick={handleDownload}>
+          <button type="button" className="btn btn-sm" onClick={handleDownload}>
             <Download size={13} /> Download .yaml
           </button>
           <label className="btn btn-sm" style={{ cursor: 'pointer' }}>
@@ -88,47 +82,29 @@ export const YamlEditor: React.FC<YamlEditorProps> = ({ spec, onApplySpec }) => 
               onChange={handleUpload}
             />
           </label>
+          {dirty && <span className="pill pill-warn">Modified</span>}
         </div>
-        <span style={{ fontSize: 11, color: 'var(--bp-text-muted)' }}>
+        <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
           Compatible with <code className="mono">feda build spec.yaml</code> CLI
         </span>
       </div>
 
       {error && (
-        <div
-          style={{
-            padding: '8px 12px',
-            background: 'rgba(248,113,113,0.16)',
-            borderBottom: '1px solid rgba(248,113,113,0.5)',
-            color: '#fecaca',
-            fontSize: 12,
-            fontFamily: 'var(--font-mono)',
-          }}
-        >
-          YAML Error: {error}
+        <div className="error-banner mono" role="alert">
+          <AlertTriangle size={14} style={{ flexShrink: 0 }} />
+          <span>YAML Error: {error}</span>
         </div>
       )}
 
       <textarea
+        className="yaml-textarea"
+        aria-label="Design specification YAML"
         value={text}
         onChange={(e) => {
           setText(e.target.value);
           setDirty(true);
         }}
         spellCheck={false}
-        style={{
-          flex: 1,
-          width: '100%',
-          border: 'none',
-          outline: 'none',
-          resize: 'none',
-          padding: 14,
-          background: '#081726',
-          color: '#dbeafe',
-          fontFamily: 'var(--font-mono)',
-          fontSize: 12.5,
-          lineHeight: 1.55,
-        }}
       />
     </div>
   );

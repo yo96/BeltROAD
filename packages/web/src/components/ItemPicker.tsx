@@ -97,23 +97,25 @@ export const ItemPicker: React.FC<ItemPickerProps> = ({ value, options, onChange
         className="select item-picker-trigger"
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-label={`Select target item: ${selectedMeta.name}`}
         onClick={() => setOpen((v) => !v)}
       >
         <span className="row" style={{ minWidth: 0, flex: 1 }}>
           <ItemIcon itemId={value} size={18} />
           <span className="item-picker-value">{selectedMeta.name}</span>
         </span>
-        <ChevronDown size={13} style={{ flexShrink: 0, color: 'var(--bp-text-muted)' }} />
+        <ChevronDown size={13} style={{ flexShrink: 0, color: 'var(--text-secondary)' }} />
       </button>
 
       {open && (
-        <div className="item-picker-menu" role="listbox">
+        <div className="item-picker-menu" role="listbox" aria-label="Target items">
           <div className="item-picker-search-wrap">
-            <Search size={12} style={{ color: 'var(--bp-text-muted)', flexShrink: 0 }} />
+            <Search size={12} style={{ color: 'var(--text-secondary)', flexShrink: 0 }} />
             <input
               ref={searchRef}
               type="text"
               className="item-picker-search"
+              aria-label="Search target items"
               placeholder="Search items…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}

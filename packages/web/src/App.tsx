@@ -51,6 +51,7 @@ import {
   BookOpen,
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
   ClipboardCopy,
   Cpu,
   Crosshair,
@@ -59,6 +60,7 @@ import {
   FolderOpen,
   GitBranch,
   Layers,
+  Loader2,
   Lock,
   PanelLeftClose,
   PanelLeftOpen,
@@ -86,6 +88,7 @@ import {
 } from './components/BlueprintCanvas';
 import { formatEntityLabel, ItemIcon } from './components/ItemIcon';
 import { ItemPicker } from './components/ItemPicker';
+import { NumericInput } from './components/NumericInput';
 import {
   clearLocalFactorioAssets,
   loadLocalFactorioFiles,
@@ -157,6 +160,14 @@ export default function App() {
   const catalog = useMemo(() => getCatalog(), [catalogVersion]);
   const initial = useMemo(() => getInitialSpecState(), []);
   const [spec, setSpec] = useState<DesignSpec>(initial.spec);
+  const specRef = useRef<DesignSpec>(initial.spec);
+  specRef.current = spec;
+
+  const setSpecSynced = useCallback((next: DesignSpec) => {
+    specRef.current = next;
+    setSpec(next);
+  }, []);
+
   const targetOptions = useMemo(
     () =>
       [...catalog.allTargets].sort((a, b) => a.name.localeCompare(b.name)),
@@ -165,28 +176,15 @@ export default function App() {
   const [activePresetId, setActivePresetId] = useState<string>(initial.presetId);
   const [lastRunSpecSig, setLastRunSpecSig] = useState<string>(() => JSON.stringify(initial.spec));
 
-  const [aspectDraft, setAspectDraft] = useState<string>(() =>
-    String(initial.spec.floorplan.aspectRatio ?? 1.35),
-  );
-  const [widthDraft, setWidthDraft] = useState<string>(() =>
-    String(initial.spec.floorplan.width ?? 60),
-  );
-  const [heightDraft, setHeightDraft] = useState<string>(() =>
-    String(initial.spec.floorplan.height ?? 45),
-  );
-
-  useEffect(() => {
-    const ar = spec.floorplan.aspectRatio ?? 1.35;
-    setAspectDraft((cur) => (cur.trim() !== '' && Number(cur) === ar ? cur : String(ar)));
-    if (spec.floorplan.width !== undefined) {
-      const w = spec.floorplan.width;
-      setWidthDraft((cur) => (cur.trim() !== '' && Number(cur) === w ? cur : String(w)));
-    }
-    if (spec.floorplan.height !== undefined) {
-      const h = spec.floorplan.height;
-      setHeightDraft((cur) => (cur.trim() !== '' && Number(cur) === h ? cur : String(h)));
-    }
-  }, [spec.floorplan.aspectRatio, spec.floorplan.width, spec.floorplan.height, spec.floorplan.mode]);
+  const [sectionsOpen, setSectionsOpen] = useState({
+    targets: true,
+    pdk: true,
+    floorplan: true,
+    catalog: true,
+  });
+  const toggleSection = useCallback((key: keyof typeof sectionsOpen) => {
+    setSectionsOpen((prev) => ({ ...prev, [key]: !prev[key] }));
+  }, []);
 
   const [historyPast, setHistoryPast] = useState<DesignSpec[]>([]);
   const [historyFuture, setHistoryFuture] = useState<DesignSpec[]>([]);
@@ -276,44 +274,12 @@ export default function App() {
     [postJob],
   );
 
-  const commitFloorplanDrafts = useCallback(
-    (curSpec: DesignSpec): DesignSpec => {
-      const parsedAr = Number(aspectDraft);
-      const nextAr = Number.isFinite(parsedAr)
-        ? Math.round(Math.max(0.2, Math.min(5.0, parsedAr)) * 100) / 100
-        : curSpec.floorplan.aspectRatio ?? 1.35;
-
-      const parsedW = Number(widthDraft);
-      const nextW = Number.isFinite(parsedW) && parsedW > 0
-        ? Math.max(16, Math.round(parsedW))
-        : curSpec.floorplan.width ?? floorplan?.width ?? 60;
-
-      const parsedH = Number(heightDraft);
-      const nextH = Number.isFinite(parsedH) && parsedH > 0
-        ? Math.max(16, Math.round(parsedH))
-        : curSpec.floorplan.height ?? floorplan?.height ?? 45;
-
-      setAspectDraft(String(nextAr));
-      if (curSpec.floorplan.mode === 'fixed') {
-        setWidthDraft(String(nextW));
-        setHeightDraft(String(nextH));
-      }
-
-      const nextSpec: DesignSpec = {
-        ...curSpec,
-        floorplan: {
-          ...curSpec.floorplan,
-          aspectRatio: nextAr,
-          ...(curSpec.floorplan.mode === 'fixed' ? { width: nextW, height: nextH } : {}),
-        },
-      };
-      if (JSON.stringify(nextSpec.floorplan) !== JSON.stringify(curSpec.floorplan)) {
-        setSpec(nextSpec);
-      }
-      return nextSpec;
-    },
-    [aspectDraft, widthDraft, heightDraft, floorplan],
-  );
+  const flushFocusedNumericInput = useCallback(() => {
+    const active = document.activeElement;
+    if (active instanceof HTMLInputElement && active.closest('.numeric-input')) {
+      active.blur();
+    }
+  }, []);
 
   const runSynthOnly = useCallback(
     (targetSpec: DesignSpec) => {
@@ -352,23 +318,23 @@ export default function App() {
     if (historyPast.length === 0) return;
     const target = historyPast[historyPast.length - 1];
     setHistoryPast((past) => past.slice(0, -1));
-    setHistoryFuture((fut) => [structuredClone(spec), ...fut.slice(0, 29)]);
-    setSpec(target);
+    setHistoryFuture((fut) => [structuredClone(specRef.current), ...fut.slice(0, 29)]);
+    setSpecSynced(target);
     setActivePresetId('custom');
     setSelection(null);
     runFull(target);
-  }, [historyPast, spec, runFull]);
+  }, [historyPast, setSpecSynced, runFull]);
 
   const handleRedo = useCallback(() => {
     if (historyFuture.length === 0) return;
     const target = historyFuture[0];
     setHistoryFuture((fut) => fut.slice(1));
-    setHistoryPast((past) => [...past.slice(-29), structuredClone(spec)]);
-    setSpec(target);
+    setHistoryPast((past) => [...past.slice(-29), structuredClone(specRef.current)]);
+    setSpecSynced(target);
     setActivePresetId('custom');
     setSelection(null);
     runFull(target);
-  }, [historyFuture, spec, runFull]);
+  }, [historyFuture, setSpecSynced, runFull]);
 
   useEffect(() => {
     if (!stepsMenuOpen && !layersMenuOpen) return;
@@ -394,9 +360,6 @@ export default function App() {
       window.removeEventListener('keydown', onKeyDown);
     };
   }, [stepsMenuOpen, layersMenuOpen]);
-
-  const specRef = useRef(spec);
-  specRef.current = spec;
 
   const createWorker = useCallback(() => {
     const worker = new Worker(new URL('./worker/eda.worker.ts', import.meta.url), {
@@ -516,27 +479,49 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const updateSpec = (updater: (prev: DesignSpec) => DesignSpec, autoRun = false) => {
-    setActivePresetId('custom');
-    setSpec((prev) => {
-      const next = updater(prev);
+  const updateSpec = useCallback(
+    (updater: (prev: DesignSpec) => DesignSpec, autoRun = false) => {
+      setActivePresetId('custom');
+      const next = updater(specRef.current);
+      specRef.current = next;
+      setSpec(next);
       if (autoRun) runFull(next);
       return next;
-    });
-  };
+    },
+    [runFull],
+  );
+
+  const applyTargetRate = useCallback(
+    (idx: number, inputVal: number) =>
+      updateSpec((prev) => {
+        const capPerMin = effectiveBeltCapacity(prev.pdk.defaultBeltTier, prev.pdk) * 60;
+        let nextPerMin = inputVal;
+        if (targetUnit === 'perSec') nextPerMin = inputVal * 60;
+        else if (targetUnit === 'belts') nextPerMin = inputVal * capPerMin;
+        const clamped = Math.max(0.5, Math.round(nextPerMin * 100) / 100);
+        return {
+          ...prev,
+          targets: prev.targets.map((item, i) =>
+            i === idx ? { ...item, ratePerMin: clamped } : item,
+          ),
+        };
+      }),
+    [targetUnit, updateSpec],
+  );
 
   const handleMovePin = useCallback(
     (pinId: string, edge: Edge, offset: number) => {
-      pushHistory(spec);
+      const curSpec = specRef.current;
+      pushHistory(curSpec);
       setActivePresetId('custom');
       const nextSpec: DesignSpec = {
-        ...spec,
+        ...curSpec,
         pins: [
-          ...spec.pins.filter((p) => p.id !== pinId),
+          ...curSpec.pins.filter((p) => p.id !== pinId),
           { id: pinId, edge, offset, locked: true },
         ],
       };
-      setSpec(nextSpec);
+      setSpecSynced(nextSpec);
 
       if (synthesis && floorplan) {
         const nextPins = floorplan.pins.map((p) => {
@@ -554,22 +539,23 @@ export default function App() {
         runFull(nextSpec);
       }
     },
-    [spec, synthesis, floorplan, pushHistory, runReroute, runFull],
+    [synthesis, floorplan, pushHistory, setSpecSynced, runReroute, runFull],
   );
 
   const handleMoveMacro = useCallback(
     (macroId: string, x: number, y: number) => {
-      pushHistory(spec);
+      const curSpec = specRef.current;
+      pushHistory(curSpec);
       setActivePresetId('custom');
-      const existingOv = spec.macroOverrides[macroId] ?? {};
+      const existingOv = curSpec.macroOverrides[macroId] ?? {};
       const nextSpec: DesignSpec = {
-        ...spec,
+        ...curSpec,
         macroOverrides: {
-          ...spec.macroOverrides,
+          ...curSpec.macroOverrides,
           [macroId]: { ...existingOv, x, y, locked: true },
         },
       };
-      setSpec(nextSpec);
+      setSpecSynced(nextSpec);
 
       if (synthesis && floorplan) {
         const nextMacros = floorplan.macros.map((m) =>
@@ -580,7 +566,7 @@ export default function App() {
         runReroute(nextSpec, synthesis, nextFloorplan);
       }
     },
-    [spec, synthesis, floorplan, pushHistory, runReroute],
+    [synthesis, floorplan, pushHistory, setSpecSynced, runReroute],
   );
 
   const handleRotateMacro = useCallback(
@@ -588,7 +574,8 @@ export default function App() {
       if (!floorplan) return;
       const pm = floorplan.macros.find((m) => m.id === macroId);
       if (!pm) return;
-      pushHistory(spec);
+      const curSpec = specRef.current;
+      pushHistory(curSpec);
       setActivePresetId('custom');
       const nextRot = (((pm.macro.rotation + 1) % 4) as Rot90);
       const baseVariant =
@@ -598,11 +585,11 @@ export default function App() {
       const nx = Math.max(2, Math.min(floorplan.width - rotated.width - 2, pm.x));
       const ny = Math.max(2, Math.min(floorplan.height - rotated.height - 2, pm.y));
 
-      const existingOv = spec.macroOverrides[macroId] ?? {};
+      const existingOv = curSpec.macroOverrides[macroId] ?? {};
       const nextSpec: DesignSpec = {
-        ...spec,
+        ...curSpec,
         macroOverrides: {
-          ...spec.macroOverrides,
+          ...curSpec.macroOverrides,
           [macroId]: {
             ...existingOv,
             x: nx,
@@ -613,7 +600,7 @@ export default function App() {
           },
         },
       };
-      setSpec(nextSpec);
+      setSpecSynced(nextSpec);
 
       if (synthesis) {
         const nextMacros = floorplan.macros.map((m) =>
@@ -624,7 +611,7 @@ export default function App() {
         runReroute(nextSpec, synthesis, nextFloorplan);
       }
     },
-    [floorplan, spec, synthesis, pushHistory, runReroute],
+    [floorplan, synthesis, pushHistory, setSpecSynced, runReroute],
   );
 
   const handleFlipMacro = useCallback(
@@ -632,7 +619,8 @@ export default function App() {
       if (!floorplan) return;
       const pm = floorplan.macros.find((m) => m.id === macroId);
       if (!pm) return;
-      pushHistory(spec);
+      const curSpec = specRef.current;
+      pushHistory(curSpec);
       setActivePresetId('custom');
       const nextFlip = !pm.macro.flippedY;
       const baseVariant =
@@ -642,11 +630,11 @@ export default function App() {
         pm.macro.rotation,
       );
 
-      const existingOv = spec.macroOverrides[macroId] ?? {};
+      const existingOv = curSpec.macroOverrides[macroId] ?? {};
       const nextSpec: DesignSpec = {
-        ...spec,
+        ...curSpec,
         macroOverrides: {
-          ...spec.macroOverrides,
+          ...curSpec.macroOverrides,
           [macroId]: {
             ...existingOv,
             x: pm.x,
@@ -657,7 +645,7 @@ export default function App() {
           },
         },
       };
-      setSpec(nextSpec);
+      setSpecSynced(nextSpec);
 
       if (synthesis) {
         const nextMacros = floorplan.macros.map((m) =>
@@ -668,7 +656,7 @@ export default function App() {
         runReroute(nextSpec, synthesis, nextFloorplan);
       }
     },
-    [floorplan, spec, synthesis, pushHistory, runReroute],
+    [floorplan, synthesis, pushHistory, setSpecSynced, runReroute],
   );
 
   const handleCopyBlueprint = async () => {
@@ -793,15 +781,29 @@ export default function App() {
 
   const formatTargetInputValue = (ratePerMin: number): number => {
     if (targetUnit === 'perSec') return Number((ratePerMin / 60).toFixed(2));
-    if (targetUnit === 'belts') return Number((ratePerMin / beltCapacity).toFixed(2));
-    return Math.round(ratePerMin * 10) / 10;
+    if (targetUnit === 'belts') {
+      const raw = ratePerMin / beltCapacity;
+      return raw < 0.05 ? Number(raw.toFixed(3)) : Number(raw.toFixed(2));
+    }
+    return Math.round(ratePerMin * 100) / 100;
   };
+
+  const targetsSummary = `${spec.targets.length} ${spec.targets.length === 1 ? 'target' : 'targets'} · ${Math.round(spec.targets[0]?.ratePerMin ?? 0)}/m`;
+  const beltShort =
+    spec.pdk.defaultBeltTier[0].toUpperCase() + spec.pdk.defaultBeltTier.slice(1);
+  const pdkSummary = `${beltShort} · Asm${spec.pdk.defaultAssemblerTier}${spec.pdk.spaceAgeBuildings ? ' · SA' : ''}`;
+  const optLvl = spec.optimization?.level ?? 'compact';
+  const floorplanSummary = `${
+    spec.floorplan.mode === 'fixed'
+      ? `${spec.floorplan.width ?? floorplan?.width ?? 60}×${spec.floorplan.height ?? floorplan?.height ?? 45}`
+      : 'Auto'
+  } · ${optLvl[0].toUpperCase() + optLvl.slice(1)}`;
 
   return (
     <div className="studio-shell">
       {/* Top EDA Toolbar */}
       <header className="top-bar">
-        <div className="row" style={{ gap: 6 }}>
+        <div className="toolbar-group">
           <button
             type="button"
             className="btn btn-sm"
@@ -813,41 +815,42 @@ export default function App() {
           </button>
 
           <div className="brand">
-            <Cpu size={18} color="#f59e0b" />
+            <Cpu size={17} color="#f59e0b" />
             <span>BeltROAD</span>
             <span className="brand-badge">2.0 EDA</span>
           </div>
+
+          <select
+            className="select preset-select"
+            value={activePresetId}
+            aria-label="Design preset"
+            onChange={(e) => {
+              const p = BUILTIN_PRESETS.find((pr) => pr.id === e.target.value);
+              if (p) {
+                pushHistory(specRef.current);
+                const cloned = structuredClone(p.spec);
+                setSpecSynced(cloned);
+                setActivePresetId(p.id);
+                setSelection(null);
+                runFull(cloned);
+              }
+            }}
+          >
+            <option value="custom" disabled>
+              Custom Design
+            </option>
+            {BUILTIN_PRESETS.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
         </div>
 
-        <select
-          className="select"
-          style={{ width: 240 }}
-          value={activePresetId}
-          aria-label="Design preset"
-          onChange={(e) => {
-            const p = BUILTIN_PRESETS.find((pr) => pr.id === e.target.value);
-            if (p) {
-              pushHistory(spec);
-              const cloned = structuredClone(p.spec);
-              setSpec(cloned);
-              setActivePresetId(p.id);
-              setSelection(null);
-              runFull(cloned);
-            }
-          }}
-        >
-          <option value="custom" disabled>
-            Custom Design
-          </option>
-          {BUILTIN_PRESETS.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.label}
-            </option>
-          ))}
-        </select>
+        <div className="toolbar-divider" aria-hidden="true" />
 
         {/* Execution Controls & Undo/Redo */}
-        <div className="row" style={{ gap: 4 }}>
+        <div className="toolbar-group">
           <button
             type="button"
             className="btn btn-sm"
@@ -889,7 +892,8 @@ export default function App() {
                   disabled={running}
                   onClick={() => {
                     setStepsMenuOpen(false);
-                    runSynthOnly(spec);
+                    flushFocusedNumericInput();
+                    runSynthOnly(specRef.current);
                   }}
                 >
                   1. Synthesize Only
@@ -900,7 +904,8 @@ export default function App() {
                   disabled={running}
                   onClick={() => {
                     setStepsMenuOpen(false);
-                    runPlaceOnly(commitFloorplanDrafts(spec));
+                    flushFocusedNumericInput();
+                    runPlaceOnly(specRef.current);
                   }}
                 >
                   2. Synth + Place
@@ -911,7 +916,8 @@ export default function App() {
                   disabled={running || !synthesis || !floorplan}
                   onClick={() => {
                     setStepsMenuOpen(false);
-                    if (synthesis && floorplan) runReroute(spec, synthesis, floorplan);
+                    flushFocusedNumericInput();
+                    if (synthesis && floorplan) runReroute(specRef.current, synthesis, floorplan);
                   }}
                 >
                   3. Re-Route Current Floorplan
@@ -923,7 +929,10 @@ export default function App() {
           <button
             type="button"
             className={`btn btn-primary btn-sm ${isSpecDirty ? 'btn-dirty' : ''}`}
-            onClick={() => runFull(commitFloorplanDrafts(spec))}
+            onClick={() => {
+              flushFocusedNumericInput();
+              runFull(specRef.current);
+            }}
             disabled={running}
             title={
               isSpecDirty
@@ -937,32 +946,39 @@ export default function App() {
           {running && (
             <button
               type="button"
-              className="btn btn-sm"
+              className="btn btn-sm btn-danger-outline"
               onClick={handleCancelRun}
               title="Terminate the running P&R worker"
-              style={{ borderColor: 'rgba(248, 113, 113, 0.5)', color: '#fca5a5' }}
             >
               <X size={13} /> Cancel
             </button>
           )}
         </div>
 
-        {progress && (
-          <span className="pill pill-info">
-            {running ? '⏳ ' : ''}
-            {progress.message}
-          </span>
-        )}
-        {fullResult?.tiling && (
-          <span
-            className="pill pill-pass mono"
-            title={`${fullResult.tiling.unitWidth}×${fullResult.tiling.unitHeight} unit tile stamped ${fullResult.tiling.tileCount}× (${fullResult.tiling.layout})`}
-          >
-            Tiled {fullResult.tiling.tileCount}× ({fullResult.tiling.cols}×{fullResult.tiling.rows})
-          </span>
+        {(progress || fullResult?.tiling) && (
+          <>
+            <div className="toolbar-divider" aria-hidden="true" />
+            <div className="toolbar-group">
+              {progress && (
+                <span className="pill pill-info">
+                  {running && <Loader2 size={11} className="spin" />}
+                  {progress.message}
+                </span>
+              )}
+              {fullResult?.tiling && (
+                <span
+                  className="pill pill-pass mono"
+                  title={`${fullResult.tiling.unitWidth}×${fullResult.tiling.unitHeight} unit tile stamped ${fullResult.tiling.tileCount}× (${fullResult.tiling.layout})`}
+                >
+                  Tiled {fullResult.tiling.tileCount}× ({fullResult.tiling.cols}×{fullResult.tiling.rows})
+                </span>
+              )}
+            </div>
+          </>
         )}
 
-        <div style={{ marginLeft: 'auto' }} className="row">
+        <div style={{ marginLeft: 'auto' }} className="toolbar-group">
+          <div className="toolbar-divider" aria-hidden="true" />
           {fullResult?.tiling?.unitBlueprintString && (
             <button
               type="button"
@@ -1014,969 +1030,1037 @@ export default function App() {
       </header>
 
       {errorMsg && (
-        <div
-          style={{
-            background: 'rgba(248, 113, 113, 0.18)',
-            borderBottom: '1px solid rgba(248, 113, 113, 0.5)',
-            color: '#fecaca',
-            padding: '6px 14px',
-            fontSize: 12,
-          }}
-        >
-          Engine Error: {errorMsg}
+        <div className="error-banner" role="alert">
+          <AlertTriangle size={14} style={{ flexShrink: 0 }} />
+          <span>Engine Error: {errorMsg}</span>
         </div>
       )}
 
       {/* Main 3-Column EDA Workbench */}
       <div
-        className="workspace-grid"
-        style={{
-          gridTemplateColumns: [
-            leftOpen ? '305px' : null,
-            'minmax(0, 1fr)',
-            rightOpen ? '315px' : null,
-          ]
-            .filter(Boolean)
-            .join(' '),
-        }}
+        className={`workspace-grid ${leftOpen ? '' : 'left-collapsed'} ${rightOpen ? '' : 'right-collapsed'}`}
       >
         {/* Left Panel: Spec & PDK */}
         <aside className={`side-panel ${leftOpen ? '' : 'collapsed'}`}>
-          <div className="panel-section">
-            <div className="section-title">
-              <span>Design Targets</span>
-              <div className="row" style={{ gap: 5 }}>
-                <div className="unit-toggle" role="group" aria-label="Target rate unit">
+          <section className="accordion-section">
+            <button
+              type="button"
+              className="accordion-header"
+              aria-expanded={sectionsOpen.targets}
+              onClick={() => toggleSection('targets')}
+            >
+              <span className="accordion-header-left">
+                {sectionsOpen.targets ? (
+                  <ChevronDown size={13} className="accordion-chevron" />
+                ) : (
+                  <ChevronRight size={13} className="accordion-chevron" />
+                )}
+                <span className="accordion-title">Design Targets</span>
+              </span>
+              <span className="accordion-summary">{targetsSummary}</span>
+            </button>
+
+            {sectionsOpen.targets && (
+              <div className="accordion-body">
+                <div className="targets-toolbar">
+                  <div className="unit-toggle" role="group" aria-label="Target rate unit">
+                    <button
+                      type="button"
+                      className={`unit-btn ${targetUnit === 'perMin' ? 'active' : ''}`}
+                      onClick={() => setTargetUnit('perMin')}
+                    >
+                      /min
+                    </button>
+                    <button
+                      type="button"
+                      className={`unit-btn ${targetUnit === 'perSec' ? 'active' : ''}`}
+                      onClick={() => setTargetUnit('perSec')}
+                    >
+                      /s
+                    </button>
+                    <button
+                      type="button"
+                      className={`unit-btn ${targetUnit === 'belts' ? 'active' : ''}`}
+                      onClick={() => setTargetUnit('belts')}
+                    >
+                      belts
+                    </button>
+                  </div>
                   <button
                     type="button"
-                    className={`unit-btn ${targetUnit === 'perMin' ? 'active' : ''}`}
-                    onClick={() => setTargetUnit('perMin')}
+                    className="btn btn-sm"
+                    onClick={() =>
+                      updateSpec((prev) => ({
+                        ...prev,
+                        targets: [...prev.targets, { item: 'iron-gear-wheel', ratePerMin: 60 }],
+                        pins: [],
+                        macroOverrides: {},
+                      }))
+                    }
                   >
-                    /min
-                  </button>
-                  <button
-                    type="button"
-                    className={`unit-btn ${targetUnit === 'perSec' ? 'active' : ''}`}
-                    onClick={() => setTargetUnit('perSec')}
-                  >
-                    /s
-                  </button>
-                  <button
-                    type="button"
-                    className={`unit-btn ${targetUnit === 'belts' ? 'active' : ''}`}
-                    onClick={() => setTargetUnit('belts')}
-                  >
-                    belts
+                    <Plus size={12} /> Add
                   </button>
                 </div>
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  onClick={() =>
-                    updateSpec((prev) => ({
-                      ...prev,
-                      targets: [...prev.targets, { item: 'iron-gear-wheel', ratePerMin: 60 }],
-                      pins: [],
-                      macroOverrides: {},
-                    }))
-                  }
-                >
-                  <Plus size={12} /> Add
-                </button>
-              </div>
-            </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-              {spec.targets.map((t, idx) => (
-                <div
-                  key={idx}
-                  style={{
-                    background: '#0b1e33',
-                    border: '1px solid var(--bp-border)',
-                    borderRadius: 5,
-                    padding: 6,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 5,
-                  }}
-                >
-                  <div className="row">
-                    <ItemPicker
-                      value={t.item}
-                      options={targetOptions}
-                      onChange={(val) => {
-                        const rec = catalog.recipesByOutput[val]?.[0];
-                        const needsFluids = Boolean(
-                          rec?.hasFluid ||
-                            rec?.category === 'chemistry' ||
-                            rec?.category === 'metallurgy' ||
-                            rec?.category === 'electromagnetics' ||
-                            rec?.category === 'cryogenics' ||
-                            val === 'chemical-science-pack' ||
-                            val === 'utility-science-pack',
-                        );
-                        const needsSpaceAge = rec?.group === 'space-age';
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+                  {spec.targets.map((t, idx) => (
+                    <div key={idx} className="target-card">
+                      <div className="row">
+                        <ItemPicker
+                          value={t.item}
+                          options={targetOptions}
+                          onChange={(val) => {
+                            const rec = catalog.recipesByOutput[val]?.[0];
+                            const needsFluids = Boolean(
+                              rec?.hasFluid ||
+                                rec?.category === 'chemistry' ||
+                                rec?.category === 'metallurgy' ||
+                                rec?.category === 'electromagnetics' ||
+                                rec?.category === 'cryogenics' ||
+                                val === 'chemical-science-pack' ||
+                                val === 'utility-science-pack',
+                            );
+                            const needsSpaceAge = rec?.group === 'space-age';
+                            updateSpec((prev) => ({
+                              ...prev,
+                              pdk: {
+                                ...prev.pdk,
+                                enableFluids: needsFluids ? true : prev.pdk.enableFluids,
+                                spaceAgeBuildings: needsSpaceAge
+                                  ? true
+                                  : prev.pdk.spaceAgeBuildings,
+                              },
+                              targets: prev.targets.map((item, i) =>
+                                i === idx ? { ...item, item: val } : item,
+                              ),
+                              pins: [],
+                              macroOverrides: {},
+                            }));
+                          }}
+                        />
+                        {spec.targets.length > 1 && (
+                          <button
+                            type="button"
+                            className="btn btn-sm"
+                            aria-label={`Remove ${getItemMeta(t.item).name}`}
+                            onClick={() =>
+                              updateSpec((prev) => ({
+                                ...prev,
+                                targets: prev.targets.filter((_, i) => i !== idx),
+                                pins: [],
+                                macroOverrides: {},
+                              }))
+                            }
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        )}
+                      </div>
+                      <div className="target-rate-row">
+                        <div className="target-rate-input-wrap">
+                          <NumericInput
+                            aria-label={`Target rate for ${getItemMeta(t.item).name}`}
+                            min={targetUnit === 'perMin' ? 0.5 : 0.001}
+                            step={
+                              targetUnit === 'perMin'
+                                ? 15
+                                : targetUnit === 'perSec'
+                                  ? 1
+                                  : 0.25
+                            }
+                            precision={targetUnit === 'belts' ? 3 : 2}
+                            suffix={
+                              targetUnit === 'perMin'
+                                ? '/min'
+                                : targetUnit === 'perSec'
+                                  ? '/s'
+                                  : 'belts'
+                            }
+                            showSteppers
+                            value={formatTargetInputValue(t.ratePerMin)}
+                            onValidChange={(val) => applyTargetRate(idx, val)}
+                            onCommit={(val) => applyTargetRate(idx, val)}
+                          />
+                        </div>
+                        <span className="target-rate-meta">
+                          {targetUnit === 'belts'
+                            ? `${Math.round(t.ratePerMin)}/min`
+                            : `${(t.ratePerMin / beltCapacity).toFixed(2)} belts`}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ marginTop: 10 }}>
+                  <label className="field-label" htmlFor="input-preset-select">
+                    Input Pin Boundary Preset
+                  </label>
+                  <select
+                    id="input-preset-select"
+                    className="select"
+                    value={spec.inputPreset}
+                    onChange={(e) =>
+                      updateSpec(
+                        (prev) => ({
+                          ...prev,
+                          inputPreset: e.target.value as InputPreset,
+                          inputOverrides: {},
+                        }),
+                        true,
+                      )
+                    }
+                  >
+                    <option value="plates">Plates &amp; Raw (Iron/Copper/Steel/Brick)</option>
+                    <option value="bus">Bus Intermediates (+ Green/Red Circuits, Plastic)</option>
+                    <option value="raw">Raw Ores Only (Include Electric Smelting)</option>
+                  </select>
+                </div>
+              </div>
+            )}
+          </section>
+
+          {/* PDK / SDK Configuration */}
+          <section className="accordion-section">
+            <button
+              type="button"
+              className="accordion-header"
+              aria-expanded={sectionsOpen.pdk}
+              onClick={() => toggleSection('pdk')}
+            >
+              <span className="accordion-header-left">
+                {sectionsOpen.pdk ? (
+                  <ChevronDown size={13} className="accordion-chevron" />
+                ) : (
+                  <ChevronRight size={13} className="accordion-chevron" />
+                )}
+                <Wrench size={12} style={{ color: 'var(--accent-brass)', flexShrink: 0 }} />
+                <span className="accordion-title">PDK / Technology SDK</span>
+              </span>
+              <span className="accordion-summary">{pdkSummary}</span>
+            </button>
+
+            {sectionsOpen.pdk && (
+              <div className="accordion-body">
+                <div className="field-grid field-grid-pdk-top">
+                  <div>
+                    <label className="field-label" htmlFor="pdk-belt-tier">
+                      Belt Tier
+                    </label>
+                    <select
+                      id="pdk-belt-tier"
+                      className="select"
+                      value={spec.pdk.defaultBeltTier}
+                      onChange={(e) => {
+                        const tier = e.target.value as BeltTier;
                         updateSpec((prev) => ({
                           ...prev,
                           pdk: {
                             ...prev.pdk,
-                            enableFluids: needsFluids ? true : prev.pdk.enableFluids,
-                            spaceAgeBuildings: needsSpaceAge
-                              ? true
-                              : prev.pdk.spaceAgeBuildings,
+                            defaultBeltTier: tier,
+                            allowedBeltTiers: prev.pdk.allowedBeltTiers.includes(tier)
+                              ? prev.pdk.allowedBeltTiers
+                              : [...prev.pdk.allowedBeltTiers, tier],
                           },
-                          targets: prev.targets.map((item, i) =>
-                            i === idx ? { ...item, item: val } : item,
-                          ),
-                          pins: [],
-                          macroOverrides: {},
                         }));
                       }}
-                    />
-                    {spec.targets.length > 1 && (
-                      <button
-                        type="button"
-                        className="btn btn-sm"
-                        onClick={() =>
-                          updateSpec((prev) => ({
-                            ...prev,
-                            targets: prev.targets.filter((_, i) => i !== idx),
-                            pins: [],
-                            macroOverrides: {},
-                          }))
-                        }
-                      >
-                        <Trash2 size={12} />
-                      </button>
-                    )}
+                    >
+                      <option value="yellow">Yellow (15/s)</option>
+                      <option value="red">Red Fast (30/s)</option>
+                      <option value="blue">Blue Express (45/s)</option>
+                      <option value="turbo">Turbo Green (60/s)</option>
+                    </select>
                   </div>
-                  <div className="row" style={{ justifyContent: 'space-between' }}>
-                    <div className="row" style={{ flex: 1 }}>
-                      <input
-                        type="number"
-                        className="input mono"
-                        min={targetUnit === 'perMin' ? 1 : 0.01}
-                        step={
-                          targetUnit === 'perMin' ? 15 : targetUnit === 'perSec' ? 1 : 0.25
-                        }
-                        value={formatTargetInputValue(t.ratePerMin)}
-                        onChange={(e) => {
-                          const raw = Number(e.target.value);
-                          const num = Number.isFinite(raw) ? raw : 0;
-                          let nextPerMin = num;
-                          if (targetUnit === 'perSec') nextPerMin = num * 60;
-                          else if (targetUnit === 'belts') nextPerMin = num * beltCapacity;
-                          const clamped = Math.max(0.5, Math.round(nextPerMin * 100) / 100);
-                          updateSpec((prev) => ({
-                            ...prev,
-                            targets: prev.targets.map((item, i) =>
-                              i === idx ? { ...item, ratePerMin: clamped } : item,
-                            ),
-                          }));
-                        }}
-                      />
-                      <span style={{ fontSize: 11, color: 'var(--bp-text-muted)' }}>
-                        {targetUnit === 'perMin'
-                          ? '/min'
-                          : targetUnit === 'perSec'
-                            ? '/s'
-                            : 'belts'}
-                      </span>
-                    </div>
-                    <span className="mono" style={{ fontSize: 11, color: 'var(--bp-cyan)' }}>
-                      {targetUnit === 'belts'
-                        ? `${Math.round(t.ratePerMin)}/min`
-                        : `${(t.ratePerMin / beltCapacity).toFixed(2)} belts`}
-                    </span>
+                  <div>
+                    <label className="field-label" htmlFor="pdk-assembler-tier">
+                      Assembler Tier
+                    </label>
+                    <select
+                      id="pdk-assembler-tier"
+                      className="select"
+                      value={spec.pdk.defaultAssemblerTier}
+                      onChange={(e) => {
+                        const tier = Number(e.target.value) as 1 | 2 | 3;
+                        updateSpec((prev) => ({
+                          ...prev,
+                          pdk: { ...prev.pdk, defaultAssemblerTier: tier },
+                        }));
+                      }}
+                    >
+                      <option value={1}>Assembler 1 (0.5×)</option>
+                      <option value={2}>Assembler 2 (0.75×)</option>
+                      <option value={3}>Assembler 3 (1.25×)</option>
+                    </select>
                   </div>
                 </div>
-              ))}
-            </div>
 
-            <div style={{ marginTop: 10 }}>
-              <label className="field-label">Input Pin Boundary Preset</label>
-              <select
-                className="select"
-                value={spec.inputPreset}
-                onChange={(e) =>
-                  updateSpec(
-                    (prev) => ({
-                      ...prev,
-                      inputPreset: e.target.value as InputPreset,
-                      inputOverrides: {},
-                    }),
-                    true,
-                  )
-                }
-              >
-                <option value="plates">Plates &amp; Raw (Iron/Copper/Steel/Brick)</option>
-                <option value="bus">Bus Intermediates (+ Green/Red Circuits, Plastic)</option>
-                <option value="raw">Raw Ores Only (Include Electric Smelting)</option>
-              </select>
-            </div>
-          </div>
+                <div className="field-grid field-grid-pdk-inserter" style={{ marginTop: 8 }}>
+                  <div>
+                    <label className="field-label" htmlFor="pdk-inserter-tier">
+                      Default Inserter
+                    </label>
+                    <select
+                      id="pdk-inserter-tier"
+                      className="select"
+                      value={spec.pdk.defaultInserterTier}
+                      onChange={(e) => {
+                        const tier = e.target.value as InserterTier;
+                        updateSpec((prev) => ({
+                          ...prev,
+                          pdk: {
+                            ...prev.pdk,
+                            defaultInserterTier: tier,
+                            allowedInserterTiers: prev.pdk.allowedInserterTiers.includes(tier)
+                              ? prev.pdk.allowedInserterTiers
+                              : [...prev.pdk.allowedInserterTiers, tier],
+                          },
+                        }));
+                      }}
+                    >
+                      <option value="yellow">Yellow Inserter</option>
+                      <option value="fast">Fast Inserter</option>
+                      <option value="bulk">Bulk Inserter</option>
+                      <option value="stack">Stack Inserter (16/s)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="field-label" htmlFor="pdk-pole-tier">
+                      Power Pole
+                    </label>
+                    <select
+                      id="pdk-pole-tier"
+                      className="select"
+                      value={spec.pdk.defaultPoleTier}
+                      onChange={(e) => {
+                        const tier = e.target.value as PoleTier;
+                        updateSpec((prev) => ({
+                          ...prev,
+                          pdk: { ...prev.pdk, defaultPoleTier: tier },
+                        }));
+                      }}
+                    >
+                      <option value="small">Small Pole</option>
+                      <option value="medium">Medium Pole</option>
+                      <option value="substation">Substation (2×2)</option>
+                    </select>
+                  </div>
+                </div>
 
-          {/* PDK / SDK Configuration */}
-          <div className="panel-section">
-            <div className="section-title">
-              <span>PDK / Technology SDK</span>
-              <Wrench size={12} />
-            </div>
+                <div className="field-grid" style={{ marginTop: 8 }}>
+                  <div>
+                    <label className="field-label" htmlFor="pdk-belt-stacking">
+                      Belt Stacking (2.0)
+                    </label>
+                    <select
+                      id="pdk-belt-stacking"
+                      className="select"
+                      value={spec.pdk.beltStackSize ?? 1}
+                      onChange={(e) => {
+                        const stackSize = Number(e.target.value) as BeltStackSize;
+                        updateSpec((prev) => ({
+                          ...prev,
+                          pdk: {
+                            ...prev.pdk,
+                            beltStackSize: stackSize,
+                            allowedInserterTiers:
+                              stackSize > 1 && !prev.pdk.allowedInserterTiers.includes('stack')
+                                ? [...prev.pdk.allowedInserterTiers, 'stack']
+                                : prev.pdk.allowedInserterTiers,
+                          },
+                        }));
+                      }}
+                    >
+                      <option value={1}>1× (Unstacked)</option>
+                      <option value={2}>2× Stacked Belt</option>
+                      <option value={4}>4× Full Stack (2.0)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="field-label" htmlFor="pdk-machine-quality">
+                      Machine Quality
+                    </label>
+                    <select
+                      id="pdk-machine-quality"
+                      className="select"
+                      value={spec.pdk.machineQuality ?? 'normal'}
+                      onChange={(e) => {
+                        const q = e.target.value as QualityTier;
+                        updateSpec((prev) => ({
+                          ...prev,
+                          pdk: { ...prev.pdk, machineQuality: q },
+                        }));
+                      }}
+                    >
+                      {(Object.keys(QUALITY_SPECS) as QualityTier[]).map((q) => (
+                        <option key={q} value={q}>
+                          {QUALITY_SPECS[q].label} ({QUALITY_SPECS[q].speedMultiplier}×)
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
 
-            <div className="field-grid">
-              <div>
-                <label className="field-label">Belt Tier</label>
-                <select
-                  className="select"
-                  value={spec.pdk.defaultBeltTier}
-                  onChange={(e) => {
-                    const tier = e.target.value as BeltTier;
-                    updateSpec((prev) => ({
-                      ...prev,
-                      pdk: {
-                        ...prev.pdk,
-                        defaultBeltTier: tier,
-                        allowedBeltTiers: prev.pdk.allowedBeltTiers.includes(tier)
-                          ? prev.pdk.allowedBeltTiers
-                          : [...prev.pdk.allowedBeltTiers, tier],
-                      },
-                    }));
-                  }}
-                >
-                  <option value="yellow">Yellow (15/s)</option>
-                  <option value="red">Red Fast (30/s)</option>
-                  <option value="blue">Blue Express (45/s)</option>
-                  <option value="turbo">Turbo Green (60/s)</option>
-                </select>
-              </div>
-              <div>
-                <label className="field-label">Assembler Tier</label>
-                <select
-                  className="select"
-                  value={spec.pdk.defaultAssemblerTier}
-                  onChange={(e) => {
-                    const tier = Number(e.target.value) as 1 | 2 | 3;
-                    updateSpec((prev) => ({
-                      ...prev,
-                      pdk: { ...prev.pdk, defaultAssemblerTier: tier },
-                    }));
-                  }}
-                >
-                  <option value={1}>Assembler 1 (0.5×)</option>
-                  <option value={2}>Assembler 2 (0.75×)</option>
-                  <option value={3}>Assembler 3 (1.25×)</option>
-                </select>
-              </div>
-              <div>
-                <label className="field-label">Default Inserter</label>
-                <select
-                  className="select"
-                  value={spec.pdk.defaultInserterTier}
-                  onChange={(e) => {
-                    const tier = e.target.value as InserterTier;
-                    updateSpec((prev) => ({
-                      ...prev,
-                      pdk: {
-                        ...prev.pdk,
-                        defaultInserterTier: tier,
-                        allowedInserterTiers: prev.pdk.allowedInserterTiers.includes(tier)
-                          ? prev.pdk.allowedInserterTiers
-                          : [...prev.pdk.allowedInserterTiers, tier],
-                      },
-                    }));
-                  }}
-                >
-                  <option value="yellow">Yellow Inserter</option>
-                  <option value="fast">Fast Inserter</option>
-                  <option value="bulk">Bulk Inserter</option>
-                  <option value="stack">Stack Inserter (16/s)</option>
-                </select>
-              </div>
-              <div>
-                <label className="field-label">Power Pole</label>
-                <select
-                  className="select"
-                  value={spec.pdk.defaultPoleTier}
-                  onChange={(e) => {
-                    const tier = e.target.value as PoleTier;
-                    updateSpec((prev) => ({
-                      ...prev,
-                      pdk: { ...prev.pdk, defaultPoleTier: tier },
-                    }));
-                  }}
-                >
-                  <option value="small">Small Pole</option>
-                  <option value="medium">Medium Pole</option>
-                  <option value="substation">Substation (2×2)</option>
-                </select>
-              </div>
-              <div>
-                <label className="field-label">Belt Stacking (2.0)</label>
-                <select
-                  className="select"
-                  value={spec.pdk.beltStackSize ?? 1}
-                  onChange={(e) => {
-                    const stackSize = Number(e.target.value) as BeltStackSize;
-                    updateSpec((prev) => ({
-                      ...prev,
-                      pdk: {
-                        ...prev.pdk,
-                        beltStackSize: stackSize,
-                        allowedInserterTiers:
-                          stackSize > 1 && !prev.pdk.allowedInserterTiers.includes('stack')
-                            ? [...prev.pdk.allowedInserterTiers, 'stack']
-                            : prev.pdk.allowedInserterTiers,
-                      },
-                    }));
-                  }}
-                >
-                  <option value={1}>1× (Unstacked)</option>
-                  <option value={2}>2× Stacked Belt</option>
-                  <option value={4}>4× Full Stack (2.0)</option>
-                </select>
-              </div>
-              <div>
-                <label className="field-label">Machine Quality</label>
-                <select
-                  className="select"
-                  value={spec.pdk.machineQuality ?? 'normal'}
-                  onChange={(e) => {
-                    const q = e.target.value as QualityTier;
-                    updateSpec((prev) => ({
-                      ...prev,
-                      pdk: { ...prev.pdk, machineQuality: q },
-                    }));
-                  }}
-                >
-                  {(Object.keys(QUALITY_SPECS) as QualityTier[]).map((q) => (
-                    <option key={q} value={q}>
-                      {QUALITY_SPECS[q].label} ({QUALITY_SPECS[q].speedMultiplier}×)
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
+                <div style={{ marginTop: 8 }}>
+                  <label className="field-label" htmlFor="pdk-global-modules">
+                    In-Machine Modules (fill slots)
+                  </label>
+                  <select
+                    id="pdk-global-modules"
+                    className="select"
+                    value={currentGlobalModule}
+                    onChange={(e) => {
+                      const mod = e.target.value as '' | ModuleName;
+                      updateSpec((prev) => ({
+                        ...prev,
+                        pdk: {
+                          ...prev.pdk,
+                          modules: {
+                            ...prev.pdk.modules,
+                            global: mod ? Array.from({ length: 8 }, () => mod) : [],
+                          },
+                        },
+                      }));
+                    }}
+                  >
+                    {MODULE_OPTIONS.map((m) => (
+                      <option key={m.value} value={m.value}>
+                        {m.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-            <div style={{ marginTop: 8 }}>
-              <label className="field-label">In-Machine Modules (fill slots)</label>
-              <select
-                className="select"
-                value={currentGlobalModule}
-                onChange={(e) => {
-                  const mod = e.target.value as '' | ModuleName;
-                  updateSpec((prev) => ({
-                    ...prev,
-                    pdk: {
-                      ...prev.pdk,
-                      modules: {
-                        ...prev.pdk.modules,
-                        global: mod ? Array.from({ length: 8 }, () => mod) : [],
-                      },
-                    },
-                  }));
-                }}
-              >
-                {MODULE_OPTIONS.map((m) => (
-                  <option key={m.value} value={m.value}>
-                    {m.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+                <div className="field-grid field-grid-pdk-beacon" style={{ marginTop: 8 }}>
+                  <div>
+                    <label className="field-label" htmlFor="pdk-beacon-mode">
+                      Beacon Rows (2.0)
+                    </label>
+                    <select
+                      id="pdk-beacon-mode"
+                      className="select"
+                      value={spec.pdk.beaconMode ?? 'none'}
+                      onChange={(e) => {
+                        const bm = e.target.value as BeaconMode;
+                        updateSpec((prev) => ({
+                          ...prev,
+                          pdk: {
+                            ...prev.pdk,
+                            beaconMode: bm,
+                            beaconModules:
+                              prev.pdk.beaconModules && prev.pdk.beaconModules.length > 0
+                                ? prev.pdk.beaconModules
+                                : ['speed-module-3', 'speed-module-3'],
+                          },
+                        }));
+                      }}
+                    >
+                      <option value="none">None (Unbeaconed)</option>
+                      <option value="row-4">4-Beacon Rows</option>
+                      <option value="row-8">8-Beacon Sandwich</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="field-label" htmlFor="pdk-beacon-modules">
+                      Beacon Modules (2×)
+                    </label>
+                    <select
+                      id="pdk-beacon-modules"
+                      className="select"
+                      disabled={(spec.pdk.beaconMode ?? 'none') === 'none'}
+                      value={spec.pdk.beaconModules?.[0] ?? 'speed-module-3'}
+                      onChange={(e) => {
+                        const mod = e.target.value as BeaconModuleName;
+                        updateSpec((prev) => ({
+                          ...prev,
+                          pdk: {
+                            ...prev.pdk,
+                            beaconModules: [mod, mod],
+                          },
+                        }));
+                      }}
+                    >
+                      <option value="speed-module-3">Speed 3 (+100%)</option>
+                      <option value="speed-module-2">Speed 2 (+60%)</option>
+                      <option value="speed-module">Speed 1 (+40%)</option>
+                      <option value="efficiency-module-3">Eff 3 (-100% pwr)</option>
+                    </select>
+                  </div>
+                </div>
 
-            <div className="field-grid" style={{ marginTop: 8 }}>
-              <div>
-                <label className="field-label">Beacon Rows (2.0)</label>
-                <select
-                  className="select"
-                  value={spec.pdk.beaconMode ?? 'none'}
-                  onChange={(e) => {
-                    const bm = e.target.value as BeaconMode;
-                    updateSpec((prev) => ({
-                      ...prev,
-                      pdk: {
-                        ...prev.pdk,
-                        beaconMode: bm,
-                        beaconModules:
-                          prev.pdk.beaconModules && prev.pdk.beaconModules.length > 0
-                            ? prev.pdk.beaconModules
-                            : ['speed-module-3', 'speed-module-3'],
-                      },
-                    }));
-                  }}
-                >
-                  <option value="none">None (Unbeaconed)</option>
-                  <option value="row-4">4-Beacon Rows</option>
-                  <option value="row-8">8-Beacon Sandwich</option>
-                </select>
-              </div>
-              <div>
-                <label className="field-label">Beacon Modules (2×)</label>
-                <select
-                  className="select"
-                  disabled={(spec.pdk.beaconMode ?? 'none') === 'none'}
-                  value={spec.pdk.beaconModules?.[0] ?? 'speed-module-3'}
-                  onChange={(e) => {
-                    const mod = e.target.value as BeaconModuleName;
-                    updateSpec((prev) => ({
-                      ...prev,
-                      pdk: {
-                        ...prev.pdk,
-                        beaconModules: [mod, mod],
-                      },
-                    }));
-                  }}
-                >
-                  <option value="speed-module-3">Speed 3 (+100%)</option>
-                  <option value="speed-module-2">Speed 2 (+60%)</option>
-                  <option value="speed-module">Speed 1 (+40%)</option>
-                  <option value="efficiency-module-3">Eff 3 (-100% pwr)</option>
-                </select>
-              </div>
-            </div>
-
-            <div className="field-grid" style={{ marginTop: 8 }}>
-              <div>
-                <label className="field-label">Port Markers</label>
-                <select
-                  className="select"
-                  value={spec.pdk.portMarkers}
-                  onChange={(e) =>
-                    updateSpec((prev) => ({
-                      ...prev,
-                      pdk: {
-                        ...prev.pdk,
-                        portMarkers: e.target.value as PortMarkerMode,
-                      },
-                    }))
-                  }
-                >
-                  <option value="display-panel">Display Panel (2.0)</option>
-                  <option value="constant-combinator">Const Combinator</option>
-                  <option value="none">None</option>
-                </select>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', gap: 4, paddingBottom: 2 }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 11.5 }}>
-                  <input
-                    type="checkbox"
-                    checked={spec.pdk.downsizeLowRateBelts}
+                <div style={{ marginTop: 8 }}>
+                  <label className="field-label" htmlFor="pdk-port-markers">
+                    Port Markers
+                  </label>
+                  <select
+                    id="pdk-port-markers"
+                    className="select"
+                    value={spec.pdk.portMarkers}
                     onChange={(e) =>
                       updateSpec((prev) => ({
                         ...prev,
-                        pdk: { ...prev.pdk, downsizeLowRateBelts: e.target.checked },
+                        pdk: {
+                          ...prev.pdk,
+                          portMarkers: e.target.value as PortMarkerMode,
+                        },
                       }))
                     }
-                  />
-                  Downsize low-rate belts
-                </label>
-                <label
-                  style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 11.5 }}
-                  title="Prefer 4x4/5x5 Space Age Foundry, Electromagnetic Plant (+50% prod), and Cryogenic Plant"
-                >
-                  <input
-                    type="checkbox"
-                    checked={spec.pdk.spaceAgeBuildings ?? false}
-                    onChange={(e) =>
-                      updateSpec((prev) => ({
-                        ...prev,
-                        pdk: { ...prev.pdk, spaceAgeBuildings: e.target.checked },
-                      }))
-                    }
-                  />
-                  Space Age buildings
-                </label>
-                <label
-                  style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 11.5 }}
-                  title="Synthesize fluid-dependent recipes (Plastic, Sulfur, Battery, Processing Unit, Blue & Yellow Science) with Chemical Plants and dedicated pipe routing"
-                >
-                  <input
-                    type="checkbox"
-                    checked={spec.pdk.enableFluids ?? false}
-                    onChange={(e) =>
-                      updateSpec((prev) => ({
-                        ...prev,
-                        pdk: { ...prev.pdk, enableFluids: e.target.checked },
-                      }))
-                    }
-                  />
-                  Enable fluids &amp; chemical plants
-                </label>
-              </div>
-            </div>
+                  >
+                    <option value="display-panel">Display Panel (2.0)</option>
+                    <option value="constant-combinator">Const Combinator</option>
+                    <option value="none">None</option>
+                  </select>
+                </div>
 
-            <div style={{ marginTop: 10 }}>
-              <button
-                className="btn btn-sm"
-                style={{ width: '100%', justifyContent: 'center' }}
-                onClick={() => setBalancerModalOpen(true)}
-              >
-                Balancer IP Library ({spec.customBalancers?.length ?? 0} custom)
-              </button>
-            </div>
-          </div>
+                <div className="checkbox-list">
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={spec.pdk.downsizeLowRateBelts}
+                      onChange={(e) =>
+                        updateSpec((prev) => ({
+                          ...prev,
+                          pdk: { ...prev.pdk, downsizeLowRateBelts: e.target.checked },
+                        }))
+                      }
+                    />
+                    <span>Downsize low-rate belts</span>
+                  </label>
+                  <label
+                    className="checkbox-row"
+                    title="Prefer 4x4/5x5 Space Age Foundry, Electromagnetic Plant (+50% prod), and Cryogenic Plant"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={spec.pdk.spaceAgeBuildings ?? false}
+                      onChange={(e) =>
+                        updateSpec((prev) => ({
+                          ...prev,
+                          pdk: { ...prev.pdk, spaceAgeBuildings: e.target.checked },
+                        }))
+                      }
+                    />
+                    <span>Space Age buildings</span>
+                  </label>
+                  <label
+                    className="checkbox-row"
+                    title="Synthesize fluid-dependent recipes (Plastic, Sulfur, Battery, Processing Unit, Blue & Yellow Science) with Chemical Plants and dedicated pipe routing"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={spec.pdk.enableFluids ?? false}
+                      onChange={(e) =>
+                        updateSpec((prev) => ({
+                          ...prev,
+                          pdk: { ...prev.pdk, enableFluids: e.target.checked },
+                        }))
+                      }
+                    />
+                    <span>Enable fluids &amp; chemical plants</span>
+                  </label>
+                </div>
+
+                <div style={{ marginTop: 10 }}>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    style={{ width: '100%', justifyContent: 'center' }}
+                    onClick={() => setBalancerModalOpen(true)}
+                  >
+                    <Layers size={12} /> Balancer IP Library ({spec.customBalancers?.length ?? 0} custom)
+                  </button>
+                </div>
+              </div>
+            )}
+          </section>
 
           {/* Floorplan / Die */}
-          <div className="panel-section">
-            <div className="section-title">Die &amp; Floorplan</div>
-            <div className="field-grid">
-              <div>
-                <label className="field-label">Die Mode</label>
-                <select
-                  className="select"
-                  value={spec.floorplan.mode}
-                  onChange={(e) => {
-                    const nextMode = e.target.value as 'auto' | 'fixed';
-                    const initW = floorplan?.width ?? spec.floorplan.width ?? 60;
-                    const initH = floorplan?.height ?? spec.floorplan.height ?? 45;
-                    if (nextMode === 'fixed') {
-                      setWidthDraft(String(initW));
-                      setHeightDraft(String(initH));
-                    }
-                    updateSpec((prev) => ({
-                      ...prev,
-                      floorplan: {
-                        ...prev.floorplan,
-                        mode: nextMode,
-                        ...(nextMode === 'fixed' ? { width: initW, height: initH } : {}),
-                      },
-                    }));
-                  }}
-                >
-                  <option value="auto">Auto-Compact</option>
-                  <option value="fixed">Fixed W × H</option>
-                </select>
-              </div>
-              {spec.floorplan.mode === 'auto' ? (
-                <div>
-                  <label className="field-label">Aspect Ratio</label>
-                  <input
-                    type="number"
-                    className="input mono"
-                    step={0.1}
-                    min={0.2}
-                    max={5.0}
-                    value={aspectDraft}
-                    onChange={(e) => {
-                      const raw = e.target.value;
-                      setAspectDraft(raw);
-                      const v = Number(raw);
-                      if (raw.trim() !== '' && Number.isFinite(v) && v >= 0.2 && v <= 5.0) {
+          <section className="accordion-section">
+            <button
+              type="button"
+              className="accordion-header"
+              aria-expanded={sectionsOpen.floorplan}
+              onClick={() => toggleSection('floorplan')}
+            >
+              <span className="accordion-header-left">
+                {sectionsOpen.floorplan ? (
+                  <ChevronDown size={13} className="accordion-chevron" />
+                ) : (
+                  <ChevronRight size={13} className="accordion-chevron" />
+                )}
+                <span className="accordion-title">Die &amp; Floorplan</span>
+              </span>
+              <span className="accordion-summary">{floorplanSummary}</span>
+            </button>
+
+            {sectionsOpen.floorplan && (
+              <div className="accordion-body">
+                <div className="field-grid">
+                  <div>
+                    <label className="field-label" htmlFor="floorplan-die-mode">
+                      Die Mode
+                    </label>
+                    <select
+                      id="floorplan-die-mode"
+                      className="select"
+                      value={spec.floorplan.mode}
+                      onChange={(e) => {
+                        const nextMode = e.target.value as 'auto' | 'fixed';
+                        const initW = floorplan?.width ?? spec.floorplan.width ?? 60;
+                        const initH = floorplan?.height ?? spec.floorplan.height ?? 45;
                         updateSpec((prev) => ({
                           ...prev,
                           floorplan: {
                             ...prev.floorplan,
-                            aspectRatio: Math.round(v * 100) / 100,
+                            mode: nextMode,
+                            ...(nextMode === 'fixed' ? { width: initW, height: initH } : {}),
                           },
                         }));
-                      }
-                    }}
-                    onBlur={() => {
-                      const v = Number(aspectDraft);
-                      const clamped =
-                        aspectDraft.trim() !== '' && Number.isFinite(v)
-                          ? Math.round(Math.max(0.2, Math.min(5.0, v)) * 100) / 100
-                          : spec.floorplan.aspectRatio ?? 1.35;
-                      setAspectDraft(String(clamped));
-                      updateSpec((prev) => ({
-                        ...prev,
-                        floorplan: { ...prev.floorplan, aspectRatio: clamped },
-                      }));
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') runFull(commitFloorplanDrafts(spec));
-                    }}
-                  />
-                </div>
-              ) : (
-                <div className="row">
-                  <div>
-                    <label className="field-label">W</label>
-                    <input
-                      type="number"
-                      className="input mono"
-                      min={16}
-                      value={widthDraft}
-                      onChange={(e) => {
-                        const raw = e.target.value;
-                        setWidthDraft(raw);
-                        const v = Number(raw);
-                        if (raw.trim() !== '' && Number.isFinite(v) && v >= 1) {
+                      }}
+                    >
+                      <option value="auto">Auto-Compact</option>
+                      <option value="fixed">Fixed W × H</option>
+                    </select>
+                  </div>
+                  {spec.floorplan.mode === 'auto' ? (
+                    <div>
+                      <label className="field-label" htmlFor="floorplan-aspect-ratio">
+                        Aspect Ratio
+                      </label>
+                      <NumericInput
+                        id="floorplan-aspect-ratio"
+                        aria-label="Aspect Ratio"
+                        min={0.2}
+                        max={5.0}
+                        step={0.1}
+                        precision={2}
+                        showSteppers
+                        value={spec.floorplan.aspectRatio ?? 1.35}
+                        onValidChange={(val) =>
                           updateSpec((prev) => ({
                             ...prev,
-                            floorplan: { ...prev.floorplan, width: Math.round(v) },
-                          }));
+                            floorplan: { ...prev.floorplan, aspectRatio: val },
+                          }))
                         }
-                      }}
-                      onBlur={() => {
-                        const v = Number(widthDraft);
-                        const clamped =
-                          widthDraft.trim() !== '' && Number.isFinite(v) && v > 0
-                            ? Math.max(16, Math.round(v))
-                            : spec.floorplan.width ?? floorplan?.width ?? 60;
-                        setWidthDraft(String(clamped));
-                        updateSpec((prev) => ({
-                          ...prev,
-                          floorplan: { ...prev.floorplan, width: clamped },
-                        }));
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') runFull(commitFloorplanDrafts(spec));
-                      }}
-                    />
-                  </div>
-                  <div>
-                    <label className="field-label">H</label>
-                    <input
-                      type="number"
-                      className="input mono"
-                      min={16}
-                      value={heightDraft}
-                      onChange={(e) => {
-                        const raw = e.target.value;
-                        setHeightDraft(raw);
-                        const v = Number(raw);
-                        if (raw.trim() !== '' && Number.isFinite(v) && v >= 1) {
+                        onCommit={(val) =>
                           updateSpec((prev) => ({
                             ...prev,
-                            floorplan: { ...prev.floorplan, height: Math.round(v) },
-                          }));
+                            floorplan: { ...prev.floorplan, aspectRatio: val },
+                          }))
                         }
-                      }}
-                      onBlur={() => {
-                        const v = Number(heightDraft);
-                        const clamped =
-                          heightDraft.trim() !== '' && Number.isFinite(v) && v > 0
-                            ? Math.max(16, Math.round(v))
-                            : spec.floorplan.height ?? floorplan?.height ?? 45;
-                        setHeightDraft(String(clamped));
-                        updateSpec((prev) => ({
-                          ...prev,
-                          floorplan: { ...prev.floorplan, height: clamped },
-                        }));
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') runFull(commitFloorplanDrafts(spec));
-                      }}
-                    />
-                  </div>
+                        onEnterCommit={(val) => {
+                          const next = updateSpec((prev) => ({
+                            ...prev,
+                            floorplan: { ...prev.floorplan, aspectRatio: val },
+                          }));
+                          runFull(next);
+                        }}
+                      />
+                    </div>
+                  ) : (
+                    <div className="field-grid">
+                      <div>
+                        <label className="field-label" htmlFor="floorplan-fixed-w">
+                          W
+                        </label>
+                        <NumericInput
+                          id="floorplan-fixed-w"
+                          aria-label="Fixed Die Width"
+                          integer
+                          min={16}
+                          step={1}
+                          value={spec.floorplan.width ?? floorplan?.width ?? 60}
+                          onValidChange={(val) =>
+                            updateSpec((prev) => ({
+                              ...prev,
+                              floorplan: { ...prev.floorplan, width: val },
+                            }))
+                          }
+                          onCommit={(val) =>
+                            updateSpec((prev) => ({
+                              ...prev,
+                              floorplan: { ...prev.floorplan, width: val },
+                            }))
+                          }
+                          onEnterCommit={(val) => {
+                            const next = updateSpec((prev) => ({
+                              ...prev,
+                              floorplan: { ...prev.floorplan, width: val },
+                            }));
+                            runFull(next);
+                          }}
+                        />
+                      </div>
+                      <div>
+                        <label className="field-label" htmlFor="floorplan-fixed-h">
+                          H
+                        </label>
+                        <NumericInput
+                          id="floorplan-fixed-h"
+                          aria-label="Fixed Die Height"
+                          integer
+                          min={16}
+                          step={1}
+                          value={spec.floorplan.height ?? floorplan?.height ?? 45}
+                          onValidChange={(val) =>
+                            updateSpec((prev) => ({
+                              ...prev,
+                              floorplan: { ...prev.floorplan, height: val },
+                            }))
+                          }
+                          onCommit={(val) =>
+                            updateSpec((prev) => ({
+                              ...prev,
+                              floorplan: { ...prev.floorplan, height: val },
+                            }))
+                          }
+                          onEnterCommit={(val) => {
+                            const next = updateSpec((prev) => ({
+                              ...prev,
+                              floorplan: { ...prev.floorplan, height: val },
+                            }));
+                            runFull(next);
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-            <div style={{ marginTop: 8 }}>
-              <label className="field-label">Optimization Pass Level</label>
-              <select
-                className="select"
-                value={spec.optimization?.level ?? 'compact'}
-                onChange={(e) => {
-                  const lvl = e.target.value as OptimizationLevel;
-                  updateSpec(
-                    (prev) => {
-                      const nextOpt = defaultOptimizationConfig(lvl);
-                      return {
-                        ...prev,
-                        optimization: {
-                          ...nextOpt,
-                          tiling: prev.optimization?.tiling ?? nextOpt.tiling,
-                          tileLayout: prev.optimization?.tileLayout ?? nextOpt.tileLayout,
-                          directInsertion:
-                            prev.optimization?.directInsertion ?? nextOpt.directInsertion,
+
+                <div style={{ marginTop: 8 }}>
+                  <label className="field-label" htmlFor="floorplan-opt-level">
+                    Optimization Pass Level
+                  </label>
+                  <select
+                    id="floorplan-opt-level"
+                    className="select"
+                    value={spec.optimization?.level ?? 'compact'}
+                    onChange={(e) => {
+                      const lvl = e.target.value as OptimizationLevel;
+                      updateSpec(
+                        (prev) => {
+                          const nextOpt = defaultOptimizationConfig(lvl);
+                          return {
+                            ...prev,
+                            optimization: {
+                              ...nextOpt,
+                              tiling: prev.optimization?.tiling ?? nextOpt.tiling,
+                              tileLayout: prev.optimization?.tileLayout ?? nextOpt.tileLayout,
+                              directInsertion:
+                                prev.optimization?.directInsertion ?? nextOpt.directInsertion,
+                            },
+                          };
                         },
-                      };
-                    },
-                    true,
-                  );
-                }}
-              >
-                <option value="compact">Compact (Layered Bus + All Opts)</option>
-                <option value="balanced">Balanced (Layered + Compact)</option>
-                <option value="fast">Fast</option>
-              </select>
-            </div>
-            <div style={{ marginTop: 8 }}>
-              <label className="field-label">Large-Factory Tiling</label>
-              <select
-                className="select"
-                value={
-                  spec.optimization?.tiling === 'off'
-                    ? 'off'
-                    : spec.optimization?.tileLayout === 'twin'
-                      ? 'twin'
-                      : spec.optimization?.tileLayout === 'stack'
-                        ? 'stack'
-                        : 'auto'
-                }
-                onChange={(e) => {
-                  const val = e.target.value as 'auto' | 'twin' | 'stack' | 'off';
-                  updateSpec((prev) => {
-                    const base = prev.optimization ?? defaultOptimizationConfig('compact');
-                    return {
-                      ...prev,
-                      optimization: {
-                        ...base,
-                        tiling: val === 'off' ? 'off' : 'auto',
-                        tileLayout: val === 'off' ? 'auto' : val,
-                      },
-                    };
-                  }, true);
-                }}
-              >
-                <option value="auto">Auto (Divide &amp; Conquer)</option>
-                <option value="twin">Twin-Wing (2×R Mirrored)</option>
-                <option value="stack">1D Bus Stack (1×K)</option>
-                <option value="off">Off (Flat P&amp;R)</option>
-              </select>
-            </div>
-            <div style={{ marginTop: 8 }}>
-              <label className="field-label">Perimeter Header</label>
-              <select
-                className="select"
-                value={spec.floorplan.headerMode ?? 'none'}
-                onChange={(e) => {
-                  const hm = e.target.value as PerimeterHeaderMode;
-                  updateSpec(
-                    (prev) => ({
-                      ...prev,
-                      floorplan: { ...prev.floorplan, headerMode: hm },
-                    }),
-                    true,
-                  );
-                }}
-              >
-                <option value="none">None (Direct Edge Pins)</option>
-                <option value="bus-header">Main Bus Header (Grouped)</option>
-                <option value="train-station">Train Station Bay (Rail + Chests)</option>
-              </select>
-            </div>
-            <div style={{ marginTop: 8 }}>
-              <label
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  cursor: 'pointer',
-                  fontSize: 11.5,
-                }}
-                title="Route multi-bay interior trunks to the North outer edge so every pin sits on the die boundary"
-              >
-                <input
-                  type="checkbox"
-                  checked={spec.floorplan.requireEdgePins ?? true}
-                  onChange={(e) =>
-                    updateSpec(
-                      (prev) => ({
-                        ...prev,
-                        floorplan: { ...prev.floorplan, requireEdgePins: e.target.checked },
-                      }),
-                      true,
-                    )
-                  }
-                />
-                Keep all pins on outer edge
-              </label>
-            </div>
-            <div style={{ marginTop: 6 }}>
-              <label
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  cursor: 'pointer',
-                  fontSize: 11.5,
-                }}
-                title="Fuse 3:2 Copper Cable -> Electronic Circuit, 1:2 Iron Stick -> Rail, and 1:1 EM Plant stages into direct-insertion compound macros"
-              >
-                <input
-                  type="checkbox"
-                  checked={spec.optimization?.directInsertion ?? false}
-                  onChange={(e) =>
-                    updateSpec(
-                      (prev) => {
+                        true,
+                      );
+                    }}
+                  >
+                    <option value="compact">Compact (Layered Bus + All Opts)</option>
+                    <option value="balanced">Balanced (Layered + Compact)</option>
+                    <option value="fast">Fast</option>
+                  </select>
+                </div>
+
+                <div style={{ marginTop: 8 }}>
+                  <label className="field-label" htmlFor="floorplan-tiling">
+                    Large-Factory Tiling
+                  </label>
+                  <select
+                    id="floorplan-tiling"
+                    className="select"
+                    value={
+                      spec.optimization?.tiling === 'off'
+                        ? 'off'
+                        : spec.optimization?.tileLayout === 'twin'
+                          ? 'twin'
+                          : spec.optimization?.tileLayout === 'stack'
+                            ? 'stack'
+                            : 'auto'
+                    }
+                    onChange={(e) => {
+                      const val = e.target.value as 'auto' | 'twin' | 'stack' | 'off';
+                      updateSpec((prev) => {
                         const base = prev.optimization ?? defaultOptimizationConfig('compact');
                         return {
                           ...prev,
                           optimization: {
                             ...base,
-                            directInsertion: e.target.checked,
+                            tiling: val === 'off' ? 'off' : 'auto',
+                            tileLayout: val === 'off' ? 'auto' : val,
                           },
                         };
-                      },
-                      true,
-                    )
-                  }
-                />
-                Direct-insertion macros (3:2 / 1:2)
-              </label>
-            </div>
-            {(spec.pins.length > 0 || Object.keys(spec.macroOverrides).length > 0) && (
-              <button
-                className="btn btn-sm"
-                style={{ width: '100%', marginTop: 8, justifyContent: 'center' }}
-                onClick={() => {
-                  pushHistory(spec);
-                  updateSpec(
-                    (prev) => ({ ...prev, pins: [], macroOverrides: {} }),
-                    true,
-                  );
-                }}
-              >
-                Reset Pin &amp; Macro Overrides
-              </button>
+                      }, true);
+                    }}
+                  >
+                    <option value="auto">Auto (Divide &amp; Conquer)</option>
+                    <option value="twin">Twin-Wing (2×R Mirrored)</option>
+                    <option value="stack">1D Bus Stack (1×K)</option>
+                    <option value="off">Off (Flat P&amp;R)</option>
+                  </select>
+                </div>
+
+                <div style={{ marginTop: 8 }}>
+                  <label className="field-label" htmlFor="floorplan-header-mode">
+                    Perimeter Header
+                  </label>
+                  <select
+                    id="floorplan-header-mode"
+                    className="select"
+                    value={spec.floorplan.headerMode ?? 'none'}
+                    onChange={(e) => {
+                      const hm = e.target.value as PerimeterHeaderMode;
+                      updateSpec(
+                        (prev) => ({
+                          ...prev,
+                          floorplan: { ...prev.floorplan, headerMode: hm },
+                        }),
+                        true,
+                      );
+                    }}
+                  >
+                    <option value="none">None (Direct Edge Pins)</option>
+                    <option value="bus-header">Main Bus Header (Grouped)</option>
+                    <option value="train-station">Train Station Bay (Rail + Chests)</option>
+                  </select>
+                </div>
+
+                <div className="checkbox-list">
+                  <label
+                    className="checkbox-row"
+                    title="Route multi-bay interior trunks to the North outer edge so every pin sits on the die boundary"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={spec.floorplan.requireEdgePins ?? true}
+                      onChange={(e) =>
+                        updateSpec(
+                          (prev) => ({
+                            ...prev,
+                            floorplan: { ...prev.floorplan, requireEdgePins: e.target.checked },
+                          }),
+                          true,
+                        )
+                      }
+                    />
+                    <span>Keep all pins on outer edge</span>
+                  </label>
+                  <label
+                    className="checkbox-row"
+                    title="Fuse 3:2 Copper Cable -> Electronic Circuit, 1:2 Iron Stick -> Rail, and 1:1 EM Plant stages into direct-insertion compound macros"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={spec.optimization?.directInsertion ?? false}
+                      onChange={(e) =>
+                        updateSpec(
+                          (prev) => {
+                            const base = prev.optimization ?? defaultOptimizationConfig('compact');
+                            return {
+                              ...prev,
+                              optimization: {
+                                ...base,
+                                directInsertion: e.target.checked,
+                              },
+                            };
+                          },
+                          true,
+                        )
+                      }
+                    />
+                    <span>Direct-insertion macros (3:2 / 1:2)</span>
+                  </label>
+                </div>
+
+                {(spec.pins.length > 0 || Object.keys(spec.macroOverrides).length > 0) && (
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    style={{ width: '100%', marginTop: 8, justifyContent: 'center' }}
+                    onClick={() => {
+                      pushHistory(specRef.current);
+                      updateSpec(
+                        (prev) => ({ ...prev, pins: [], macroOverrides: {} }),
+                        true,
+                      );
+                    }}
+                  >
+                    Reset Pin &amp; Macro Overrides
+                  </button>
+                )}
+              </div>
             )}
-          </div>
+          </section>
 
           {/* Recipe Catalog Import / Template */}
-          <div className="panel-section">
-            <div className="section-title">
-              <span>Recipe Catalog</span>
+          <section className="accordion-section">
+            <button
+              type="button"
+              className="accordion-header"
+              aria-expanded={sectionsOpen.catalog}
+              onClick={() => toggleSection('catalog')}
+            >
+              <span className="accordion-header-left">
+                {sectionsOpen.catalog ? (
+                  <ChevronDown size={13} className="accordion-chevron" />
+                ) : (
+                  <ChevronRight size={13} className="accordion-chevron" />
+                )}
+                <span className="accordion-title">Recipe Catalog</span>
+              </span>
               <span
-                className="mono"
-                style={{
-                  fontSize: 10,
-                  color: customCatalogInfo ? 'var(--bp-amber)' : 'var(--bp-text-muted)',
-                }}
+                className="accordion-summary"
+                style={
+                  customCatalogInfo
+                    ? { color: 'var(--accent-brass-hover)', borderColor: 'rgba(245, 158, 11, 0.45)' }
+                    : undefined
+                }
               >
                 {customCatalogInfo ? 'Custom JSON' : `v${catalog.version}`}
               </span>
-            </div>
+            </button>
 
-            {customCatalogInfo ? (
-              <div
-                style={{
-                  fontSize: 11,
-                  color: '#fde68a',
-                  background: 'rgba(245, 158, 11, 0.1)',
-                  border: '1px solid rgba(245, 158, 11, 0.35)',
-                  borderRadius: 5,
-                  padding: '5px 7px',
-                  marginBottom: 7,
-                }}
-              >
-                {customCatalogInfo.filename} ({customCatalogInfo.items} items ·{' '}
-                {customCatalogInfo.recipes} recipes)
-              </div>
-            ) : (
-              <div style={{ fontSize: 11, color: 'var(--bp-text-muted)', marginBottom: 7 }}>
-                Built-in Factorio 2.0 ({Object.keys(catalog.items).length} items ·{' '}
-                {Object.keys(catalog.recipesById).length} recipes)
+            {sectionsOpen.catalog && (
+              <div className="accordion-body">
+                {customCatalogInfo ? (
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: '#fde68a',
+                      background: 'rgba(245, 158, 11, 0.1)',
+                      border: '1px solid rgba(245, 158, 11, 0.35)',
+                      borderRadius: 5,
+                      padding: '5px 7px',
+                      marginBottom: 7,
+                    }}
+                  >
+                    {customCatalogInfo.filename} ({customCatalogInfo.items} items ·{' '}
+                    {customCatalogInfo.recipes} recipes)
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 7 }}>
+                    Built-in Factorio 2.0 ({Object.keys(catalog.items).length} items ·{' '}
+                    {Object.keys(catalog.recipesById).length} recipes)
+                  </div>
+                )}
+
+                <input
+                  ref={catalogInputRef}
+                  type="file"
+                  accept=".json,application/json"
+                  style={{ display: 'none' }}
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    e.target.value = '';
+                    if (!file) return;
+                    try {
+                      const text = await file.text();
+                      const parsed = JSON.parse(text) as RawCatalog;
+                      const loaded = loadCustomCatalog(parsed);
+                      customCatalogRawRef.current = parsed;
+                      workerRef.current?.postMessage({
+                        type: 'set-catalog',
+                        raw: parsed,
+                      } satisfies WorkerRequest);
+                      setCatalogVersion((v) => v + 1);
+                      setCustomCatalogInfo({
+                        filename: file.name,
+                        items: Object.keys(loaded.items).length,
+                        recipes: Object.keys(loaded.recipesById).length,
+                      });
+                      setErrorMsg(null);
+                      showToast(
+                        `Loaded "${file.name}" (${Object.keys(loaded.recipesById).length} recipes)!`,
+                      );
+                      const curSpec = specRef.current;
+                      const allTargetsValid = curSpec.targets.every(
+                        (t) => (loaded.recipesByOutput[t.item]?.length ?? 0) > 0,
+                      );
+                      if (allTargetsValid) {
+                        runFull(curSpec);
+                      } else if (loaded.solidTargets.length > 0) {
+                        const fallbackItem = loaded.solidTargets[0].outputItem;
+                        const nextSpec: DesignSpec = {
+                          ...curSpec,
+                          targets: [{ item: fallbackItem, ratePerMin: curSpec.targets[0]?.ratePerMin ?? 60 }],
+                          pins: [],
+                          macroOverrides: {},
+                        };
+                        setSpecSynced(nextSpec);
+                        setActivePresetId('custom');
+                        runFull(nextSpec);
+                      }
+                    } catch (err) {
+                      setErrorMsg(
+                        `Custom catalog import failed: ${err instanceof Error ? err.message : String(err)}`,
+                      );
+                    }
+                  }}
+                />
+
+                <div className="field-grid">
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    style={{ justifyContent: 'center' }}
+                    onClick={() => catalogInputRef.current?.click()}
+                    title="Import custom Factorio or modded recipe catalog JSON"
+                  >
+                    <Upload size={12} /> Import JSON
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    style={{ justifyContent: 'center' }}
+                    onClick={() => {
+                      const raw = getDefaultCatalogRaw();
+                      const blob = new Blob([JSON.stringify(raw, null, 2)], {
+                        type: 'application/json;charset=utf-8',
+                      });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = 'beltroad-recipes-template.json';
+                      a.click();
+                      URL.revokeObjectURL(url);
+                    }}
+                    title="Download built-in recipe catalog as editable JSON template"
+                  >
+                    <Download size={12} /> Template
+                  </button>
+                </div>
+
+                {customCatalogInfo && (
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    style={{ width: '100%', marginTop: 6, justifyContent: 'center' }}
+                    onClick={() => {
+                      const restored = resetDefaultCatalog();
+                      customCatalogRawRef.current = null;
+                      workerRef.current?.postMessage({
+                        type: 'set-catalog',
+                        raw: null,
+                      } satisfies WorkerRequest);
+                      setCatalogVersion((v) => v + 1);
+                      setCustomCatalogInfo(null);
+                      setErrorMsg(null);
+                      showToast('Restored built-in Factorio 2.0 recipe catalog.');
+                      const curSpec = specRef.current;
+                      if (curSpec.targets.every((t) => (restored.recipesByOutput[t.item]?.length ?? 0) > 0)) {
+                        runFull(curSpec);
+                      } else {
+                        const presetSpec = structuredClone(BUILTIN_PRESETS[1].spec);
+                        setSpecSynced(presetSpec);
+                        setActivePresetId(BUILTIN_PRESETS[1].id);
+                        runFull(presetSpec);
+                      }
+                    }}
+                  >
+                    <RotateCcw size={12} /> Reset Default Catalog
+                  </button>
+                )}
               </div>
             )}
-
-            <input
-              ref={catalogInputRef}
-              type="file"
-              accept=".json,application/json"
-              style={{ display: 'none' }}
-              onChange={async (e) => {
-                const file = e.target.files?.[0];
-                e.target.value = '';
-                if (!file) return;
-                try {
-                  const text = await file.text();
-                  const parsed = JSON.parse(text) as RawCatalog;
-                  const loaded = loadCustomCatalog(parsed);
-                  customCatalogRawRef.current = parsed;
-                  workerRef.current?.postMessage({
-                    type: 'set-catalog',
-                    raw: parsed,
-                  } satisfies WorkerRequest);
-                  setCatalogVersion((v) => v + 1);
-                  setCustomCatalogInfo({
-                    filename: file.name,
-                    items: Object.keys(loaded.items).length,
-                    recipes: Object.keys(loaded.recipesById).length,
-                  });
-                  setErrorMsg(null);
-                  showToast(
-                    `Loaded "${file.name}" (${Object.keys(loaded.recipesById).length} recipes)!`,
-                  );
-                  const allTargetsValid = spec.targets.every(
-                    (t) => (loaded.recipesByOutput[t.item]?.length ?? 0) > 0,
-                  );
-                  if (allTargetsValid) {
-                    runFull(spec);
-                  } else if (loaded.solidTargets.length > 0) {
-                    const fallbackItem = loaded.solidTargets[0].outputItem;
-                    const nextSpec: DesignSpec = {
-                      ...spec,
-                      targets: [{ item: fallbackItem, ratePerMin: spec.targets[0]?.ratePerMin ?? 60 }],
-                      pins: [],
-                      macroOverrides: {},
-                    };
-                    setSpec(nextSpec);
-                    setActivePresetId('custom');
-                    runFull(nextSpec);
-                  }
-                } catch (err) {
-                  setErrorMsg(
-                    `Custom catalog import failed: ${err instanceof Error ? err.message : String(err)}`,
-                  );
-                }
-              }}
-            />
-
-            <div className="field-grid">
-              <button
-                type="button"
-                className="btn btn-sm"
-                style={{ justifyContent: 'center' }}
-                onClick={() => catalogInputRef.current?.click()}
-                title="Import custom Factorio or modded recipe catalog JSON"
-              >
-                <Upload size={12} /> Import JSON
-              </button>
-              <button
-                type="button"
-                className="btn btn-sm"
-                style={{ justifyContent: 'center' }}
-                onClick={() => {
-                  const raw = getDefaultCatalogRaw();
-                  const blob = new Blob([JSON.stringify(raw, null, 2)], {
-                    type: 'application/json;charset=utf-8',
-                  });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = 'beltroad-recipes-template.json';
-                  a.click();
-                  URL.revokeObjectURL(url);
-                }}
-                title="Download built-in recipe catalog as editable JSON template"
-              >
-                <Download size={12} /> Template
-              </button>
-            </div>
-
-            {customCatalogInfo && (
-              <button
-                type="button"
-                className="btn btn-sm"
-                style={{ width: '100%', marginTop: 6, justifyContent: 'center' }}
-                onClick={() => {
-                  const restored = resetDefaultCatalog();
-                  customCatalogRawRef.current = null;
-                  workerRef.current?.postMessage({
-                    type: 'set-catalog',
-                    raw: null,
-                  } satisfies WorkerRequest);
-                  setCatalogVersion((v) => v + 1);
-                  setCustomCatalogInfo(null);
-                  setErrorMsg(null);
-                  showToast('Restored built-in Factorio 2.0 recipe catalog.');
-                  if (spec.targets.every((t) => (restored.recipesByOutput[t.item]?.length ?? 0) > 0)) {
-                    runFull(spec);
-                  } else {
-                    const presetSpec = structuredClone(BUILTIN_PRESETS[1].spec);
-                    setSpec(presetSpec);
-                    setActivePresetId(BUILTIN_PRESETS[1].id);
-                    runFull(presetSpec);
-                  }
-                }}
-              >
-                <RotateCcw size={12} /> Reset Default Catalog
-              </button>
-            )}
-          </div>
+          </section>
         </aside>
 
         {/* Center: Tabs + Blueprint Canvas / Netlist / YAML */}
@@ -2197,7 +2281,7 @@ export default function App() {
               synthesis={synthesis}
               spec={spec}
               onToggleInputOverride={(item, nextMode) => {
-                pushHistory(spec);
+                pushHistory(specRef.current);
                 updateSpec(
                   (prev) => {
                     const nextOverrides = { ...prev.inputOverrides };
@@ -2218,8 +2302,8 @@ export default function App() {
             <YamlEditor
               spec={spec}
               onApplySpec={(next) => {
-                pushHistory(spec);
-                setSpec(next);
+                pushHistory(specRef.current);
+                setSpecSynced(next);
                 setActivePresetId('custom');
                 setSelection(null);
                 runFull(next);
@@ -2233,15 +2317,15 @@ export default function App() {
           {/* Inspector for Selected Pin, Macro, or Net */}
           {(selectedPin || selectedMacro || selectedNet) && (
             <div className="panel-section">
-              <div className="section-title">
-                <span>
+              <div className="section-header-row">
+                <span className="section-title">
                   {selectedPin
                     ? 'Pin Inspector'
                     : selectedMacro
                       ? 'Macro Inspector'
                       : 'Net Inspector'}
                 </span>
-                <button className="btn btn-sm" onClick={() => setSelection(null)}>
+                <button type="button" className="btn btn-sm" onClick={() => setSelection(null)}>
                   Clear
                 </button>
               </div>
@@ -2250,18 +2334,18 @@ export default function App() {
                 const srcInfo = resolveNetEndpointInfo(selectedNet.source, floorplan);
                 const snkInfo = resolveNetEndpointInfo(selectedNet.sink, floorplan);
                 return (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
                     <div className="row" style={{ gap: 8 }}>
                       <ItemIcon itemId={selectedNet.item} size={22} />
                       <div style={{ minWidth: 0 }}>
-                        <div style={{ fontWeight: 700, color: '#f8fafc' }}>
+                        <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
                           {getItemMeta(selectedNet.item).name}
                         </div>
                         <div
                           className="mono"
                           style={{
                             fontSize: 10.5,
-                            color: 'var(--bp-text-muted)',
+                            color: 'var(--text-secondary)',
                             overflow: 'hidden',
                             textOverflow: 'ellipsis',
                           }}
@@ -2271,61 +2355,43 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div
-                      style={{
-                        background: '#0b1e33',
-                        border: '1px solid var(--bp-border)',
-                        borderRadius: 5,
-                        padding: '6px 8px',
-                        fontSize: 11.5,
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: 4,
-                      }}
-                    >
+                    <div className="inspector-card">
                       <div>
-                        <span style={{ color: '#4ade80', fontWeight: 600 }}>Source: </span>
+                        <span style={{ color: 'var(--status-pass)', fontWeight: 600 }}>Source: </span>
                         <span className="mono">{srcInfo.label}</span>
                       </div>
                       <div>
                         <span style={{ color: '#f472b6', fontWeight: 600 }}>Sink: </span>
                         <span className="mono">{snkInfo.label}</span>
                       </div>
-                      <div style={{ color: 'var(--bp-text-muted)' }}>
+                      <div style={{ color: 'var(--text-secondary)' }}>
                         Throughput:{' '}
-                        <strong className="mono" style={{ color: '#f8fafc' }}>
+                        <strong className="mono" style={{ color: 'var(--text-primary)' }}>
                           {selectedNet.ratePerSec.toFixed(2)}/s
                         </strong>{' '}
-                        ({(selectedNet.ratePerSec * 60).toFixed(0)}/min •{' '}
-                        {selectedNet.beltTier})
+                        <span className="mono">
+                          ({(selectedNet.ratePerSec * 60).toFixed(0)}/min • {selectedNet.beltTier})
+                        </span>
                       </div>
                       {selectedStaNet && (
                         <div>
                           <div className="row" style={{ justifyContent: 'space-between' }}>
-                            <span style={{ color: 'var(--bp-text-muted)' }}>Belt Utilization</span>
+                            <span style={{ color: 'var(--text-secondary)' }}>Belt Utilization</span>
                             <span className="mono">
                               {(selectedStaNet.utilization * 100).toFixed(1)}%
                             </span>
                           </div>
-                          <div
-                            style={{
-                              height: 4,
-                              background: '#091a2c',
-                              borderRadius: 2,
-                              overflow: 'hidden',
-                              marginTop: 2,
-                            }}
-                          >
+                          <div className="progress-track" style={{ marginTop: 3 }}>
                             <div
+                              className="progress-fill"
                               style={{
                                 width: `${Math.min(100, selectedStaNet.utilization * 100)}%`,
-                                height: '100%',
                                 background:
                                   selectedStaNet.utilization > 1
-                                    ? '#ef4444'
+                                    ? 'var(--status-fail)'
                                     : selectedStaNet.utilization > 0.8
-                                      ? '#f59e0b'
-                                      : '#4ade80',
+                                      ? 'var(--accent-brass)'
+                                      : 'var(--status-pass)',
                               }}
                             />
                           </div>
@@ -2341,9 +2407,9 @@ export default function App() {
                                     fontSize: 10.5,
                                     color:
                                       (selectedStaNet.laneUtilization ?? 0) > 1
-                                        ? '#f87171'
-                                        : 'var(--bp-text-muted)',
-                                    marginTop: 3,
+                                        ? 'var(--status-fail)'
+                                        : 'var(--text-secondary)',
+                                    marginTop: 4,
                                   }}
                                 >
                                   L: {selectedStaNet.leftRatePerSec.toFixed(2)}/s ({lPct.toFixed(0)}%) • R:{' '}
@@ -2354,7 +2420,7 @@ export default function App() {
                         </div>
                       )}
                       {selectedRoutedNet && (
-                        <div className="mono" style={{ fontSize: 11, color: 'var(--bp-cyan)' }}>
+                        <div className="mono" style={{ fontSize: 11, color: 'var(--accent-cyan)' }}>
                           {selectedRoutedNet.tiles.length} tiles •{' '}
                           {selectedRoutedNet.undergroundCount} UGs • {selectedNetBends} bends
                         </div>
@@ -2392,21 +2458,26 @@ export default function App() {
               })()}
 
               {selectedPin && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div className="inspector-card">
                   <div className="row" style={{ gap: 8 }}>
                     <ItemIcon itemId={selectedPin.item} size={20} />
-                    <div className="mono" style={{ fontWeight: 700, color: '#f8fafc' }}>
+                    <div className="mono" style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
                       {selectedPin.id}
                     </div>
                   </div>
-                  <div style={{ fontSize: 11.5, color: 'var(--bp-text-muted)' }}>
+                  <div style={{ fontSize: 11.5, color: 'var(--text-secondary)' }}>
                     {getItemMeta(selectedPin.item).name} •{' '}
-                    {(selectedPin.ratePerSec * 60).toFixed(1)}/min ({selectedPin.beltTier})
+                    <span className="mono">
+                      {(selectedPin.ratePerSec * 60).toFixed(1)}/min ({selectedPin.beltTier})
+                    </span>
                   </div>
                   <div className="field-grid">
                     <div>
-                      <label className="field-label">Edge</label>
+                      <label className="field-label" htmlFor="inspector-pin-edge">
+                        Edge
+                      </label>
                       <select
+                        id="inspector-pin-edge"
                         className="select"
                         value={selectedPin.edge}
                         onChange={(e) =>
@@ -2424,19 +2495,22 @@ export default function App() {
                       </select>
                     </div>
                     <div>
-                      <label className="field-label">Offset</label>
-                      <input
-                        type="number"
-                        className="input mono"
+                      <label className="field-label" htmlFor="inspector-pin-offset">
+                        Offset
+                      </label>
+                      <NumericInput
+                        key={`pin-offset-${selectedPin.id}`}
+                        id="inspector-pin-offset"
+                        aria-label="Pin Offset"
+                        integer
                         min={1}
+                        step={1}
                         value={selectedPin.offset}
-                        onChange={(e) =>
-                          handleMovePin(
-                            selectedPin.id,
-                            selectedPin.edge,
-                            Math.max(1, Number(e.target.value) || 1),
-                          )
-                        }
+                        onCommit={(val) => {
+                          if (val !== selectedPin.offset) {
+                            handleMovePin(selectedPin.id, selectedPin.edge, val);
+                          }
+                        }}
                       />
                     </div>
                   </div>
@@ -2444,66 +2518,76 @@ export default function App() {
               )}
 
               {selectedMacro && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div className="inspector-card">
                   <div className="row" style={{ gap: 8 }}>
                     <ItemIcon itemId={selectedMacro.macro.outputItem} size={20} />
-                    <div style={{ fontWeight: 700, color: '#f8fafc' }}>
+                    <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
                       {selectedMacro.macro.label} ({selectedMacro.macro.sublabel})
                     </div>
                   </div>
-                  <div className="mono" style={{ fontSize: 11, color: 'var(--bp-text-muted)' }}>
+                  <div className="mono" style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
                     {selectedMacro.id} • {selectedMacro.macro.width}×{selectedMacro.macro.height}
                   </div>
                   <div className="field-grid">
                     <div>
-                      <label className="field-label">X</label>
-                      <input
-                        type="number"
-                        className="input mono"
+                      <label className="field-label" htmlFor="inspector-macro-x">
+                        X
+                      </label>
+                      <NumericInput
+                        key={`macro-x-${selectedMacro.id}`}
+                        id="inspector-macro-x"
+                        aria-label="Macro X"
+                        integer
+                        step={1}
                         value={selectedMacro.x}
-                        onChange={(e) =>
-                          handleMoveMacro(
-                            selectedMacro.id,
-                            Number(e.target.value) || 0,
-                            selectedMacro.y,
-                          )
-                        }
+                        onCommit={(val) => {
+                          if (val !== selectedMacro.x) {
+                            handleMoveMacro(selectedMacro.id, val, selectedMacro.y);
+                          }
+                        }}
                       />
                     </div>
                     <div>
-                      <label className="field-label">Y</label>
-                      <input
-                        type="number"
-                        className="input mono"
+                      <label className="field-label" htmlFor="inspector-macro-y">
+                        Y
+                      </label>
+                      <NumericInput
+                        key={`macro-y-${selectedMacro.id}`}
+                        id="inspector-macro-y"
+                        aria-label="Macro Y"
+                        integer
+                        step={1}
                         value={selectedMacro.y}
-                        onChange={(e) =>
-                          handleMoveMacro(
-                            selectedMacro.id,
-                            selectedMacro.x,
-                            Number(e.target.value) || 0,
-                          )
-                        }
+                        onCommit={(val) => {
+                          if (val !== selectedMacro.y) {
+                            handleMoveMacro(selectedMacro.id, selectedMacro.x, val);
+                          }
+                        }}
                       />
                     </div>
                   </div>
-                  <div className="row" style={{ flexWrap: 'wrap' }}>
+                  <div className="row" style={{ flexWrap: 'wrap', marginTop: 2 }}>
                     <button
+                      type="button"
                       className="btn btn-sm"
                       onClick={() => handleRotateMacro(selectedMacro.id)}
                     >
                       <RotateCw size={12} /> Rotate ({selectedMacro.macro.rotation * 90}°)
                     </button>
                     <button
+                      type="button"
                       className="btn btn-sm"
                       onClick={() => handleFlipMacro(selectedMacro.id)}
                     >
                       <ArrowUpDown size={12} /> Flip Y{selectedMacro.macro.flippedY ? ' (On)' : ''}
                     </button>
                     <button
+                      type="button"
                       className="btn btn-sm"
                       onClick={() => {
-                        pushHistory(spec);
-                        const ov = spec.macroOverrides[selectedMacro.id] ?? {};
+                        const curSpec = specRef.current;
+                        pushHistory(curSpec);
+                        const ov = curSpec.macroOverrides[selectedMacro.id] ?? {};
                         const nextLocked = !selectedMacro.locked;
                         updateSpec((prev) => ({
                           ...prev,
@@ -2540,9 +2624,9 @@ export default function App() {
 
           {/* Signoff DRC & STA */}
           <div className="panel-section">
-            <div className="section-title">
-              <span>Signoff Verification</span>
-              <div className="row">
+            <div className="section-header-row">
+              <span className="section-title">Signoff Verification</span>
+              <div className="pill-group">
                 {drc && (
                   <span className={`pill ${drc.passed ? 'pill-pass' : 'pill-fail'}`}>
                     {drc.passed ? <CheckCircle2 size={11} /> : <AlertTriangle size={11} />}
@@ -2558,22 +2642,12 @@ export default function App() {
             </div>
 
             {floorplan && floorplan.warnings.length > 0 && (
-              <div
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 4,
-                  marginBottom: 8,
-                  padding: '6px 8px',
-                  borderRadius: 6,
-                  border: '1px solid rgba(245, 158, 11, 0.45)',
-                  background: 'rgba(245, 158, 11, 0.12)',
-                  color: '#fde68a',
-                  fontSize: 11,
-                }}
-              >
+              <div className="warning-banner">
                 {floorplan.warnings.map((w, i) => (
-                  <div key={i}>⚠ {w}</div>
+                  <div key={i} className="warning-banner-item">
+                    <AlertTriangle size={12} style={{ flexShrink: 0, marginTop: 1 }} />
+                    <span>{w}</span>
+                  </div>
                 ))}
               </div>
             )}
@@ -2582,19 +2656,14 @@ export default function App() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 8 }}>
                 {drc.violations.slice(0, 12).map((v) => (
                   <button
+                    type="button"
                     key={v.id}
-                    className="btn btn-sm"
-                    style={{
-                      justifyContent: 'flex-start',
-                      textAlign: 'left',
-                      borderColor: 'rgba(248,113,113,0.45)',
-                      background: 'rgba(248,113,113,0.1)',
-                    }}
+                    className="btn btn-sm violation-btn"
                     onClick={() =>
                       setFocusTile({ tx: v.tx, ty: v.ty, nonce: Date.now() })
                     }
                   >
-                    <span className="mono" style={{ color: 'var(--bp-red)' }}>
+                    <span className="mono" style={{ color: 'var(--status-fail)' }}>
                       [{v.code}] ({v.tx},{v.ty})
                     </span>
                     <span style={{ fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -2606,10 +2675,10 @@ export default function App() {
             )}
 
             {sta && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-                <div style={{ fontSize: 11, color: 'var(--bp-text-muted)' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
                   Peak Net/Macro Utilization:{' '}
-                  <strong className="mono" style={{ color: '#f8fafc' }}>
+                  <strong className="mono" style={{ color: 'var(--text-primary)' }}>
                     {(sta.maxUtilization * 100).toFixed(1)}%
                   </strong>
                 </div>
@@ -2626,15 +2695,7 @@ export default function App() {
                         <button
                           key={i}
                           type="button"
-                          className="btn btn-sm"
-                          style={{
-                            justifyContent: 'flex-start',
-                            textAlign: 'left',
-                            fontSize: 11,
-                            color: 'var(--bp-red)',
-                            borderColor: 'rgba(248,113,113,0.4)',
-                            background: 'rgba(248,113,113,0.08)',
-                          }}
+                          className="btn btn-sm bottleneck-btn"
                           title="Click to focus canvas on bottleneck"
                           onClick={() => {
                             if (netMatch) {
@@ -2720,7 +2781,7 @@ export default function App() {
                               <span
                                 className="mono"
                                 style={{
-                                  color: effUtil > 1 ? 'var(--bp-red)' : effUtil > 0.8 ? 'var(--bp-amber)' : undefined,
+                                  color: effUtil > 1 ? 'var(--status-fail)' : effUtil > 0.8 ? 'var(--accent-brass)' : undefined,
                                 }}
                               >
                                 {(effUtil * 100).toFixed(0)}%
@@ -2730,25 +2791,19 @@ export default function App() {
                               {[lUtil, rUtil].map((lu, li) => (
                                 <div
                                   key={li}
-                                  style={{
-                                    width: '100%',
-                                    height: 2.5,
-                                    background: '#091a2c',
-                                    borderRadius: 2,
-                                    overflow: 'hidden',
-                                  }}
+                                  className="progress-track progress-track-thin"
                                 >
                                   <div
+                                    className="progress-fill"
                                     style={{
                                       width: `${Math.min(100, lu * 100)}%`,
-                                      height: '100%',
                                       background:
                                         lu > 1
-                                          ? '#ef4444'
+                                          ? 'var(--status-fail)'
                                           : lu > 0.8
-                                            ? '#f59e0b'
+                                            ? 'var(--accent-brass)'
                                             : lu > 0.001
-                                              ? '#4ade80'
+                                              ? 'var(--status-pass)'
                                               : 'transparent',
                                     }}
                                   />
@@ -2787,31 +2842,23 @@ export default function App() {
                                   overflow: 'hidden',
                                   textOverflow: 'ellipsis',
                                   whiteSpace: 'nowrap',
-                                  color: !ok ? 'var(--bp-red)' : undefined,
+                                  color: !ok ? 'var(--status-fail)' : undefined,
                                 }}
                               >
                                 {m.macroId} ({m.machineCount}m)
                               </span>
                               <span className="mono">{(m.utilization * 100).toFixed(0)}%</span>
                             </div>
-                            <div
-                              style={{
-                                width: '100%',
-                                height: 4,
-                                background: '#091a2c',
-                                borderRadius: 2,
-                                overflow: 'hidden',
-                              }}
-                            >
+                            <div className="progress-track">
                               <div
+                                className="progress-fill"
                                 style={{
                                   width: `${Math.min(100, m.utilization * 100)}%`,
-                                  height: '100%',
                                   background: !ok
-                                    ? '#ef4444'
+                                    ? 'var(--status-fail)'
                                     : m.utilization > 0.9
-                                      ? '#f59e0b'
-                                      : '#4ade80',
+                                      ? 'var(--accent-brass)'
+                                      : 'var(--status-pass)',
                                 }}
                               />
                             </div>
@@ -2838,7 +2885,7 @@ export default function App() {
                         style={{
                           fontSize: 10.5,
                           fontWeight: 400,
-                          color: 'var(--bp-text-muted)',
+                          color: 'var(--text-secondary)',
                           marginLeft: 5,
                         }}
                       >
@@ -2901,7 +2948,7 @@ export default function App() {
                       style={{
                         fontSize: 11,
                         fontWeight: 400,
-                        color: 'var(--bp-text-muted)',
+                        color: 'var(--text-secondary)',
                         marginLeft: 8,
                       }}
                     >
@@ -2916,22 +2963,11 @@ export default function App() {
             {fullResult && (
               <div style={{ marginTop: 10 }}>
                 <div className="field-label">Entity Bill of Materials ({allEntities.length} total)</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 3, maxHeight: 220, overflowY: 'auto' }}>
+                <div className="bom-list">
                   {Object.entries(fullResult.bom.entities)
                     .sort((a, b) => b[1] - a[1])
                     .map(([name, count]) => (
-                      <div
-                        key={name}
-                        className="row"
-                        title={name}
-                        style={{
-                          justifyContent: 'space-between',
-                          fontSize: 11.5,
-                          padding: '3px 6px',
-                          background: '#0b1e33',
-                          borderRadius: 3,
-                        }}
-                      >
+                      <div key={name} className="bom-row" title={name}>
                         <span className="row" style={{ gap: 6, minWidth: 0 }}>
                           <ItemIcon itemId={name} size={16} />
                           <span
@@ -2944,9 +2980,7 @@ export default function App() {
                             {formatEntityLabel(name)}
                           </span>
                         </span>
-                        <strong className="mono" style={{ color: 'var(--bp-cyan)' }}>
-                          {count}
-                        </strong>
+                        <strong className="bom-count">{count}</strong>
                       </div>
                     ))}
                 </div>
