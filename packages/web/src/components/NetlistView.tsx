@@ -176,8 +176,7 @@ export const NetlistView: React.FC<NetlistViewProps> = ({
             const meta = getItemMeta(d.item);
             const isTarget = layout.targetSet.has(d.item);
             const isInput = d.mode === 'input-pin';
-            const lockedReason =
-              d.forcedInputReason === 'no-recipe' || d.forcedInputReason === 'fluid-v1';
+            const lockedReason = d.forcedInputReason === 'no-recipe';
             const canToggle = !lockedReason && !isTarget;
             const borderColor = isTarget
               ? '#f59e0b'

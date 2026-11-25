@@ -276,8 +276,82 @@ const BUS_PRESET_ITEMS = new Set([
   'low-density-structure',
 ]);
 
+export interface InputPresetMeta {
+  id: InputPreset;
+  label: string;
+  shortLabel: string;
+  description: string;
+}
+
+export const INPUT_PRESET_LIST: InputPresetMeta[] = [
+  {
+    id: 'raw',
+    label: 'Raw Ores & Fluids',
+    shortLabel: 'Raw',
+    description:
+      'Only ores, coal, stone, and raw fluids enter as pins; smelt plates and craft everything on-site.',
+  },
+  {
+    id: 'plates',
+    label: 'Plates & Base',
+    shortLabel: 'Plates',
+    description: 'Iron/Copper/Steel plates, stone brick, raw resources, and fluids enter as pins.',
+  },
+  {
+    id: 'bus',
+    label: 'Main Bus',
+    shortLabel: 'Bus',
+    description:
+      'Plates plus Green/Red/Blue circuits, plastic, sulfur, battery, electric engine, and LDS.',
+  },
+  {
+    id: 'intermediates',
+    label: 'Mid-Tier Parts',
+    shortLabel: 'Mid-Tier',
+    description:
+      'Bus items plus gears, cables, pipes, engines, robot frames, modules, rails, and Space Age intermediates.',
+  },
+  {
+    id: 'direct',
+    label: 'Direct Ingredients Only',
+    shortLabel: 'Direct',
+    description:
+      'Synthesize only the final target recipe(s); every direct ingredient becomes an external input pin.',
+  },
+];
+
+const INTERMEDIATES_PRESET_ITEMS = new Set([
+  ...BUS_PRESET_ITEMS,
+  'iron-gear-wheel',
+  'copper-cable',
+  'iron-stick',
+  'pipe',
+  'engine-unit',
+  'flying-robot-frame',
+  'inserter',
+  'transport-belt',
+  'rail',
+  'electric-furnace',
+  'speed-module',
+  'productivity-module',
+  'efficiency-module',
+  'stone-wall',
+  'grenade',
+  'piercing-rounds-magazine',
+  'carbon',
+  'tungsten-carbide',
+  'tungsten-plate',
+  'holmium-plate',
+  'superconductor',
+  'supercapacitor',
+  'carbon-fiber',
+  'lithium-plate',
+]);
+
 export function isPresetInputItem(itemId: string, preset: InputPreset): boolean {
+  if (preset === 'direct') return true;
   if (preset === 'raw') return RAW_PRESET_ITEMS.has(itemId);
   if (preset === 'plates') return PLATES_PRESET_ITEMS.has(itemId);
-  return BUS_PRESET_ITEMS.has(itemId);
+  if (preset === 'bus') return BUS_PRESET_ITEMS.has(itemId);
+  return INTERMEDIATES_PRESET_ITEMS.has(itemId);
 }

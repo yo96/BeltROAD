@@ -40,7 +40,7 @@ export type ModuleName =
   | 'efficiency-module-3';
 
 export type PortMarkerMode = 'none' | 'display-panel' | 'constant-combinator';
-export type InputPreset = 'plates' | 'bus' | 'raw';
+export type InputPreset = 'raw' | 'plates' | 'bus' | 'intermediates' | 'direct';
 export type BeaconMode = 'none' | 'row-4' | 'row-8';
 export type BeaconModuleName =
   | 'speed-module'

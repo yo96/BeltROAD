@@ -174,13 +174,13 @@ function computeMinIoMachines(params: {
   return mReq;
 }
 
-interface ItemDecision {
+export interface ItemDecision {
   mode: 'input-pin' | 'synthesize';
   forcedInputReason?: 'no-recipe' | 'fluid-v1' | 'preset';
   recipe?: RecipeDef;
 }
 
-function decideItemMode(
+export function decideItemMode(
   item: string,
   spec: DesignSpec,
   fluidsEnabled: boolean,
@@ -190,15 +190,18 @@ function decideItemMode(
   if (!recipe) {
     return { mode: 'input-pin', forcedInputReason: 'no-recipe' };
   }
-  if (recipe.hasFluid && !fluidsEnabled) {
+  const override = spec.inputOverrides[item];
+  if (override === 'synthesize') {
+    if (!recipe.hasFluid || fluidsEnabled) {
+      return { mode: 'synthesize', recipe };
+    }
     return { mode: 'input-pin', forcedInputReason: 'fluid-v1', recipe };
   }
-  const override = spec.inputOverrides[item];
-  if (override === 'input') {
+  if (override === 'input' && !isExplicitTarget) {
     return { mode: 'input-pin', recipe };
   }
-  if (override === 'synthesize') {
-    return { mode: 'synthesize', recipe };
+  if (recipe.hasFluid && !fluidsEnabled) {
+    return { mode: 'input-pin', forcedInputReason: 'fluid-v1', recipe };
   }
   if (!isExplicitTarget && isPresetInputItem(item, spec.inputPreset)) {
     return { mode: 'input-pin', forcedInputReason: 'preset', recipe };
@@ -385,8 +388,14 @@ export function synthesizeDesign(
     throw new Error('All target production rates must be > 0.');
   }
 
+  const hasFluidSynthOverride = Object.entries(spec.inputOverrides).some(
+    ([item, mode]) =>
+      mode === 'synthesize' &&
+      (isFluidItem(item) || Boolean(getDefaultRecipeForItem(item)?.hasFluid)),
+  );
   const fluidsEnabled =
     Boolean(spec.pdk.enableFluids) ||
+    hasFluidSynthOverride ||
     spec.targets.some((t) => isFluidItem(t.item) || Boolean(getDefaultRecipeForItem(t.item)?.hasFluid));
 
   // 1. Discover reachable graph and decide input-pin vs synthesize

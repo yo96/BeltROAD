@@ -12,6 +12,7 @@ import {
   Edge,
   EntityInstance,
   FloorplanResult,
+  INPUT_PRESET_LIST,
   InputPreset,
   InserterTier,
   ModuleName,
@@ -30,6 +31,7 @@ import {
   StaReport,
   SynthesisResult,
   TargetSpec,
+  applyInputOverride,
   collectLayoutEntities,
   computeRecipeThroughputPerMachine,
   decodeSpecFromUrlHash,
@@ -41,6 +43,7 @@ import {
   getCatalog,
   getDefaultCatalogRaw,
   getItemMeta,
+  inspectInputBoundary,
   isFluidItem,
   loadCustomCatalog,
   mirrorMacroY,
@@ -92,6 +95,7 @@ import {
 } from './components/BlueprintCanvas';
 import { formatEntityLabel, ItemIcon } from './components/ItemIcon';
 import { ItemPicker } from './components/ItemPicker';
+import { InputMaterialsPanel } from './components/InputMaterialsPanel';
 import { NumericInput } from './components/NumericInput';
 import {
   clearLocalFactorioAssets,
@@ -182,6 +186,7 @@ export default function App() {
 
   const [sectionsOpen, setSectionsOpen] = useState({
     targets: true,
+    inputs: true,
     pdk: true,
     floorplan: true,
     catalog: true,
@@ -867,6 +872,12 @@ export default function App() {
       ? `${firstTarget.machines} mach`
       : `${Math.round(firstTarget?.ratePerMin ?? 0)}/m`
   }`;
+  const boundaryPreview = useMemo(() => inspectInputBoundary(spec), [spec, catalogVersion]);
+  const activeInputPresetShort =
+    INPUT_PRESET_LIST.find((p) => p.id === spec.inputPreset)?.shortLabel ?? spec.inputPreset;
+  const inputsSummary = `${activeInputPresetShort}${
+    boundaryPreview.overrideCount > 0 ? ` +${boundaryPreview.overrideCount}` : ''
+  } · ${boundaryPreview.activeInputs.length} in`;
   const beltShort =
     spec.pdk.defaultBeltTier[0].toUpperCase() + spec.pdk.defaultBeltTier.slice(1);
   const pdkSummary = `${beltShort} · Asm${spec.pdk.defaultAssemblerTier}${spec.pdk.spaceAgeBuildings ? ' · SA' : ''}`;
@@ -1316,31 +1327,56 @@ export default function App() {
                   );
                   })}
                 </div>
+              </div>
+            )}
+          </section>
 
-                <div style={{ marginTop: 10 }}>
-                  <label className="field-label" htmlFor="input-preset-select">
-                    Input Pin Boundary Preset
-                  </label>
-                  <select
-                    id="input-preset-select"
-                    className="select"
-                    value={spec.inputPreset}
-                    onChange={(e) =>
-                      updateSpec(
-                        (prev) => ({
-                          ...prev,
-                          inputPreset: e.target.value as InputPreset,
-                          inputOverrides: {},
-                        }),
-                        true,
-                      )
-                    }
-                  >
-                    <option value="plates">Plates &amp; Raw (Iron/Copper/Steel/Brick)</option>
-                    <option value="bus">Bus Intermediates (+ Green/Red Circuits, Plastic)</option>
-                    <option value="raw">Raw Ores Only (Include Electric Smelting)</option>
-                  </select>
-                </div>
+          {/* Input Materials & Multi-Level Supply Chain Boundary */}
+          <section className="accordion-section">
+            <button
+              type="button"
+              className="accordion-header"
+              aria-expanded={sectionsOpen.inputs}
+              onClick={() => toggleSection('inputs')}
+            >
+              <span className="accordion-header-left">
+                {sectionsOpen.inputs ? (
+                  <ChevronDown size={13} className="accordion-chevron" />
+                ) : (
+                  <ChevronRight size={13} className="accordion-chevron" />
+                )}
+                <GitBranch size={12} style={{ color: 'var(--status-pass)', flexShrink: 0 }} />
+                <span className="accordion-title">Input Materials</span>
+              </span>
+              <span className="accordion-summary">{inputsSummary}</span>
+            </button>
+
+            {sectionsOpen.inputs && (
+              <div className="accordion-body">
+                <InputMaterialsPanel
+                  spec={spec}
+                  onSelectPreset={(preset) =>
+                    updateSpec((prev) => ({
+                      ...prev,
+                      inputPreset: preset,
+                      inputOverrides: {},
+                      pins: [],
+                    }))
+                  }
+                  onToggleItem={(item, nextMode, ancestorChain) =>
+                    updateSpec((prev) => ({
+                      ...applyInputOverride(prev, item, nextMode, ancestorChain),
+                      pins: [],
+                    }))
+                  }
+                  onResetOverrides={() =>
+                    updateSpec((prev) => ({
+                      ...prev,
+                      inputOverrides: {},
+                      pins: [],
+                    }))
+                  }
+                />
               </div>
             )}
           </section>
@@ -2408,15 +2444,10 @@ export default function App() {
               onToggleInputOverride={(item, nextMode) => {
                 pushHistory(specRef.current);
                 updateSpec(
-                  (prev) => {
-                    const nextOverrides = { ...prev.inputOverrides };
-                    if (nextMode === 'auto') {
-                      delete nextOverrides[item];
-                    } else {
-                      nextOverrides[item] = nextMode;
-                    }
-                    return { ...prev, inputOverrides: nextOverrides };
-                  },
+                  (prev) => ({
+                    ...applyInputOverride(prev, item, nextMode),
+                    pins: [],
+                  }),
                   true,
                 );
               }}

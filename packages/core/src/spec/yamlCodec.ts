@@ -4,6 +4,7 @@ import {
   BeaconModuleName,
   BeltStackSize,
   DesignSpec,
+  InputPreset,
   OptimizationConfig,
   OptimizationLevel,
   PdkConfig,
@@ -95,6 +96,14 @@ const VALID_BEACON_MODULES = new Set<BeaconModuleName>([
   'efficiency-module',
   'efficiency-module-2',
   'efficiency-module-3',
+]);
+
+const VALID_INPUT_PRESETS = new Set<InputPreset>([
+  'raw',
+  'plates',
+  'bus',
+  'intermediates',
+  'direct',
 ]);
 
 export function normalizeSpec(raw: Partial<DesignSpec>): DesignSpec {
@@ -214,14 +223,24 @@ export function normalizeSpec(raw: Partial<DesignSpec>): DesignSpec {
   });
 
   const pins: PinConstraint[] = (raw.pins ?? []).map((p) => ({ ...p }));
+  const inputPreset: InputPreset =
+    raw.inputPreset && VALID_INPUT_PRESETS.has(raw.inputPreset) ? raw.inputPreset : 'plates';
+  const inputOverrides: Record<string, 'input' | 'synthesize'> = {};
+  if (raw.inputOverrides && typeof raw.inputOverrides === 'object') {
+    for (const [k, v] of Object.entries(raw.inputOverrides)) {
+      if (v === 'input' || v === 'synthesize') {
+        inputOverrides[k] = v;
+      }
+    }
+  }
 
   return {
     version: raw.version ?? 1,
     name: raw.name?.trim() || 'Factorio EDA Design',
     pdk,
     targets,
-    inputPreset: raw.inputPreset ?? 'plates',
-    inputOverrides: { ...(raw.inputOverrides ?? {}) },
+    inputPreset,
+    inputOverrides,
     floorplan,
     pins,
     macroOverrides: { ...(raw.macroOverrides ?? {}) },

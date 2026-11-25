@@ -6,6 +6,7 @@ export * from './data/balancers.js';
 export * from './blueprint/codec.js';
 export * from './blueprint/balancerImporter.js';
 export * from './synth/synthesize.js';
+export * from './synth/inputBoundary.js';
 export * from './macro/transform.js';
 export * from './macro/recipeMacro.js';
 export * from './macro/directInsertMacro.js';
