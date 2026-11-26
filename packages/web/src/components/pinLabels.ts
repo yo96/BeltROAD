@@ -112,7 +112,9 @@ function drawPill(
   let border =
     pin.kind === 'input'
       ? 'rgba(74, 222, 128, 0.55)'
-      : 'rgba(244, 114, 182, 0.55)';
+      : pin.isByproduct
+        ? 'rgba(245, 158, 11, 0.78)'
+        : 'rgba(244, 114, 182, 0.55)';
   if (isHighlighted) border = '#ffffff';
   if (isSelected) border = '#f59e0b';
 
@@ -157,7 +159,8 @@ export function drawSmartPinLabels(
 
   for (const pin of floorplan.pins) {
     const meta = getItemMeta(pin.item);
-    const text = `${pin.locked ? '🔒 ' : ''}${meta.name} (${Math.round(pin.ratePerSec * 60)}/m)`;
+    const prefix = `${pin.locked ? '🔒 ' : ''}${pin.isByproduct ? 'BYP: ' : ''}`;
+    const text = `${prefix}${meta.name} (${Math.round(pin.ratePerSec * 60)}/m)`;
     const pw = ctx.measureText(text).width + 12;
     byEdge[pin.edge].push({
       pin,
@@ -194,7 +197,9 @@ export function drawSmartPinLabels(
         ctx.strokeStyle =
           it.pin.kind === 'input'
             ? 'rgba(74, 222, 128, 0.45)'
-            : 'rgba(244, 114, 182, 0.45)';
+            : it.pin.isByproduct
+              ? 'rgba(245, 158, 11, 0.55)'
+              : 'rgba(244, 114, 182, 0.45)';
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(dotEdgeX, it.py);
@@ -258,7 +263,9 @@ export function drawSmartPinLabels(
       ctx.strokeStyle =
         it.pin.kind === 'input'
           ? 'rgba(74, 222, 128, 0.45)'
-          : 'rgba(244, 114, 182, 0.45)';
+          : it.pin.isByproduct
+            ? 'rgba(245, 158, 11, 0.55)'
+            : 'rgba(244, 114, 182, 0.45)';
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(it.px, anchorEdgeY);

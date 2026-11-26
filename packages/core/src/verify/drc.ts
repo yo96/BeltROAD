@@ -21,6 +21,7 @@ import {
   requiresPower,
 } from '../data/entities.js';
 import { dirDelta, inserterReachTiles, oppositeDir } from '../geometry.js';
+import { getCatalog, getRecipeOutputs } from '../data/catalog.js';
 
 export function runDrc(
   entities: EntityInstance[],
@@ -480,6 +481,111 @@ export function runDrc(
             a.tx,
             a.ty,
             [a.id, b.id, c.id, d.id],
+          );
+        }
+      }
+    }
+  }
+
+  // 4c. Multi-output byproduct connection check (UNCONNECTED_BYPRODUCT)
+  const catalog = getCatalog();
+  if (floorplan) {
+    const routedTiles = new Set<string>();
+    for (const e of entities) {
+      if (
+        e.role === 'pipe-route' ||
+        e.role === 'pipe-ug-route' ||
+        e.role === 'belt-route' ||
+        e.role === 'ug-route'
+      ) {
+        routedTiles.add(`${e.tx},${e.ty}`);
+      }
+    }
+    const perimPinTiles = new Set<string>();
+    for (const p of floorplan.pins) {
+      perimPinTiles.add(`${p.x},${p.y}`);
+    }
+    const macroPinTiles = new Set<string>();
+    for (const pm of floorplan.macros) {
+      for (const mp of pm.macro.pins) {
+        macroPinTiles.add(`${pm.x + mp.x},${pm.y + mp.y}`);
+      }
+    }
+
+    for (const pm of floorplan.macros) {
+      const rId = pm.macro.recipeId;
+      if (!rId) continue;
+      const recipe = catalog.recipesById[rId];
+      if (!recipe) continue;
+      const outputs = getRecipeOutputs(recipe);
+      if (outputs.length <= 1) continue;
+
+      for (const out of outputs) {
+        const mp = pm.macro.pins.find((p) => p.kind === 'output' && p.item === out.item);
+        if (!mp) {
+          addV(
+            'UNCONNECTED_BYPRODUCT',
+            'error',
+            `Multi-output recipe "${recipe.id}" macro "${pm.id}" is missing output pin for "${out.item}".`,
+            pm.x,
+            pm.y,
+            [],
+          );
+          continue;
+        }
+        const ax = pm.x + mp.x;
+        const ay = pm.y + mp.y;
+        const px = pm.x + mp.portX;
+        const py = pm.y + mp.portY;
+        const connected =
+          routedTiles.has(`${px},${py}`) ||
+          macroPinTiles.has(`${px},${py}`) ||
+          perimPinTiles.has(`${px},${py}`) ||
+          perimPinTiles.has(`${ax},${ay}`);
+        if (!connected) {
+          addV(
+            'UNCONNECTED_BYPRODUCT',
+            'error',
+            `Unconnected output/byproduct port "${out.item}" on macro "${pm.id}" at (${ax},${ay}).`,
+            ax,
+            ay,
+            [],
+          );
+        }
+      }
+    }
+  } else {
+    // Standalone machine check: any multi-fluid-output machine must have a matching pipe adjacent for each output fluid
+    for (const e of entities) {
+      if (e.role !== 'machine' || !e.recipe) continue;
+      const recipe = catalog.recipesById[e.recipe];
+      if (!recipe) continue;
+      const fluidOuts = getRecipeOutputs(recipe).filter((o) => o.type === 'fluid');
+      if (fluidOuts.length <= 1) continue;
+
+      const adjPipes = new Set<string>();
+      for (let dx = -1; dx <= e.w; dx++) {
+        for (let dy = -1; dy <= e.h; dy++) {
+          const onPerim =
+            ((dx === -1 || dx === e.w) && dy >= 0 && dy < e.h) ||
+            ((dy === -1 || dy === e.h) && dx >= 0 && dx < e.w);
+          if (!onPerim) continue;
+          const list = tileOccupancy.get(`${e.tx + dx},${e.ty + dy}`) ?? [];
+          for (const pe of list) {
+            if (isPipeName(pe.name) && pe.item) adjPipes.add(pe.item);
+          }
+        }
+      }
+
+      for (const fo of fluidOuts) {
+        if (!adjPipes.has(fo.item)) {
+          addV(
+            'UNCONNECTED_BYPRODUCT',
+            'error',
+            `Machine "${e.recipe}" at (${e.tx},${e.ty}) has unconnected fluid output "${fo.item}".`,
+            e.tx,
+            e.ty,
+            [e.id],
           );
         }
       }

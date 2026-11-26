@@ -225,6 +225,7 @@ export function normalizeSpec(raw: Partial<DesignSpec>): DesignSpec {
   const pins: PinConstraint[] = (raw.pins ?? []).map((p) => ({ ...p }));
   const inputPreset: InputPreset =
     raw.inputPreset && VALID_INPUT_PRESETS.has(raw.inputPreset) ? raw.inputPreset : 'plates';
+  const byproductPolicy = raw.byproductPolicy === 'export' ? 'export' : 'auto-consume';
   const inputOverrides: Record<string, 'input' | 'synthesize'> = {};
   if (raw.inputOverrides && typeof raw.inputOverrides === 'object') {
     for (const [k, v] of Object.entries(raw.inputOverrides)) {
@@ -241,6 +242,7 @@ export function normalizeSpec(raw: Partial<DesignSpec>): DesignSpec {
     targets,
     inputPreset,
     inputOverrides,
+    byproductPolicy,
     floorplan,
     pins,
     macroOverrides: { ...(raw.macroOverrides ?? {}) },
@@ -316,6 +318,9 @@ export function serializeSpecYaml(spec: DesignSpec): string {
   };
   if (Object.keys(spec.inputOverrides).length > 0) {
     clean.inputOverrides = spec.inputOverrides;
+  }
+  if (spec.byproductPolicy === 'export') {
+    clean.byproductPolicy = spec.byproductPolicy;
   }
   clean.floorplan = spec.floorplan;
   if (spec.pins.length > 0) {

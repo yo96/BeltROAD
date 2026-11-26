@@ -1660,7 +1660,7 @@ export function renderFactorioScene(
     const px = ox + (pin.x + 0.5) * s;
     const py = oy + (pin.y + 0.5) * s;
     const isSel = selectedPinId === pin.id || (highlightedPinIds?.has(pin.id) ?? false);
-    const col = pin.kind === 'input' ? '#4ade80' : '#f472b6';
+    const col = pin.kind === 'input' ? '#4ade80' : pin.isByproduct ? '#f59e0b' : '#f472b6';
 
     ctx.fillStyle = '#181c22';
     ctx.strokeStyle = selectedPinId === pin.id ? '#f59e0b' : isSel ? '#ffffff' : col;

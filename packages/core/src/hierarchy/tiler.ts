@@ -1635,6 +1635,8 @@ function buildSingleBayLayout(
             busIndex: ctx.pinCounter++,
             ratePerSec: pin.ratePerSec,
             beltTier: pin.beltTier,
+            isFluid: pin.isFluid,
+            isByproduct: pin.isByproduct,
             pinId: newOutId,
           } satisfies SynthOutputNode);
           if (net) net.sink = { nodeId: newOutId, pinId: newOutId, kind: 'sink', item: pin.item };
@@ -1681,6 +1683,8 @@ function buildSingleBayLayout(
           busIndex: ctx.pinCounter++,
           ratePerSec: leg.ratePerSec,
           beltTier: leg.beltTier,
+          isFluid: trunk.pinTemplate.isFluid,
+          isByproduct: trunk.pinTemplate.isByproduct,
           pinId: outPinId,
         } satisfies SynthOutputNode);
         const lastNet = ctx.nets.find((n) => n.id === leg.exitNetId);
@@ -1700,6 +1704,8 @@ function buildSingleBayLayout(
           item: trunk.pinTemplate.item,
           ratePerSec: leg.ratePerSec,
           beltTier: leg.beltTier,
+          isFluid: trunk.pinTemplate.isFluid,
+          isByproduct: trunk.pinTemplate.isByproduct,
           edge: 'S',
           offset: leg.exitX,
           x: leg.exitX,
@@ -1726,6 +1732,8 @@ function buildSingleBayLayout(
             busIndex: ctx.pinCounter++,
             ratePerSec: pin.ratePerSec,
             beltTier: pin.beltTier,
+            isFluid: pin.isFluid,
+            isByproduct: pin.isByproduct,
             pinId: newOutId,
           } satisfies SynthOutputNode);
           if (net) net.sink = { nodeId: newOutId, pinId: newOutId, kind: 'sink', item: pin.item };
@@ -1861,6 +1869,8 @@ function buildSingleBayLayout(
             busIndex: ctx.pinCounter,
             ratePerSec: leg.ratePerSec,
             beltTier: tier,
+            isFluid: unitOutPins[t].isFluid,
+            isByproduct: unitOutPins[t].isByproduct,
             pinId: outPinId,
           } satisfies SynthOutputNode);
           const net = ctx.nets.find((n) => n.id === leg.exitNetId);
@@ -1873,6 +1883,8 @@ function buildSingleBayLayout(
             item,
             ratePerSec: leg.ratePerSec,
             beltTier: tier,
+            isFluid: unitOutPins[t].isFluid,
+            isByproduct: unitOutPins[t].isByproduct,
             edge: 'S',
             offset: leg.exitX,
             x: leg.exitX,

@@ -226,6 +226,7 @@ export function resolvePerimeterPins(
         ratePerSec: d.node.ratePerSec,
         beltTier: d.node.beltTier,
         isFluid: d.node.isFluid,
+        isByproduct: d.node.kind === 'primary-output' ? d.node.isByproduct : undefined,
         edge,
         offset: off,
         x,

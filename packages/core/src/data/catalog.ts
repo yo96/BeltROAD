@@ -1,5 +1,5 @@
 import recipesJson from './recipes.json' with { type: 'json' };
-import { InputPreset, ItemMeta, RecipeDef } from '../types.js';
+import { InputPreset, ItemMeta, RecipeDef, RecipeOutput } from '../types.js';
 
 export interface RecipeCatalog {
   version: string;
@@ -136,20 +136,71 @@ function normalizeAndValidateCatalog(raw: unknown): RawCatalogJson {
         ? (r.category as RecipeDef['category'])
         : 'crafting';
 
+    let outputs: RecipeOutput[] | undefined;
+    if (Array.isArray(r.outputs) && r.outputs.length > 0) {
+      outputs = r.outputs.map((out, j) => {
+        const o = out as Record<string, unknown> | null;
+        if (
+          !o ||
+          typeof o !== 'object' ||
+          typeof o.item !== 'string' ||
+          !o.item.trim() ||
+          typeof o.amount !== 'number' ||
+          !Number.isFinite(o.amount) ||
+          o.amount <= 0
+        ) {
+          throw new Error(
+            `Invalid output ${j} in recipe "${r.id}": expected non-empty "item" and positive "amount".`,
+          );
+        }
+        const catalystAmount =
+          typeof o.catalystAmount === 'number' &&
+          Number.isFinite(o.catalystAmount) &&
+          o.catalystAmount >= 0
+            ? o.catalystAmount
+            : undefined;
+        const fluidboxIndex =
+          typeof o.fluidboxIndex === 'number' &&
+          Number.isInteger(o.fluidboxIndex) &&
+          o.fluidboxIndex >= 0
+            ? o.fluidboxIndex
+            : undefined;
+        return {
+          item: o.item.trim(),
+          amount: o.amount,
+          type:
+            o.type === 'fluid'
+              ? ('fluid' as const)
+              : o.type === 'item'
+                ? ('item' as const)
+                : undefined,
+          ...(catalystAmount !== undefined ? { catalystAmount } : {}),
+          ...(fluidboxIndex !== undefined ? { fluidboxIndex } : {}),
+        };
+      });
+    }
+
+    const outItemId = r.outputItem.trim();
     return {
       id: r.id.trim(),
       name: r.name.trim(),
       category,
       energyRequired: r.energyRequired,
       ingredients,
-      outputItem: r.outputItem.trim(),
+      outputItem: outItemId,
       outputCount,
+      ...(outputs ? { outputs } : {}),
       allowProductivity: typeof r.allowProductivity === 'boolean' ? r.allowProductivity : false,
       hasFluid:
         typeof r.hasFluid === 'boolean'
           ? r.hasFluid
           : ingredients.some((ing) => ing.type === 'fluid') ||
-            normalizedItems[r.outputItem.trim()]?.category === 'fluid',
+            normalizedItems[outItemId]?.category === 'fluid' ||
+            Boolean(
+              outputs?.some(
+                (o) => o.type === 'fluid' || normalizedItems[o.item]?.category === 'fluid',
+              ),
+            ),
       color: typeof r.color === 'string' ? r.color : undefined,
       group: typeof r.group === 'string' ? r.group : undefined,
     };
@@ -225,6 +276,24 @@ export function getItemMeta(itemId: string): ItemMeta {
 
 export function isFluidItem(itemId: string): boolean {
   return getItemMeta(itemId).category === 'fluid';
+}
+
+export function getRecipeOutputs(recipe: RecipeDef): RecipeOutput[] {
+  if (recipe.outputs && recipe.outputs.length > 0) {
+    return recipe.outputs;
+  }
+  return [
+    {
+      item: recipe.outputItem,
+      amount: recipe.outputCount,
+      type: isFluidItem(recipe.outputItem) ? 'fluid' : 'item',
+    },
+  ];
+}
+
+export function effectiveOutputAmount(output: RecipeOutput, effectiveProd: number): number {
+  const catalyst = Math.min(output.amount, Math.max(0, output.catalystAmount ?? 0));
+  return catalyst + (output.amount - catalyst) * effectiveProd;
 }
 
 export function getDefaultRecipeForItem(itemId: string): RecipeDef | undefined {

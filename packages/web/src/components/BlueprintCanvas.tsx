@@ -1233,7 +1233,7 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
         const py = oy + (pin.y + 0.5) * s;
         const isSel = selection?.kind === 'pin' && selection.pinId === pin.id;
         const isHl = highlightedPinIds.has(pin.id);
-        const col = pin.kind === 'input' ? '#4ade80' : '#f472b6';
+        const col = pin.kind === 'input' ? '#4ade80' : pin.isByproduct ? '#f59e0b' : '#f472b6';
 
         ctx.fillStyle = col;
         ctx.strokeStyle = isSel ? '#f59e0b' : isHl ? '#ffffff' : '#091a2c';
@@ -1557,8 +1557,10 @@ export const BlueprintCanvas: React.FC<BlueprintCanvasProps> = ({
     const lines: HoverLine[] = [{ text: `Tile (${tx}, ${ty})` }];
     const hitPin = floorplan.pins.find((p) => p.x === tx && p.y === ty);
     if (hitPin) {
+      const pinRole =
+        hitPin.kind === 'input' ? 'INPUT' : hitPin.isByproduct ? 'BYPRODUCT' : 'OUTPUT';
       lines.push({
-        text: `PIN ${hitPin.kind.toUpperCase()}: ${getItemMeta(hitPin.item).name} (${(hitPin.ratePerSec * 60).toFixed(1)}/min)`,
+        text: `PIN ${pinRole}: ${getItemMeta(hitPin.item).name} (${(hitPin.ratePerSec * 60).toFixed(1)}/min)`,
       });
     }
     const laneColor = (pct: number) =>

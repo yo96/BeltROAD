@@ -271,6 +271,29 @@ export const NetlistView: React.FC<NetlistViewProps> = ({
                         : 'IN PIN'
                       : 'SYNTH'}
                 </text>
+                {(d.byproductRatePerSec ?? 0) > 1e-4 && (
+                  <g transform={`translate(${layout.nodeW - 72}, 6)`}>
+                    <rect
+                      width={64}
+                      height={15}
+                      rx={3}
+                      fill="rgba(245, 158, 11, 0.2)"
+                      stroke="rgba(245, 158, 11, 0.65)"
+                      strokeWidth={0.8}
+                    />
+                    <text
+                      x={32}
+                      y={10.5}
+                      fill="#fbbf24"
+                      fontSize="8.5"
+                      fontWeight="700"
+                      textAnchor="middle"
+                      fontFamily="var(--font-mono)"
+                    >
+                      BYP +{Math.round(d.byproductRatePerSec! * 60)}/m
+                    </text>
+                  </g>
+                )}
               </g>
             );
           })}

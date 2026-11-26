@@ -2,6 +2,7 @@ import {
   BalancerMacroSpec,
   BeltTier,
   BomSummary,
+  ByproductPolicy,
   DagSummaryNode,
   DesignSpec,
   InserterTier,
@@ -30,12 +31,20 @@ import {
   selectMachineForRecipe,
 } from '../data/entities.js';
 import {
+  effectiveOutputAmount,
+  getCatalog,
   getDefaultRecipeForItem,
   getItemMeta,
+  getRecipeOutputs,
   isFluidItem,
   isPresetInputItem,
 } from '../data/catalog.js';
 import { selectBalancerTemplate } from '../data/balancers.js';
+import {
+  LpRecipe,
+  computeNormalizedByproductCosts,
+  solveStoichiometricLp,
+} from './lpSolver.js';
 
 const MAX_MACHINES_PER_SLICE = 16;
 
@@ -475,6 +484,7 @@ export function synthesizeDesign(
     demandPerSec: number;
     ingredients: { item: string; ratePerSec: number }[];
     fluidInputs: { item: string; ratePerSec: number }[];
+    fluidOutputs?: { item: string; ratePerSec: number; fluidboxIndex?: number }[];
     powerKwPerMachine: number;
     directInsert?: {
       ratio: '3:2' | '1:2' | '1:1';
@@ -538,9 +548,99 @@ export function synthesizeDesign(
     beaconConsPerUnit += MODULE_SPECS[bm].consumption;
   }
 
-  for (const item of topoOrder) {
+  const byproducts: Array<{ item: string; ratePerSec: number; policy: ByproductPolicy }> = [];
+  const policy: ByproductPolicy = spec.byproductPolicy === 'export' ? 'export' : 'auto-consume';
+
+  // Detect any active synthesized multi-output recipes (e.g. advanced-oil-processing)
+  const activeMultiOutputRecipes = new Set<string>();
+  const coProductItems = new Set<string>();
+  for (const dec of decisions.values()) {
+    if (dec.mode === 'synthesize' && dec.recipe && getRecipeOutputs(dec.recipe).length > 1) {
+      activeMultiOutputRecipes.add(dec.recipe.id);
+      for (const out of getRecipeOutputs(dec.recipe)) {
+        coProductItems.add(out.item);
+      }
+    }
+  }
+  const hasCoupledSubgraph = activeMultiOutputRecipes.size > 0;
+  const upstreamOfCoupled = new Set<string>();
+  const candidateLpRecipeMap = new Map<string, RecipeDef>();
+
+  if (hasCoupledSubgraph) {
+    const catalog = getCatalog();
+    // 1) All active recipes producing items inside coProductItems
+    for (const cItem of coProductItems) {
+      const dec = decisions.get(cItem);
+      if (dec?.mode === 'synthesize' && dec.recipe) {
+        const usesCoupled = dec.recipe.ingredients.some((ing) => coProductItems.has(ing.item));
+        const hasAlt = Array.from(activeMultiOutputRecipes).some((rid) =>
+          getRecipeOutputs(catalog.recipesById[rid]).some((o) => o.item === cItem),
+        );
+        if (policy === 'auto-consume' || !usesCoupled || !hasAlt) {
+          candidateLpRecipeMap.set(dec.recipe.id, dec.recipe);
+        }
+      }
+    }
+    for (const rid of activeMultiOutputRecipes) {
+      const r = catalog.recipesById[rid];
+      if (r) candidateLpRecipeMap.set(r.id, r);
+    }
+
+    // 2) Under auto-consume, include conversion/cracking recipes connecting coProductItems
+    if (policy === 'auto-consume') {
+      for (const r of catalog.allTargets) {
+        if (r.hasFluid && !fluidsEnabled) continue;
+        const outs = getRecipeOutputs(r);
+        if (outs.every((o) => coProductItems.has(o.item)) && r.ingredients.some((i) => coProductItems.has(i.item))) {
+          candidateLpRecipeMap.set(r.id, r);
+        }
+      }
+    }
+
+    // Also include single-output non-conversion recipes for co-product items (e.g. basic-oil-processing)
+    for (const cItem of coProductItems) {
+      const altList = catalog.recipesByOutput[cItem] ?? [];
+      for (const r of altList) {
+        if (r.hasFluid && !fluidsEnabled) continue;
+        const outs = getRecipeOutputs(r);
+        if (outs.every((o) => coProductItems.has(o.item)) && !r.ingredients.some((i) => coProductItems.has(i.item))) {
+          if (spec.inputOverrides[cItem] !== 'input' && (!isPresetInputItem(cItem, spec.inputPreset) || targetRates.has(cItem) || spec.inputOverrides[cItem] === 'synthesize')) {
+            candidateLpRecipeMap.set(r.id, r);
+          }
+        }
+      }
+    }
+
+    // Compute upstream-only items referenced outside coProductItems by LP candidates
+    const upQueue: string[] = [];
+    for (const r of candidateLpRecipeMap.values()) {
+      for (const ing of r.ingredients) {
+        if (ing.type === 'fluid' && !fluidsEnabled) continue;
+        if (!coProductItems.has(ing.item) && !upstreamOfCoupled.has(ing.item)) {
+          upstreamOfCoupled.add(ing.item);
+          upQueue.push(ing.item);
+        }
+      }
+    }
+    for (let h = 0; h < upQueue.length; h++) {
+      const u = upQueue[h];
+      const uDec = decisions.get(u) ?? decideItemMode(u, spec, fluidsEnabled, targetRates.has(u));
+      if (!decisions.has(u)) decisions.set(u, uDec);
+      if (uDec.mode === 'synthesize' && uDec.recipe) {
+        for (const ing of uDec.recipe.ingredients) {
+          if (ing.type === 'fluid' && !fluidsEnabled) continue;
+          if (!coProductItems.has(ing.item) && !upstreamOfCoupled.has(ing.item)) {
+            upstreamOfCoupled.add(ing.item);
+            upQueue.push(ing.item);
+          }
+        }
+      }
+    }
+  }
+
+  const processLinearItem = (item: string) => {
     const demand = demandPerSec.get(item) ?? 0;
-    const dec = decisions.get(item)!;
+    const dec = decisions.get(item) ?? decideItemMode(item, spec, fluidsEnabled, targetRates.has(item));
     const meta = getItemMeta(item);
 
     if (dec.mode === 'input-pin' || !dec.recipe) {
@@ -557,12 +657,12 @@ export function synthesizeDesign(
         beltCount: Math.max(1, Math.ceil(demand / cap)),
         ingredients: [],
       });
-      continue;
+      return;
     }
 
     const recipe = dec.recipe;
     if (demand <= 1e-9 && !targetRates.has(item)) {
-      continue;
+      return;
     }
     const machineName: MachineName = selectMachineForRecipe(recipe, spec.pdk);
     const machineSpec = MACHINE_SPECS[machineName];
@@ -683,7 +783,7 @@ export function synthesizeDesign(
 
         const nominalExtraPerCons =
           consExtraInputs.reduce((a, b) => a + b.ratePerSec, 0) /
-          Math.max(1e-9, (demand / outPerConsMach));
+          Math.max(1e-9, demand / outPerConsMach);
         const nominalFeasible32 =
           diRatioSpec.ratio !== '3:2' || nominalExtraPerCons <= 2 * maxLongDi + 1e-4;
 
@@ -733,10 +833,9 @@ export function synthesizeDesign(
                 break;
               }
             } else {
-              // 1:1 EM Plant
               const outSlots = Math.ceil(outPerC / maxReach1Di);
               const extraSlots = extraPerC > 0 ? Math.ceil(extraPerC / maxReach1Di) : 0;
-              const directSlots = Math.ceil((intermediateRate / cCount) / maxReach1Di);
+              const directSlots = Math.ceil(intermediateRate / cCount / maxReach1Di);
               const prodInSlots = Math.ceil(prodInPerP / maxReach1Di);
               if (outSlots <= 3 && extraSlots <= 2 && directSlots <= 3 && prodInSlots <= 3) {
                 ioFeasible = true;
@@ -842,7 +941,7 @@ export function synthesizeDesign(
     const machineCount =
       fusedMachineCount ?? Math.max(1, Math.ceil(exactMachines - 1e-6), minMachinesForIo);
 
-    computedRecipes.set(item, {
+    computedRecipes.set(recipe.id, {
       item,
       recipe,
       machineName,
@@ -874,6 +973,308 @@ export function synthesizeDesign(
       beltCount: Math.max(1, Math.ceil(demand / defaultCap)),
       ingredients: [...ingredients, ...fluidIngredients],
     });
+  };
+
+  if (!hasCoupledSubgraph) {
+    for (const item of topoOrder) {
+      processLinearItem(item);
+    }
+  } else {
+    // Phase A: Linear propagation for items strictly downstream of coProductItems
+    for (const item of topoOrder) {
+      if (coProductItems.has(item) || upstreamOfCoupled.has(item)) continue;
+      processLinearItem(item);
+    }
+
+    // Phase B: Solve coupled co-product subgraph via stoichiometric LP
+    interface PreparedCand {
+      recipe: RecipeDef;
+      machineName: MachineName;
+      modules: ModuleName[];
+      effectiveSpeed: number;
+      effectiveProd: number;
+      effectivePowerMult: number;
+      powerKw: number;
+      lpRecipe: LpRecipe;
+    }
+
+    const prepareCandidates = (recList: RecipeDef[]): PreparedCand[] =>
+      recList.map((recipe) => {
+        const machineName = selectMachineForRecipe(recipe, spec.pdk);
+        const machineSpec = MACHINE_SPECS[machineName];
+        const modules = resolveMachineModules(recipe, machineSpec.moduleSlots, spec.pdk, warnings);
+        let speedBonus = 0;
+        let prodBonus = 0;
+        let consBonus = 0;
+        for (const m of modules) {
+          const mod = MODULE_SPECS[m];
+          speedBonus += mod.speed;
+          prodBonus += mod.productivity;
+          consBonus += mod.consumption;
+        }
+        const effectiveProd =
+          1 + (machineSpec.baseProductivity ?? 0) + (recipe.allowProductivity ? prodBonus : 0);
+        const effectiveSpeed = machineSpec.craftingSpeed * qualityMult * Math.max(0.2, 1 + speedBonus);
+        const effectivePowerMult = Math.max(0.2, 1 + consBonus);
+        const lpRecipe: LpRecipe = {
+          id: recipe.id,
+          cost: recipe.energyRequired / effectiveSpeed,
+          inputs: recipe.ingredients
+            .filter((ing) => ing.type !== 'fluid' || fluidsEnabled)
+            .map((ing) => ({ item: ing.item, amount: ing.amount })),
+          outputs: getRecipeOutputs(recipe).map((out) => ({
+            item: out.item,
+            amount: effectiveOutputAmount(out, effectiveProd),
+          })),
+        };
+        return {
+          recipe,
+          machineName,
+          modules,
+          effectiveSpeed,
+          effectiveProd,
+          effectivePowerMult,
+          powerKw: machineSpec.powerKw * effectivePowerMult,
+          lpRecipe,
+        };
+      });
+
+    let candList = prepareCandidates(Array.from(candidateLpRecipeMap.values()));
+    const lpTargets: Record<string, number> = {};
+    for (const cItem of coProductItems) {
+      lpTargets[cItem] = demandPerSec.get(cItem) ?? 0;
+    }
+
+    const externalInputs: Array<{ item: string; cost: number }> = [];
+    for (const u of upstreamOfCoupled) {
+      externalInputs.push({
+        item: u,
+        cost: u === 'water' ? 0.05 : 2.0,
+      });
+    }
+    for (const cItem of coProductItems) {
+      const dec = decisions.get(cItem);
+      if (dec?.mode === 'input-pin' && !targetRates.has(cItem)) {
+        externalInputs.push({ item: cItem, cost: 3.0 });
+      }
+    }
+
+    const coList = Array.from(coProductItems);
+    let normalizedCosts = computeNormalizedByproductCosts(
+      coList,
+      candList.map((c) => c.lpRecipe),
+    );
+    let lpSol = solveStoichiometricLp({
+      items: coList,
+      recipes: candList.map((c) => c.lpRecipe),
+      targets: lpTargets,
+      externalInputs,
+      allowedByproducts: coList.map((it) => ({ item: it, exportCost: normalizedCosts[it] ?? 10 })),
+    });
+
+    // Safety fallback if policy === 'export' omitted a needed conversion recipe
+    if (!lpSol.feasible && policy === 'export') {
+      for (const cItem of coProductItems) {
+        const dec = decisions.get(cItem);
+        if (dec?.mode === 'synthesize' && dec.recipe && !candidateLpRecipeMap.has(dec.recipe.id)) {
+          candidateLpRecipeMap.set(dec.recipe.id, dec.recipe);
+        }
+      }
+      candList = prepareCandidates(Array.from(candidateLpRecipeMap.values()));
+      normalizedCosts = computeNormalizedByproductCosts(
+        coList,
+        candList.map((c) => c.lpRecipe),
+      );
+      lpSol = solveStoichiometricLp({
+        items: coList,
+        recipes: candList.map((c) => c.lpRecipe),
+        targets: lpTargets,
+        externalInputs,
+        allowedByproducts: coList.map((it) => ({ item: it, exportCost: normalizedCosts[it] ?? 10 })),
+      });
+    }
+
+    if (!lpSol.feasible) {
+      throw new Error('Coupled recipe synthesis LP is infeasible for current targets and boundary.');
+    }
+
+    const reach1Pool = spec.pdk.allowedInserterTiers.filter(
+      (t): t is InserterTier => t !== 'long',
+    );
+    const maxReach1 = Math.max(
+      INSERTER_SPECS[spec.pdk.defaultInserterTier].itemsPerSec,
+      ...reach1Pool.map((t) => INSERTER_SPECS[t].itemsPerSec),
+    );
+    const maxReach2 = INSERTER_SPECS.long.itemsPerSec;
+
+    const itemTotalProduced = new Map<string, number>();
+    const itemExactMach = new Map<string, number>();
+    const itemMachCount = new Map<string, number>();
+    const itemPrimaryRecipe = new Map<string, PreparedCand>();
+    const itemIngsMap = new Map<string, Map<string, number>>();
+    const itemCoProductsMap = new Map<string, { item: string; ratePerSec: number }[]>();
+
+    for (const c of candList) {
+      const rate = lpSol.recipeRates[c.recipe.id] ?? 0;
+      if (rate <= 1e-7) continue;
+
+      const exactMachines = rate * (c.recipe.energyRequired / c.effectiveSpeed);
+      const rawIngs: { item: string; ratePerSec: number }[] = [];
+      const fluidIngs: { item: string; ratePerSec: number }[] = [];
+      for (const ing of c.recipe.ingredients) {
+        const ingRate = ing.amount * rate;
+        if (ing.type === 'fluid') {
+          if (fluidsEnabled) fluidIngs.push({ item: ing.item, ratePerSec: ingRate });
+        } else {
+          rawIngs.push({ item: ing.item, ratePerSec: ingRate });
+        }
+        if (!coProductItems.has(ing.item)) {
+          demandPerSec.set(ing.item, (demandPerSec.get(ing.item) ?? 0) + ingRate);
+          if (!upstreamOfCoupled.has(ing.item)) {
+            upstreamOfCoupled.add(ing.item);
+          }
+        }
+      }
+
+      const rawOuts = getRecipeOutputs(c.recipe);
+      const fluidOuts = rawOuts.map((o, idx) => ({
+        item: o.item,
+        ratePerSec: effectiveOutputAmount(o, c.effectiveProd) * rate,
+        fluidboxIndex: o.fluidboxIndex ?? idx,
+      }));
+      const mainOut =
+        fluidOuts.find((fo) => fo.item === c.recipe.outputItem) ?? fluidOuts[0];
+      const outIsFluid = isFluidItem(mainOut.item);
+      const ms = MACHINE_SPECS[c.machineName].size;
+      const minIo = computeMinIoMachines({
+        outRate: outIsFluid ? 0 : mainOut.ratePerSec,
+        ingList: rawIngs,
+        ms,
+        maxReach1,
+        maxReach2,
+        beaconsPerMachine: 0,
+        fluidCount: fluidIngs.length,
+        machineName: c.machineName,
+        poleTier: spec.pdk.defaultPoleTier,
+        qualityTier,
+        outputIsFluid: outIsFluid,
+      });
+      const machineCount = Math.max(1, Math.ceil(exactMachines - 1e-6), minIo);
+
+      computedRecipes.set(c.recipe.id, {
+        item: mainOut.item,
+        recipe: c.recipe,
+        machineName: c.machineName,
+        quality: qualityTier !== 'normal' ? qualityTier : undefined,
+        modules: c.modules,
+        beaconsPerMachine: 0,
+        beaconModules: activeBeaconModules,
+        effectiveSpeed: c.effectiveSpeed,
+        effectiveProd: c.effectiveProd,
+        exactMachines,
+        machineCount,
+        demandPerSec: mainOut.ratePerSec,
+        ingredients: rawIngs,
+        fluidInputs: fluidIngs,
+        fluidOutputs: fluidOuts.length > 1 || outIsFluid ? fluidOuts : undefined,
+        powerKwPerMachine: c.powerKw,
+      });
+
+      for (const fo of fluidOuts) {
+        itemTotalProduced.set(fo.item, (itemTotalProduced.get(fo.item) ?? 0) + fo.ratePerSec);
+      }
+      if (!itemPrimaryRecipe.has(mainOut.item)) {
+        itemPrimaryRecipe.set(mainOut.item, c);
+      }
+      itemExactMach.set(mainOut.item, (itemExactMach.get(mainOut.item) ?? 0) + exactMachines);
+      itemMachCount.set(mainOut.item, (itemMachCount.get(mainOut.item) ?? 0) + machineCount);
+
+      let ingAcc = itemIngsMap.get(mainOut.item);
+      if (!ingAcc) {
+        ingAcc = new Map<string, number>();
+        itemIngsMap.set(mainOut.item, ingAcc);
+      }
+      for (const i of [...rawIngs, ...fluidIngs]) {
+        ingAcc.set(i.item, (ingAcc.get(i.item) ?? 0) + i.ratePerSec);
+      }
+      if (fluidOuts.length > 1) {
+        const prevCo = itemCoProductsMap.get(mainOut.item) ?? [];
+        for (const fo of fluidOuts) {
+          if (fo.item === mainOut.item) continue;
+          const existing = prevCo.find((x) => x.item === fo.item);
+          if (existing) existing.ratePerSec += fo.ratePerSec;
+          else prevCo.push({ item: fo.item, ratePerSec: fo.ratePerSec });
+        }
+        itemCoProductsMap.set(mainOut.item, prevCo);
+      }
+    }
+
+    for (const cItem of coList) {
+      const bRate = lpSol.byproductExports[cItem] ?? 0;
+      if (bRate > 1e-6) {
+        byproducts.push({ item: cItem, ratePerSec: bRate, policy });
+      }
+    }
+
+    for (const cItem of coList) {
+      const produced = itemTotalProduced.get(cItem) ?? 0;
+      const extIn = lpSol.externalInputs[cItem] ?? 0;
+      const bRate = lpSol.byproductExports[cItem] ?? 0;
+      const totalFlow = Math.max(produced + extIn, lpTargets[cItem] ?? 0);
+      if (totalFlow <= 1e-9 && !targetRates.has(cItem)) continue;
+
+      const meta = getItemMeta(cItem);
+      const dec = decisions.get(cItem);
+      const prim = itemPrimaryRecipe.get(cItem);
+      if (extIn > 1e-7 && produced <= 1e-7) {
+        const cap = isFluidItem(cItem) ? PIPE_SPEC.capacityPerSec : defaultCap;
+        dag.push({
+          item: cItem,
+          name: meta.name,
+          demandPerSec: extIn,
+          demandPerMin: extIn * 60,
+          mode: 'input-pin',
+          forcedInputReason: dec?.forcedInputReason,
+          exactMachines: 0,
+          machineCount: 0,
+          beltCount: Math.max(1, Math.ceil(extIn / cap)),
+          ingredients: [],
+        });
+      } else {
+        const ingAcc = itemIngsMap.get(cItem);
+        const cap = isFluidItem(cItem) ? PIPE_SPEC.capacityPerSec : defaultCap;
+        dag.push({
+          item: cItem,
+          name: meta.name,
+          demandPerSec: totalFlow,
+          demandPerMin: totalFlow * 60,
+          mode: 'synthesize',
+          recipeId: prim?.recipe.id,
+          machineName: prim?.machineName,
+          exactMachines: itemExactMach.get(cItem) ?? 0,
+          machineCount: itemMachCount.get(cItem) ?? 0,
+          beltCount: Math.max(1, Math.ceil(totalFlow / cap)),
+          ingredients: ingAcc
+            ? Array.from(ingAcc.entries()).map(([it, r]) => ({ item: it, ratePerSec: r }))
+            : [],
+          ...(bRate > 1e-6 ? { byproductRatePerSec: bRate } : {}),
+          ...(itemCoProductsMap.has(cItem) ? { coProducts: itemCoProductsMap.get(cItem) } : {}),
+        });
+      }
+    }
+
+    // Phase C: Upstream items (in topological consumer -> producer order)
+    const processedUp = new Set<string>();
+    for (const item of topoOrder) {
+      if (!upstreamOfCoupled.has(item) || coProductItems.has(item)) continue;
+      processedUp.add(item);
+      processLinearItem(item);
+    }
+    // Emit any upstream ingredients introduced only by auto-added LP cracking/conversion recipes
+    for (const uItem of upstreamOfCoupled) {
+      if (processedUp.has(uItem) || coProductItems.has(uItem)) continue;
+      processLinearItem(uItem);
+    }
   }
 
   // 3b. Compute forward recipe depths (0 = primary input, 1+ = downstream crafting depth)
@@ -968,6 +1369,7 @@ export function synthesizeDesign(
   }
 
   // Primary Outputs
+  const primaryOutCounts = new Map<string, number>();
   for (const [item, rps] of targetRates.entries()) {
     const outIsFluid = isFluidItem(item);
     const maxCap = outIsFluid
@@ -996,6 +1398,42 @@ export function synthesizeDesign(
         beltTier: tier,
       });
     }
+    primaryOutCounts.set(item, beltCount);
+  }
+
+  // Side-product (byproduct) Export Outputs
+  for (const bp of byproducts) {
+    const outIsFluid = isFluidItem(bp.item);
+    const maxCap = outIsFluid
+      ? PIPE_SPEC.capacityPerSec
+      : effectiveBeltCapacity(spec.pdk.defaultBeltTier, spec.pdk);
+    const beltCount = Math.max(1, Math.ceil(bp.ratePerSec / maxCap - 1e-9));
+    const perBeltRate = bp.ratePerSec / beltCount;
+    const tier = outIsFluid ? spec.pdk.defaultBeltTier : pickBeltTierForRate(perBeltRate, spec.pdk);
+    const startIdx = primaryOutCounts.get(bp.item) ?? 0;
+    for (let i = 0; i < beltCount; i++) {
+      const busIdx = startIdx + i;
+      const nodeId = `out:${bp.item}:${busIdx}`;
+      const node: SynthOutputNode = {
+        id: nodeId,
+        kind: 'primary-output',
+        item: bp.item,
+        busIndex: busIdx,
+        ratePerSec: perBeltRate,
+        beltTier: tier,
+        isFluid: outIsFluid || undefined,
+        isByproduct: true,
+        pinId: nodeId,
+      };
+      nodes.push(node);
+      addSink(bp.item, {
+        nodeId,
+        pinId: nodeId,
+        ratePerSec: perBeltRate,
+        beltTier: tier,
+      });
+    }
+    primaryOutCounts.set(bp.item, startIdx + beltCount);
   }
 
   // Recipe Macros (sliced so every output & input pin stays <= 1 belt)
@@ -1137,6 +1575,11 @@ export function synthesizeDesign(
     for (const fl of comp.fluidInputs) {
       sliceCount = Math.max(sliceCount, Math.ceil(fl.ratePerSec / PIPE_SPEC.capacityPerSec));
     }
+    if (comp.fluidOutputs) {
+      for (const fo of comp.fluidOutputs) {
+        sliceCount = Math.max(sliceCount, Math.ceil(fo.ratePerSec / PIPE_SPEC.capacityPerSec - 1e-9));
+      }
+    }
     // Never create more slices than integer machines
     sliceCount = Math.min(sliceCount, comp.machineCount);
 
@@ -1225,6 +1668,14 @@ export function synthesizeDesign(
         comp.fluidInputs.length > 0
           ? comp.fluidInputs.map((fl) => ({ item: fl.item, ratePerSec: fl.ratePerSec * frac }))
           : undefined;
+      const fluidOutputs =
+        comp.fluidOutputs && comp.fluidOutputs.length > 0
+          ? comp.fluidOutputs.map((fo) => ({
+              item: fo.item,
+              ratePerSec: fo.ratePerSec * frac,
+              fluidboxIndex: fo.fluidboxIndex,
+            }))
+          : undefined;
 
       const macroNode: RecipeMacroSpec = {
         id: macroId,
@@ -1245,6 +1696,7 @@ export function synthesizeDesign(
         ingredientRates: ingRates,
         fluidInputs,
         outputIsFluid: outIsFluid || undefined,
+        fluidOutputs,
         preferredRows:
           override?.rows ?? (comp.beaconsPerMachine >= 8 ? 1 : undefined),
         balanceOutputLanes: outIsFluid ? false : forceBal || sliceOutRate > sliceBeltCap * 0.49,
@@ -1255,12 +1707,23 @@ export function synthesizeDesign(
       macroNodesById.set(macroId, macroNode);
       macroOutputDepthById.set(macroId, itemDepth.get(comp.item) ?? 1);
 
-      addSource(comp.item, {
-        nodeId: macroId,
-        pinId: `out:${comp.item}`,
-        ratePerSec: sliceOutRate,
-        beltTier: outTier,
-      });
+      if (fluidOutputs && fluidOutputs.length > 0) {
+        for (const fo of fluidOutputs) {
+          addSource(fo.item, {
+            nodeId: macroId,
+            pinId: `out:${fo.item}`,
+            ratePerSec: fo.ratePerSec,
+            beltTier: outTier,
+          });
+        }
+      } else {
+        addSource(comp.item, {
+          nodeId: macroId,
+          pinId: `out:${comp.item}`,
+          ratePerSec: sliceOutRate,
+          beltTier: outTier,
+        });
+      }
 
       for (const ing of ingRates) {
         addSink(ing.item, {
@@ -1556,6 +2019,7 @@ export function synthesizeDesign(
     dag,
     bom,
     warnings,
+    ...(byproducts.length > 0 ? { byproducts } : {}),
   };
 }
 
@@ -1584,7 +2048,7 @@ function computeSynthBom(
         entities[di.producerMachineName] = (entities[di.producerMachineName] ?? 0) + pCount;
         entities[n.machineName] = (entities[n.machineName] ?? 0) + cCount;
         totalMachines += pCount + cCount;
-        const cr = computedRecipes.get(n.outputItem);
+        const cr = computedRecipes.get(n.recipeId);
         const cKw = cr?.powerKwPerMachine ?? 150;
         const pKw = cr?.directInsert?.producerPowerKwPerMachine ?? cKw;
         estimatedPowerKw += pCount * pKw + cCount * cKw;
@@ -1597,7 +2061,7 @@ function computeSynthBom(
       } else {
         entities[n.machineName] = (entities[n.machineName] ?? 0) + n.machineCount;
         totalMachines += n.machineCount;
-        const pKw = computedRecipes.get(n.outputItem)?.powerKwPerMachine ?? 150;
+        const pKw = computedRecipes.get(n.recipeId)?.powerKwPerMachine ?? 150;
         estimatedPowerKw += n.machineCount * pKw;
         for (const m of n.modules) {
           modules[m] = (modules[m] ?? 0) + n.machineCount;

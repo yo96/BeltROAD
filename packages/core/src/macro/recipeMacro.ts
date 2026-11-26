@@ -2273,8 +2273,8 @@ function fluidIoPortOffset(
     return portIndex === 0 ? 0 : 2;
   }
   if (machineName === 'oil-refinery') {
-    // Dir.SOUTH: inputs on North edge at x=1 and x=3; primary output on South edge at x=4.
-    if (isOutput) return 4;
+    // Dir.SOUTH: inputs on North edge at x=1 and x=3; outputs on South edge at x=4, x=2, x=0.
+    if (isOutput) return portIndex === 0 ? 4 : portIndex === 1 ? 2 : 0;
     return portIndex === 0 ? 1 : 3;
   }
   return portIndex === 0 ? 0 : 1;
@@ -2290,6 +2290,11 @@ function buildFluidRecipeMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledM
   const preferStackOut = (pdk.beltStackSize ?? 1) > 1;
   const fluids = spec.fluidInputs ?? [];
   const isFluidOut = Boolean(spec.outputIsFluid);
+  const fluidOuts = isFluidOut
+    ? spec.fluidOutputs && spec.fluidOutputs.length > 0
+      ? spec.fluidOutputs
+      : [{ item: spec.outputItem, ratePerSec: spec.outputRatePerSec, fluidboxIndex: 0 }]
+    : [];
   const isTwoFluid = fluids.length >= 2;
   const isSplitTwoFluid = !isFluidOut && isTwoFluid && spec.machineName === 'electromagnetic-plant';
   const hasNorthFluid1 = isFluidOut && fluids.length === 1;
@@ -2530,7 +2535,11 @@ function buildFluidRecipeMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledM
   const yOut = yInsS + 1;
   const yFluidDrop = yOut + 1;
   const yFluidSouth = yOut + 2;
-  const height = hasSouthFluidInput ? yFluidSouth + 1 : yOut + 1;
+  const height = isFluidOut
+    ? yOut + Math.max(0, fluidOuts.length - 1) * 2 + 1
+    : hasSouthFluidInput
+      ? yFluidSouth + 1
+      : yOut + 1;
 
   const machDir = isFluidOut
     ? spec.machineName === 'foundry' ||
@@ -2677,9 +2686,19 @@ function buildFluidRecipeMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledM
       mkPipeUg(mx + fOff0, yFluidDrop, Dir.SOUTH, fluids[0].item);
     }
 
-    // South: either output pipe tap (fluid output) or output inserters (solid output)
+    // South: either output pipe tap(s) (fluid output) or output inserters (solid output)
     if (isFluidOut) {
-      mkPipe(mx + outFOff, yInsS, spec.outputItem);
+      for (let oi = 0; oi < fluidOuts.length; oi++) {
+        const fo = fluidOuts[oi];
+        const portOff = fluidIoPortOffset(spec.machineName, fo.fluidboxIndex ?? oi, true);
+        const yHeader = yOut + oi * 2;
+        if (oi === 0) {
+          mkPipe(mx + portOff, yInsS, fo.item);
+        } else {
+          mkPipeUg(mx + portOff, yInsS, Dir.NORTH, fo.item);
+          mkPipeUg(mx + portOff, yHeader - 1, Dir.SOUTH, fo.item);
+        }
+      }
     } else {
       const outSlots = Array.from({ length: ms }, (_, k) => k)
         .filter((k) => (!hasSouthFluidInput ? true : k !== fOff0))
@@ -2872,26 +2891,31 @@ function buildFluidRecipeMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledM
     addInPin(fluids[0].item, fluids[0].ratePerSec, 0, yFluidSouth, Dir.EAST, true);
   }
 
-  // Output header (pipe for fluid output, belt for solid output)
+  // Output header (pipe(s) for fluid output, belt for solid output)
   if (isFluidOut) {
-    const outStartX = M > 0 ? machineXs[0] + outFOff : xStart;
-    for (let x = outStartX; x < width; x++) {
-      mkPipe(x, yOut, spec.outputItem);
+    for (let oi = 0; oi < fluidOuts.length; oi++) {
+      const fo = fluidOuts[oi];
+      const portOff = fluidIoPortOffset(spec.machineName, fo.fluidboxIndex ?? oi, true);
+      const yHeader = yOut + oi * 2;
+      const outStartX = M > 0 ? machineXs[0] + portOff : xStart;
+      for (let x = outStartX; x < width; x++) {
+        mkPipe(x, yHeader, fo.item);
+      }
+      const outPort = pinOutsideOffset(width - 1, yHeader, Dir.EAST, 'output');
+      pins.push({
+        id: `out:${fo.item}`,
+        item: fo.item,
+        direction: Dir.EAST,
+        kind: 'output',
+        x: width - 1,
+        y: yHeader,
+        portX: outPort.portX,
+        portY: outPort.portY,
+        ratePerSec: fo.ratePerSec,
+        beltTier: spec.beltTier,
+        isFluid: true,
+      });
     }
-    const outPort = pinOutsideOffset(width - 1, yOut, Dir.EAST, 'output');
-    pins.push({
-      id: `out:${spec.outputItem}`,
-      item: spec.outputItem,
-      direction: Dir.EAST,
-      kind: 'output',
-      x: width - 1,
-      y: yOut,
-      portX: outPort.portX,
-      portY: outPort.portY,
-      ratePerSec: spec.outputRatePerSec,
-      beltTier: spec.beltTier,
-      isFluid: true,
-    });
   } else {
     for (let x = xStart; x < lastEndX; x++) {
       if (laneFlipX !== undefined && x >= laneFlipX && x <= laneFlipX + 2) {

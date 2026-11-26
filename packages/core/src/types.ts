@@ -42,6 +42,7 @@ export type ModuleName =
 
 export type PortMarkerMode = 'none' | 'display-panel' | 'constant-combinator';
 export type InputPreset = 'raw' | 'plates' | 'bus' | 'intermediates' | 'direct';
+export type ByproductPolicy = 'auto-consume' | 'export';
 export type BeaconMode = 'none' | 'row-4' | 'row-8';
 export type BeaconModuleName =
   | 'speed-module'
@@ -176,6 +177,7 @@ export interface DesignSpec {
   targets: TargetSpec[];
   inputPreset: InputPreset;
   inputOverrides: Record<string, 'input' | 'synthesize'>;
+  byproductPolicy?: ByproductPolicy;
   floorplan: FloorplanConfig;
   pins: PinConstraint[];
   macroOverrides: Record<string, MacroOverride>;
@@ -187,6 +189,14 @@ export interface RecipeIngredient {
   item: string;
   amount: number;
   type?: 'item' | 'fluid';
+}
+
+export interface RecipeOutput {
+  item: string;
+  amount: number;
+  type?: 'item' | 'fluid';
+  catalystAmount?: number;
+  fluidboxIndex?: number;
 }
 
 export interface RecipeDef {
@@ -206,6 +216,7 @@ export interface RecipeDef {
   ingredients: RecipeIngredient[];
   outputItem: string;
   outputCount: number;
+  outputs?: RecipeOutput[];
   allowProductivity: boolean;
   hasFluid: boolean;
   /** Optional display metadata */
@@ -309,6 +320,7 @@ export interface SynthOutputNode {
   ratePerSec: number;
   beltTier: BeltTier;
   isFluid?: boolean;
+  isByproduct?: boolean;
   pinId: string;
 }
 
@@ -346,6 +358,7 @@ export interface RecipeMacroSpec {
   ingredientRates: { item: string; ratePerSec: number; beltTier: BeltTier }[];
   fluidInputs?: { item: string; ratePerSec: number }[];
   outputIsFluid?: boolean;
+  fluidOutputs?: { item: string; ratePerSec: number; fluidboxIndex?: number }[];
   preferredRows?: number;
   balanceOutputLanes?: boolean;
   sliceIndex: number;
@@ -379,6 +392,8 @@ export interface DagSummaryNode {
   machineCount: number;
   beltCount: number;
   ingredients: { item: string; ratePerSec: number }[];
+  byproductRatePerSec?: number;
+  coProducts?: { item: string; ratePerSec: number }[];
 }
 
 export interface BomSummary {
@@ -395,6 +410,7 @@ export interface SynthesisResult {
   dag: DagSummaryNode[];
   bom: BomSummary;
   warnings: string[];
+  byproducts?: Array<{ item: string; ratePerSec: number; policy: ByproductPolicy }>;
 }
 
 export interface MacroPin {
@@ -451,6 +467,7 @@ export interface PerimeterPin {
   ratePerSec: number;
   beltTier: BeltTier;
   isFluid?: boolean;
+  isByproduct?: boolean;
   edge: Edge;
   /** Coordinate along edge (y for W/E, x for N/S) */
   offset: number;
@@ -518,7 +535,8 @@ export type DrcCode =
   | 'UNROUTED_NET'
   | 'NO_FLUID_MIXING'
   | 'NO_ADJACENT_PIPES'
-  | 'PIPE_UG_PAIR';
+  | 'PIPE_UG_PAIR'
+  | 'UNCONNECTED_BYPRODUCT';
 
 export interface DrcViolation {
   id: string;

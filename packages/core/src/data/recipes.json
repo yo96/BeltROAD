@@ -1720,7 +1720,7 @@
     },
     {
       "id": "advanced-oil-processing",
-      "name": "Heavy Oil (Advanced Oil Processing)",
+      "name": "Advanced Oil Processing",
       "category": "oil-processing",
       "energyRequired": 5,
       "ingredients": [
@@ -1729,6 +1729,11 @@
       ],
       "outputItem": "heavy-oil",
       "outputCount": 25,
+      "outputs": [
+        { "item": "heavy-oil", "amount": 25, "type": "fluid", "fluidboxIndex": 0 },
+        { "item": "light-oil", "amount": 45, "type": "fluid", "fluidboxIndex": 1 },
+        { "item": "petroleum-gas", "amount": 55, "type": "fluid", "fluidboxIndex": 2 }
+      ],
       "allowProductivity": true,
       "hasFluid": true,
       "group": "chemical"

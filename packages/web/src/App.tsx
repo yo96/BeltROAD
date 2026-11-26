@@ -1355,11 +1355,19 @@ export default function App() {
               <div className="accordion-body">
                 <InputMaterialsPanel
                   spec={spec}
+                  activeByproducts={synthesis?.byproducts}
                   onSelectPreset={(preset) =>
                     updateSpec((prev) => ({
                       ...prev,
                       inputPreset: preset,
                       inputOverrides: {},
+                      pins: [],
+                    }))
+                  }
+                  onChangeByproductPolicy={(byproductPolicy) =>
+                    updateSpec((prev) => ({
+                      ...prev,
+                      byproductPolicy,
                       pins: [],
                     }))
                   }

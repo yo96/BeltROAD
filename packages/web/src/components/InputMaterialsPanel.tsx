@@ -1,9 +1,11 @@
 import React, { useMemo, useState } from 'react';
 import {
+  ByproductPolicy,
   DesignSpec,
   INPUT_PRESET_LIST,
   InputBoundaryTreeNode,
   InputPreset,
+  getItemMeta,
   inspectInputBoundary,
 } from '@factorio-eda/core';
 import { ChevronDown, ChevronRight, RotateCcw, Search, X } from 'lucide-react';
@@ -11,7 +13,9 @@ import { ItemIcon } from './ItemIcon';
 
 interface InputMaterialsPanelProps {
   spec: DesignSpec;
+  activeByproducts?: Array<{ item: string; ratePerSec: number; policy: ByproductPolicy }>;
   onSelectPreset: (preset: InputPreset) => void;
+  onChangeByproductPolicy: (policy: ByproductPolicy) => void;
   onToggleItem: (
     item: string,
     nextMode: 'input' | 'synthesize' | 'auto',
@@ -22,7 +26,9 @@ interface InputMaterialsPanelProps {
 
 export const InputMaterialsPanel: React.FC<InputMaterialsPanelProps> = ({
   spec,
+  activeByproducts,
   onSelectPreset,
+  onChangeByproductPolicy,
   onToggleItem,
   onResetOverrides,
 }) => {
@@ -225,6 +231,52 @@ export const InputMaterialsPanel: React.FC<InputMaterialsPanelProps> = ({
           ))
         )}
       </div>
+
+      {/* Side-Product Handling Policy */}
+      <div className="input-subhead-row" style={{ marginTop: 9 }}>
+        <span className="field-label" style={{ margin: 0 }}>
+          Side Products
+        </span>
+        <div className="unit-toggle" role="group" aria-label="Side product policy">
+          <button
+            type="button"
+            className={`unit-btn ${(spec.byproductPolicy ?? 'auto-consume') === 'auto-consume' ? 'active' : ''}`}
+            title="Automatically crack/convert co-products toward demanded outputs when beneficial"
+            onClick={() => onChangeByproductPolicy('auto-consume')}
+          >
+            Auto-Crack
+          </button>
+          <button
+            type="button"
+            className={`unit-btn ${spec.byproductPolicy === 'export' ? 'active' : ''}`}
+            title="Export co-products directly on dedicated BYP perimeter pins without cracking"
+            onClick={() => onChangeByproductPolicy('export')}
+          >
+            Export Pins
+          </button>
+        </div>
+      </div>
+
+      {activeByproducts && activeByproducts.length > 0 && (
+        <div className="input-pins-strip" style={{ marginTop: 4 }}>
+          {activeByproducts.map((bp) => {
+            const meta = getItemMeta(bp.item);
+            return (
+              <span
+                key={bp.item}
+                className="input-pin-chip byproduct"
+                title={`Exported side product (${(bp.ratePerSec * 60).toFixed(1)}/min) on perimeter BYP pin`}
+              >
+                <ItemIcon itemId={bp.item} size={13} />
+                <span className="input-pin-chip-name">{meta.name}</span>
+                <span className="input-pin-byp-tag">
+                  +{Math.round(bp.ratePerSec * 60)}/m
+                </span>
+              </span>
+            );
+          })}
+        </div>
+      )}
 
       {/* Multi-level Tree & Search */}
       <div className="input-subhead-row" style={{ marginTop: 9 }}>

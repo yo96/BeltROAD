@@ -163,16 +163,31 @@ export function runSta(
     }
 
     if (rm.outputIsFluid) {
-      if (rm.outputRatePerSec > PIPE_SPEC.capacityPerSec + 1e-4) {
-        laneOk = false;
-        issues.push(
-          `Fluid output rate ${rm.outputRatePerSec.toFixed(2)}/s exceeds pipe capacity (${PIPE_SPEC.capacityPerSec}/s)`,
-        );
-      }
-      const hasOutPipe = macroEnts.some((e) => isPipeName(e.name) && e.item === rm.outputItem);
-      if (!hasOutPipe) {
-        laneOk = false;
-        issues.push(`Missing output pipe entities for fluid "${rm.outputItem}"`);
+      const fluidOuts =
+        rm.fluidOutputs && rm.fluidOutputs.length > 0
+          ? rm.fluidOutputs
+          : [{ item: rm.outputItem, ratePerSec: rm.outputRatePerSec }];
+      for (const fo of fluidOuts) {
+        if (fo.ratePerSec > PIPE_SPEC.capacityPerSec + 1e-4) {
+          laneOk = false;
+          issues.push(
+            `Fluid output "${fo.item}" rate ${fo.ratePerSec.toFixed(2)}/s exceeds pipe capacity (${PIPE_SPEC.capacityPerSec}/s)`,
+          );
+        }
+        const hasOutPipe = macroEnts.some((e) => isPipeName(e.name) && e.item === fo.item);
+        if (!hasOutPipe) {
+          laneOk = false;
+          issues.push(`Missing output pipe entities for fluid "${fo.item}"`);
+        }
+        const drainedRate = synth.nets
+          .filter((n) => n.source.nodeId === rm.id && n.item === fo.item)
+          .reduce((sum, n) => sum + n.ratePerSec, 0);
+        if (drainedRate + 1e-3 < fo.ratePerSec) {
+          laneOk = false;
+          issues.push(
+            `Fluid output "${fo.item}" drain net capacity ${drainedRate.toFixed(2)}/s < ${fo.ratePerSec.toFixed(2)}/s`,
+          );
+        }
       }
     } else {
       if (rm.outputRatePerSec > beltCap + 1e-4) {

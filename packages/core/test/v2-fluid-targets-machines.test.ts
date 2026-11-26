@@ -115,9 +115,16 @@ describe('Liquid Targets, Non-Adjacent Liquid Pipes & Machine-Count Targets', ()
       expect(out.drc.errorCount, `${c.item} DRC: ${JSON.stringify(out.drc.violations)}`).toBe(0);
       expect(out.sta.passed, `${c.item} STA: ${out.sta.bottlenecks.join('; ')}`).toBe(true);
 
-      const outPins = out.floorplan.pins.filter((p) => p.kind === 'output');
+      const outPins = out.floorplan.pins.filter((p) => p.kind === 'output' && !p.isByproduct);
       expect(outPins.length).toBeGreaterThanOrEqual(1);
       expect(outPins.every((p) => p.isFluid && p.item === c.item)).toBe(true);
+      if (c.item === 'heavy-oil') {
+        const bypPins = out.floorplan.pins.filter((p) => p.kind === 'output' && p.isByproduct);
+        const bypItems = new Set(bypPins.map((p) => p.item));
+        expect(bypItems.has('light-oil')).toBe(true);
+        expect(bypItems.has('petroleum-gas')).toBe(true);
+        expect(bypPins.every((p) => p.isFluid)).toBe(true);
+      }
 
       const rms = out.synthesis.nodes.filter(
         (n): n is RecipeMacroSpec => n.kind === 'recipe-macro' && n.outputItem === c.item,

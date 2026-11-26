@@ -135,7 +135,7 @@ export function collectLayoutEntities(
         direction: 0,
         role: 'port-marker',
         item: pin.item,
-        markerText: `${isOut ? 'OUT' : 'IN'}: ${pin.item} (${Math.round(pin.ratePerSec * 60)}/m)`,
+        markerText: `${isOut ? (pin.isByproduct ? 'BYP' : 'OUT') : 'IN'}: ${pin.item} (${Math.round(pin.ratePerSec * 60)}/m)`,
         markerIcon: pin.item,
         markerRatePerMin: pin.ratePerSec * 60,
       });
@@ -209,7 +209,7 @@ export function runFlatPipeline(
   while (
     route.conflictsRemaining > 0 &&
     (route.elapsedMs <= 2500 ||
-      (floorplan.width * floorplan.height <= 25000 && synthesis.nets.length <= 60)) &&
+      (floorplan.width * floorplan.height <= 25000 && synthesis.nets.length <= 96)) &&
     spec.floorplan.mode === 'auto' &&
     autoExpandedCount < 2 &&
     !shouldCancel?.()
