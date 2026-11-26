@@ -66,63 +66,47 @@ function createTemplate(
 }
 
 function build1x2(): BalancerTemplate {
-  const entities: BalancerEntityDef[] = [
-    belt(0, 0),
-    splitter(1, 0),
-    belt(2, 0),
-    belt(2, 1),
-  ];
+  const entities: BalancerEntityDef[] = [splitter(0, 0)];
   return createTemplate(
     'builtin-1x2',
     '1x2 Splitter',
     1,
     2,
-    3,
+    1,
     2,
     entities,
     makePorts(0, [0]),
-    makePorts(2, [0, 1]),
+    makePorts(0, [0, 1]),
   );
 }
 
 function build2x1(): BalancerTemplate {
-  const entities: BalancerEntityDef[] = [
-    belt(0, 0),
-    belt(0, 1),
-    splitter(1, 0),
-    belt(2, 0),
-  ];
+  const entities: BalancerEntityDef[] = [splitter(0, 0)];
   return createTemplate(
     'builtin-2x1',
     '2x1 Merger',
     2,
     1,
-    3,
+    1,
     2,
     entities,
     makePorts(0, [0, 1]),
-    makePorts(2, [0]),
+    makePorts(0, [0]),
   );
 }
 
 function build2x2(): BalancerTemplate {
-  const entities: BalancerEntityDef[] = [
-    belt(0, 0),
-    belt(0, 1),
-    splitter(1, 0),
-    belt(2, 0),
-    belt(2, 1),
-  ];
+  const entities: BalancerEntityDef[] = [splitter(0, 0)];
   return createTemplate(
     'builtin-2x2',
     '2x2 Balancer',
     2,
     2,
-    3,
+    1,
     2,
     entities,
     makePorts(0, [0, 1]),
-    makePorts(2, [0, 1]),
+    makePorts(0, [0, 1]),
   );
 }
 
@@ -163,58 +147,46 @@ function build1x3(): BalancerTemplate {
 }
 
 function build1x4(): BalancerTemplate {
-  // Binary 1-to-4 tree (5x4)
+  // Binary 1-to-4 tree (3x4, direct splitter mouths)
   const entities: BalancerEntityDef[] = [
-    belt(0, 1),
-    splitter(1, 1),
-    belt(2, 1, Dir.NORTH),
-    belt(2, 0, Dir.EAST),
-    belt(2, 2, Dir.SOUTH),
-    belt(2, 3, Dir.EAST),
-    splitter(3, 0),
-    splitter(3, 2),
-    belt(4, 0),
-    belt(4, 1),
-    belt(4, 2),
-    belt(4, 3),
+    splitter(0, 1),
+    belt(1, 1, Dir.NORTH),
+    belt(1, 0, Dir.EAST),
+    belt(1, 2, Dir.SOUTH),
+    belt(1, 3, Dir.EAST),
+    splitter(2, 0),
+    splitter(2, 2),
   ];
   return createTemplate(
     'builtin-1x4',
     '1x4 Balanced Splitter',
     1,
     4,
-    5,
+    3,
     4,
     entities,
     makePorts(0, [1]),
-    makePorts(4, [0, 1, 2, 3]),
+    makePorts(2, [0, 1, 2, 3]),
   );
 }
 
 function build4x1(): BalancerTemplate {
-  // Balanced 4-to-1 binary merger (5x4)
+  // Balanced 4-to-1 binary merger (2x4, direct splitter backs/mouths)
   const entities: BalancerEntityDef[] = [
-    belt(0, 0),
-    belt(0, 1),
-    belt(0, 2),
-    belt(0, 3),
-    splitter(1, 0),
-    splitter(1, 2),
-    belt(2, 1, Dir.EAST),
-    belt(2, 2, Dir.EAST),
-    splitter(3, 1),
-    belt(4, 1),
+    splitter(0, 0),
+    splitter(0, 2),
+    splitter(1, 1),
   ];
   return createTemplate(
     'builtin-4x1',
     '4x1 Balanced Merger',
     4,
     1,
-    5,
+    2,
     4,
     entities,
     makePorts(0, [0, 1, 2, 3]),
-    makePorts(4, [1]),
+    makePorts(1, [1]),
   );
 }
 
@@ -261,27 +233,17 @@ function build4x4CoreEntities(offsetX: number): BalancerEntityDef[] {
 }
 
 function build4x4(): BalancerTemplate {
-  const entities: BalancerEntityDef[] = [
-    belt(0, 0),
-    belt(0, 1),
-    belt(0, 2),
-    belt(0, 3),
-    ...build4x4CoreEntities(1),
-    belt(9, 0),
-    belt(9, 1),
-    belt(9, 2),
-    belt(9, 3),
-  ];
+  const entities: BalancerEntityDef[] = [...build4x4CoreEntities(0)];
   return createTemplate(
     'builtin-4x4',
     '4x4 TU Balancer',
     4,
     4,
-    10,
+    8,
     4,
     entities,
     makePorts(0, [0, 1, 2, 3]),
-    makePorts(9, [0, 1, 2, 3]),
+    makePorts(7, [0, 1, 2, 3]),
   );
 }
 
@@ -322,96 +284,66 @@ function build3x3(): BalancerTemplate {
 }
 
 function build2x4(): BalancerTemplate {
-  // 2 inputs -> 2x2 mixer -> fan out to 4 outputs (5x4)
+  // 2 inputs -> 2x2 mixer -> fan out to 4 outputs (3x4, direct splitter mouths)
   const entities: BalancerEntityDef[] = [
-    belt(0, 1),
-    belt(0, 2),
-    splitter(1, 1),
-    belt(2, 1, Dir.NORTH),
-    belt(2, 0, Dir.EAST),
-    belt(2, 2, Dir.SOUTH),
-    belt(2, 3, Dir.EAST),
-    splitter(3, 0),
-    splitter(3, 2),
-    belt(4, 0),
-    belt(4, 1),
-    belt(4, 2),
-    belt(4, 3),
+    splitter(0, 1),
+    belt(1, 1, Dir.NORTH),
+    belt(1, 0, Dir.EAST),
+    belt(1, 2, Dir.SOUTH),
+    belt(1, 3, Dir.EAST),
+    splitter(2, 0),
+    splitter(2, 2),
   ];
   return createTemplate(
     'builtin-2x4',
     '2x4 Balanced Splitter',
     2,
     4,
-    5,
+    3,
     4,
     entities,
     makePorts(0, [1, 2]),
-    makePorts(4, [0, 1, 2, 3]),
+    makePorts(2, [0, 1, 2, 3]),
   );
 }
 
 function build4x2(): BalancerTemplate {
-  // 4 inputs -> 4x4 TU core -> merge pairs (12x4)
+  // 4 inputs -> 4x4 TU core -> merge pairs (10x4)
   const entities: BalancerEntityDef[] = [
-    belt(0, 0),
-    belt(0, 1),
-    belt(0, 2),
-    belt(0, 3),
-    ...build4x4CoreEntities(1),
-    belt(9, 0),
-    belt(9, 1),
-    belt(9, 2),
-    belt(9, 3),
-    splitter(10, 0),
-    splitter(10, 2),
-    belt(11, 0),
-    belt(11, 2),
+    ...build4x4CoreEntities(0),
+    belt(8, 0),
+    belt(8, 1),
+    belt(8, 2),
+    belt(8, 3),
+    splitter(9, 0),
+    splitter(9, 2),
   ];
   return createTemplate(
     'builtin-4x2',
     '4x2 Balanced Merger',
     4,
     2,
-    12,
+    10,
     4,
     entities,
     makePorts(0, [0, 1, 2, 3]),
-    makePorts(11, [0, 2]),
+    makePorts(9, [0, 2]),
   );
 }
 
 function build3x4(): BalancerTemplate {
-  // 4x4 TU core with 3 inputs on 0..2 and 4th input unused? To keep equal draw,
-  // loop output lane 3 back if unused? No, 3x4 uses all 4 outputs, so we mix 3->3 first,
-  // or split 1 of 3? Simplest clean 3x4: 3x3 balancer + split lane 0? Wait:
-  // If you put 3 inputs into 4x4 (with lane 3 empty), outputs are STILL 3/4 each!
-  // Wait: output of (0,2) sends 50% of a2 to lane 2 and 50% to lane 3, then (4,1) and (1,1) mix all!
-  // Wait: let's check exact ratios when a3=0 in 4x4:
-  // L0 = 0.5(a0+a1), L1 = 0.5(a0+a1), L2 = 0.5*a2, L3 = 0.5*a2 ->
-  // (1,1): L1'=L2'=0.25(a0+a1+a2); (4,1): L0'=L3'=0.25(a0+a1+a2) ->
-  // All 4 outputs are EXACTLY 0.25(a0+a1+a2)! 4x4 natively handles 3x4 and 2x4!
-  const entities: BalancerEntityDef[] = [
-    belt(0, 0),
-    belt(0, 1),
-    belt(0, 2),
-    // Note: lane 3 input omitted (empty input into (0,2) splitter)
-    ...build4x4CoreEntities(1),
-    belt(9, 0),
-    belt(9, 1),
-    belt(9, 2),
-    belt(9, 3),
-  ];
+  // 4x4 TU core with 3 inputs on 0..2 and 4th input empty (8x4)
+  const entities: BalancerEntityDef[] = [...build4x4CoreEntities(0)];
   return createTemplate(
     'builtin-3x4',
     '3x4 Balanced',
     3,
     4,
-    10,
+    8,
     4,
     entities,
     makePorts(0, [0, 1, 2]),
-    makePorts(9, [0, 1, 2, 3]),
+    makePorts(7, [0, 1, 2, 3]),
   );
 }
 
@@ -432,28 +364,22 @@ function build3x2(): BalancerTemplate {
 }
 
 function build3x1(): BalancerTemplate {
-  // Compact 5x3 3-to-1 merger
+  // Compact 2x3 3-to-1 merger (direct splitter backs/mouths)
   const entities: BalancerEntityDef[] = [
-    belt(0, 0),
-    belt(0, 1),
+    splitter(0, 0),
     belt(0, 2),
-    splitter(1, 0),
-    belt(2, 1),
-    belt(1, 2),
-    belt(2, 2),
-    splitter(3, 1),
-    belt(4, 1),
+    splitter(1, 1),
   ];
   return createTemplate(
     'builtin-3x1',
     '3x1 Compact Merger',
     3,
     1,
-    5,
+    2,
     3,
     entities,
     makePorts(0, [0, 1, 2]),
-    makePorts(4, [1]),
+    makePorts(1, [1]),
   );
 }
 
@@ -473,12 +399,6 @@ export function generateProceduralBalancer(
   const L = Math.max(inputs, outputs, 2);
   const entities: BalancerEntityDef[] = [];
   let x = 0;
-
-  // Entry column: input belts on 0..inputs-1
-  for (let y = 0; y < inputs; y++) {
-    entities.push(belt(x, y, Dir.EAST));
-  }
-  x++;
 
   // If inputs < L, fan out active lanes downward via cascading splitters
   if (inputs < L) {
@@ -537,11 +457,11 @@ export function generateProceduralBalancer(
     }
   }
 
-  // Exit column: output belts on 0..outputs-1
-  for (let y = 0; y < outputs; y++) {
-    entities.push(belt(x, y, Dir.EAST));
+  if (x === 0) {
+    entities.push(belt(0, 0, Dir.EAST));
+    x = 1;
   }
-  const width = x + 1;
+  const width = Math.max(1, x);
 
   return createTemplate(
     id ?? `proc-${inputs}x${outputs}`,
