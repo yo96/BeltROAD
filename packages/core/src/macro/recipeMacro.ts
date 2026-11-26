@@ -14,11 +14,13 @@ import {
   BELT_SPECS,
   INSERTER_SPECS,
   MACHINE_SPECS,
+  POLE_BY_ENTITY_NAME,
   POLE_SPECS,
   PoleSpec,
   QUALITY_SPECS,
   doesPoleSupplyEntity,
   effectiveBeltCapacity,
+  requiresPower,
 } from '../data/entities.js';
 import { getCatalog } from '../data/catalog.js';
 import { pinOutsideOffset } from './transform.js';
@@ -38,11 +40,247 @@ function machineShortLabel(machineName: MachineName, quality?: QualityTier): str
           ? 'EM Plant'
           : machineName === 'cryogenic-plant'
             ? 'Cryo Plant'
-            : `Asm${machineName.slice(-1)}`;
+            : machineName === 'oil-refinery'
+              ? 'Refinery'
+              : `Asm${machineName.slice(-1)}`;
   if (quality && quality !== 'normal') {
     return `${QUALITY_SPECS[quality].label} ${base}`;
   }
   return base;
+}
+
+/**
+ * Remove redundant internal macro poles while preserving:
+ * 1) 100% power supply coverage of every powered entity covered by the original poles, and
+ * 2) Wire connectivity between all retained poles that were connected in the original pole graph.
+ */
+export function pruneRedundantMacroPoles(entities: EntityInstance[]): EntityInstance[] {
+  const poleIndices: number[] = [];
+  const powered: EntityInstance[] = [];
+
+  for (let i = 0; i < entities.length; i++) {
+    const e = entities[i];
+    if (e.role === 'pole-macro') {
+      poleIndices.push(i);
+    } else if (requiresPower(e.name)) {
+      powered.push(e);
+    }
+  }
+
+  if (poleIndices.length <= 1 || powered.length === 0) {
+    return entities;
+  }
+
+  interface PoleNode {
+    entIdx: number;
+    spec: PoleSpec;
+    cx: number;
+    cy: number;
+    covers: Set<number>;
+  }
+
+  const nodes: PoleNode[] = [];
+  for (const entIdx of poleIndices) {
+    const p = entities[entIdx];
+    const spec = POLE_BY_ENTITY_NAME[p.name];
+    if (!spec) return entities;
+    const covers = new Set<number>();
+    for (let t = 0; t < powered.length; t++) {
+      const target = powered[t];
+      if (doesPoleSupplyEntity(p.tx, p.ty, spec, target.tx, target.ty, target.w, target.h)) {
+        covers.add(t);
+      }
+    }
+    nodes.push({
+      entIdx,
+      spec,
+      cx: p.tx + spec.size / 2,
+      cy: p.ty + spec.size / 2,
+      covers,
+    });
+  }
+
+  // Only require covering entities actually supplied by the original pole set.
+  const uncovered = new Set<number>();
+  for (const node of nodes) {
+    for (const t of node.covers) uncovered.add(t);
+  }
+  if (uncovered.size === 0) {
+    return entities;
+  }
+
+  // Centroid of powered entities for clean geometric tie-breaking.
+  let sumX = 0;
+  for (const t of uncovered) {
+    const e = powered[t];
+    sumX += e.tx + e.w / 2;
+  }
+  const avgX = sumX / uncovered.size;
+
+  const canWire = (a: PoleNode, b: PoleNode): boolean => {
+    const reach = Math.min(a.spec.wireReach, b.spec.wireReach);
+    const dx = a.cx - b.cx;
+    const dy = a.cy - b.cy;
+    return dx * dx + dy * dy <= reach * reach + 1e-6;
+  };
+
+  const n = nodes.length;
+  const origAdj: number[][] = Array.from({ length: n }, () => []);
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      if (canWire(nodes[i], nodes[j])) {
+        origAdj[i].push(j);
+        origAdj[j].push(i);
+      }
+    }
+  }
+
+  // Compute connected component id of each pole in the original graph.
+  const origComp = new Array<number>(n).fill(-1);
+  let nextComp = 0;
+  for (let i = 0; i < n; i++) {
+    if (origComp[i] !== -1) continue;
+    const q = [i];
+    origComp[i] = nextComp;
+    for (let h = 0; h < q.length; h++) {
+      for (const nb of origAdj[q[h]]) {
+        if (origComp[nb] === -1) {
+          origComp[nb] = nextComp;
+          q.push(nb);
+        }
+      }
+    }
+    nextComp++;
+  }
+
+  // 1) Greedy set cover over all powered entities.
+  const chosen = new Set<number>();
+  while (uncovered.size > 0) {
+    let best = -1;
+    let bestGain = 0;
+    let bestConnected = -1;
+    let bestTotalCov = -1;
+    let bestDistX = Infinity;
+    let bestY = Infinity;
+
+    for (let i = 0; i < n; i++) {
+      if (chosen.has(i)) continue;
+      let gain = 0;
+      for (const t of nodes[i].covers) {
+        if (uncovered.has(t)) gain++;
+      }
+      if (gain === 0) continue;
+
+      let connected = 0;
+      for (const c of chosen) {
+        if (origAdj[i].includes(c)) {
+          connected = 1;
+          break;
+        }
+      }
+      const totalCov = nodes[i].covers.size;
+      const distX = Math.abs(nodes[i].cx - avgX);
+      const y = nodes[i].cy;
+
+      if (
+        gain > bestGain ||
+        (gain === bestGain &&
+          (connected > bestConnected ||
+            (connected === bestConnected &&
+              (totalCov > bestTotalCov ||
+                (totalCov === bestTotalCov &&
+                  (distX < bestDistX - 1e-6 ||
+                    (Math.abs(distX - bestDistX) <= 1e-6 && y < bestY)))))))
+      ) {
+        best = i;
+        bestGain = gain;
+        bestConnected = connected;
+        bestTotalCov = totalCov;
+        bestDistX = distX;
+        bestY = y;
+      }
+    }
+
+    if (best === -1) break;
+    chosen.add(best);
+    for (const t of nodes[best].covers) {
+      uncovered.delete(t);
+    }
+  }
+
+  // 2) Bridge any kept poles belonging to the same original connected component.
+  const chosenList = () => [...chosen];
+  let merged = true;
+  while (merged) {
+    merged = false;
+    const list = chosenList();
+    // Group chosen nodes into connected components within chosen.
+    const seen = new Set<number>();
+    const chosenGroups: number[][] = [];
+    for (const start of list) {
+      if (seen.has(start)) continue;
+      const g = [start];
+      seen.add(start);
+      for (let h = 0; h < g.length; h++) {
+        for (const nb of origAdj[g[h]]) {
+          if (chosen.has(nb) && !seen.has(nb)) {
+            seen.add(nb);
+            g.push(nb);
+          }
+        }
+      }
+      chosenGroups.push(g);
+    }
+
+    // Check if any two chosen groups share the same original connected component.
+    outer: for (let gi = 0; gi < chosenGroups.length; gi++) {
+      const compId = origComp[chosenGroups[gi][0]];
+      const hasPeerInSameOrigComp = chosenGroups.some(
+        (g, idx) => idx !== gi && origComp[g[0]] === compId,
+      );
+      if (!hasPeerInSameOrigComp) continue;
+
+      const targetNodes = new Set<number>();
+      for (let gj = 0; gj < chosenGroups.length; gj++) {
+        if (gj !== gi && origComp[chosenGroups[gj][0]] === compId) {
+          for (const nodeIdx of chosenGroups[gj]) targetNodes.add(nodeIdx);
+        }
+      }
+
+      // BFS shortest path from chosenGroups[gi] to targetNodes in origAdj.
+      const parent = new Map<number, number>();
+      const queue: number[] = [];
+      for (const s of chosenGroups[gi]) {
+        parent.set(s, -1);
+        queue.push(s);
+      }
+      for (let h = 0; h < queue.length; h++) {
+        const cur = queue[h];
+        if (targetNodes.has(cur)) {
+          let trace = parent.get(cur) ?? -1;
+          while (trace !== -1) {
+            chosen.add(trace);
+            trace = parent.get(trace) ?? -1;
+          }
+          merged = true;
+          break outer;
+        }
+        for (const nb of origAdj[cur]) {
+          if (!parent.has(nb)) {
+            parent.set(nb, cur);
+            queue.push(nb);
+          }
+        }
+      }
+    }
+  }
+
+  const keptEntIndices = new Set<number>();
+  for (const idx of chosen) {
+    keptEntIndices.add(nodes[idx].entIdx);
+  }
+  const poleSet = new Set(poleIndices);
+  return entities.filter((_, idx) => !poleSet.has(idx) || keptEntIndices.has(idx));
 }
 
 function selectInserterKind(
@@ -1290,7 +1528,8 @@ function buildSingleRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledMac
     beltTier: spec.beltTier,
   });
 
-  const powerTargets = entities
+  const prunedEntities = pruneRedundantMacroPoles(entities);
+  const powerTargets = prunedEntities
     .filter(
       (e) =>
         e.role === 'machine' ||
@@ -1315,7 +1554,7 @@ function buildSingleRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledMac
     width,
     height,
     rotation: 0,
-    entities,
+    entities: prunedEntities,
     pins,
     powerTargets,
   };
@@ -1965,7 +2204,8 @@ function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): Compil
     beltTier: spec.beltTier,
   });
 
-  const powerTargets = entities
+  const prunedEntities = pruneRedundantMacroPoles(entities);
+  const powerTargets = prunedEntities
     .filter(
       (e) =>
         e.role === 'machine' ||
@@ -1988,7 +2228,7 @@ function buildMirroredTwoRowMacro(spec: RecipeMacroSpec, pdk: PdkConfig): Compil
     width,
     height,
     rotation: 0,
-    entities,
+    entities: prunedEntities,
     pins,
     powerTargets,
   };
@@ -2031,6 +2271,11 @@ function fluidIoPortOffset(
   if (machineName === 'chemical-plant') {
     if (isOutput) return 0;
     return portIndex === 0 ? 0 : 2;
+  }
+  if (machineName === 'oil-refinery') {
+    // Dir.SOUTH: inputs on North edge at x=1 and x=3; primary output on South edge at x=4.
+    if (isOutput) return 4;
+    return portIndex === 0 ? 1 : 3;
   }
   return portIndex === 0 ? 0 : 1;
 }
@@ -2288,13 +2533,17 @@ function buildFluidRecipeMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledM
   const height = hasSouthFluidInput ? yFluidSouth + 1 : yOut + 1;
 
   const machDir = isFluidOut
-    ? spec.machineName === 'foundry' || spec.machineName === 'cryogenic-plant'
+    ? spec.machineName === 'foundry' ||
+      spec.machineName === 'cryogenic-plant' ||
+      spec.machineName === 'oil-refinery'
       ? Dir.SOUTH
       : Dir.NORTH
     : isSplitTwoFluid
       ? Dir.WEST
       : isTwoFluid
-        ? spec.machineName === 'foundry' || spec.machineName === 'cryogenic-plant'
+        ? spec.machineName === 'foundry' ||
+          spec.machineName === 'cryogenic-plant' ||
+          spec.machineName === 'oil-refinery'
           ? Dir.SOUTH
           : Dir.NORTH
         : spec.machineName === 'foundry' || spec.machineName === 'cryogenic-plant'
@@ -2694,7 +2943,8 @@ function buildFluidRecipeMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledM
     });
   }
 
-  const powerTargets = entities
+  const prunedEntities = pruneRedundantMacroPoles(entities);
+  const powerTargets = prunedEntities
     .filter(
       (e) =>
         e.role === 'machine' ||
@@ -2715,7 +2965,7 @@ function buildFluidRecipeMacro(spec: RecipeMacroSpec, pdk: PdkConfig): CompiledM
     height,
     rotation: 0,
     noFlipY: true,
-    entities,
+    entities: prunedEntities,
     pins,
     powerTargets,
   };

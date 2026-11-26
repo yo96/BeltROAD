@@ -536,28 +536,29 @@ function drawMachineEntity(
     const isEmPlant = e.name === 'electromagnetic-plant';
     const isCryo = e.name === 'cryogenic-plant';
     const isChem = e.name === 'chemical-plant';
+    const isRefinery = e.name === 'oil-refinery';
     const margin = Math.max(1.5, s * 0.08);
     const bx = ex + margin;
     const by = ey + margin;
     const bw = ew - margin * 2;
     const bh = eh - margin * 2;
 
-    if (isChem) {
-      ctx.fillStyle = '#0f4c5c';
+    if (isChem || isRefinery) {
+      ctx.fillStyle = isRefinery ? '#451a03' : '#0f4c5c';
       ctx.fillRect(bx, by, bw, bh);
-      ctx.strokeStyle = '#2dd4bf';
+      ctx.strokeStyle = isRefinery ? '#f59e0b' : '#2dd4bf';
       ctx.lineWidth = Math.max(1.4, s * 0.08);
       ctx.strokeRect(bx, by, bw, bh);
 
-      ctx.fillStyle = '#082f3a';
+      ctx.fillStyle = isRefinery ? '#271003' : '#082f3a';
       ctx.fillRect(bx + bw * 0.14, by + bh * 0.14, bw * 0.72, bh * 0.72);
-      // Twin chemical distillation domes
-      ctx.fillStyle = '#14b8a6';
+      // Twin chemical distillation domes / towers
+      ctx.fillStyle = isRefinery ? '#d97706' : '#14b8a6';
       ctx.beginPath();
       ctx.arc(cx - bw * 0.18, cy, bw * 0.16, 0, Math.PI * 2);
       ctx.arc(cx + bw * 0.18, cy, bw * 0.16, 0, Math.PI * 2);
       ctx.fill();
-      ctx.strokeStyle = '#99f6e4';
+      ctx.strokeStyle = isRefinery ? '#fde68a' : '#99f6e4';
       ctx.lineWidth = Math.max(1, s * 0.05);
       ctx.stroke();
     } else if (isFurnace || isFoundry) {
@@ -1420,7 +1421,9 @@ export function renderFactorioScene(
           ? '#64748b'
           : m.name === 'chemical-plant'
             ? '#0d9488'
-            : m.name === 'foundry'
+            : m.name === 'oil-refinery'
+              ? '#b45309'
+              : m.name === 'foundry'
               ? '#9a3412'
               : m.name === 'electromagnetic-plant'
                 ? '#6d28d9'

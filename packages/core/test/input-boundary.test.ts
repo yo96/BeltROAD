@@ -167,6 +167,13 @@ describe('Multi-Level Input Material Selection & Boundary Presets', () => {
     // 4. Explicit targets cannot be forced to 'input'
     const guarded = applyInputOverride(redPlates, 'advanced-circuit', 'input');
     expect(guarded.inputOverrides['advanced-circuit']).toBeUndefined();
+
+    // 5. Crude oil becomes active input under 'raw' preset (and stays synthesized downstream of petroleum-gas under 'raw')
+    const yellowRaw = inspectInputBoundary(yellowScienceSpec('raw'));
+    const yellowRawItems = new Set(yellowRaw.activeInputs.map((i) => i.item));
+    expect(yellowRawItems.has('crude-oil')).toBe(true);
+    expect(yellowRawItems.has('petroleum-gas')).toBe(false);
+    expect(yellowRawItems.has('sulfuric-acid')).toBe(false);
   });
 
   it('preserves new presets and fine-grained overrides across YAML and URL codecs', () => {

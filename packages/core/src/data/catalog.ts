@@ -244,6 +244,11 @@ const RAW_PRESET_ITEMS = new Set([
   'holmium-ore',
   'water',
   'crude-oil',
+  'fluoroketone-cold',
+]);
+
+const PLATES_PRESET_ITEMS = new Set([
+  ...RAW_PRESET_ITEMS,
   'heavy-oil',
   'light-oil',
   'petroleum-gas',
@@ -253,11 +258,6 @@ const RAW_PRESET_ITEMS = new Set([
   'molten-copper',
   'holmium-solution',
   'electrolyte',
-  'fluoroketone-cold',
-]);
-
-const PLATES_PRESET_ITEMS = new Set([
-  ...RAW_PRESET_ITEMS,
   'iron-plate',
   'copper-plate',
   'steel-plate',

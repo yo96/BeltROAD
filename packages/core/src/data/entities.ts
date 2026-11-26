@@ -171,6 +171,15 @@ export const MACHINE_SPECS: Record<MachineName, MachineSpec> = {
     powerKw: 1500,
     drainKw: 50,
   },
+  'oil-refinery': {
+    name: 'oil-refinery',
+    size: 5,
+    craftingSpeed: 1.0,
+    moduleSlots: 3,
+    baseProductivity: 0,
+    powerKw: 420,
+    drainKw: 14,
+  },
 };
 
 export const EM_PLANT_RECIPES = new Set([
@@ -236,6 +245,9 @@ export function selectMachineForRecipe(recipe: RecipeDef, pdk: PdkConfig): Machi
   }
   if (recipe.category === 'cryogenics') {
     return 'cryogenic-plant';
+  }
+  if (recipe.category === 'oil-processing') {
+    return 'oil-refinery';
   }
   if (pdk.spaceAgeBuildings) {
     if (EM_PLANT_RECIPES.has(recipe.id) || EM_PLANT_RECIPES.has(recipe.outputItem)) {

@@ -1719,6 +1719,21 @@
       "group": "chemical"
     },
     {
+      "id": "advanced-oil-processing",
+      "name": "Heavy Oil (Advanced Oil Processing)",
+      "category": "oil-processing",
+      "energyRequired": 5,
+      "ingredients": [
+        { "item": "crude-oil", "amount": 100, "type": "fluid" },
+        { "item": "water", "amount": 50, "type": "fluid" }
+      ],
+      "outputItem": "heavy-oil",
+      "outputCount": 25,
+      "allowProductivity": true,
+      "hasFluid": true,
+      "group": "chemical"
+    },
+    {
       "id": "heavy-oil-cracking",
       "name": "Light Oil (Heavy Oil Cracking)",
       "category": "chemistry",
@@ -1729,6 +1744,20 @@
       ],
       "outputItem": "light-oil",
       "outputCount": 30,
+      "allowProductivity": true,
+      "hasFluid": true,
+      "group": "chemical"
+    },
+    {
+      "id": "basic-oil-processing",
+      "name": "Petroleum Gas (Basic Oil Processing)",
+      "category": "oil-processing",
+      "energyRequired": 5,
+      "ingredients": [
+        { "item": "crude-oil", "amount": 100, "type": "fluid" }
+      ],
+      "outputItem": "petroleum-gas",
+      "outputCount": 45,
       "allowProductivity": true,
       "hasFluid": true,
       "group": "chemical"

@@ -25,6 +25,7 @@ export type MachineName =
   | 'assembling-machine-3'
   | 'electric-furnace'
   | 'chemical-plant'
+  | 'oil-refinery'
   | 'foundry'
   | 'electromagnetic-plant'
   | 'cryogenic-plant';

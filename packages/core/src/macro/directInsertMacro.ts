@@ -18,6 +18,7 @@ import {
   effectiveBeltCapacity,
 } from '../data/entities.js';
 import { getCatalog } from '../data/catalog.js';
+import { pruneRedundantMacroPoles } from './recipeMacro.js';
 import { pinOutsideOffset } from './transform.js';
 
 function selectInserterKind(
@@ -276,7 +277,8 @@ function createBuilder(spec: RecipeMacroSpec, pdk: PdkConfig) {
   const finalize = (width: number, height: number, sublabel: string): CompiledMacro => {
     const catalog = getCatalog();
     const recipe = catalog.recipesById[spec.recipeId];
-    const powerTargets = entities
+    const prunedEntities = pruneRedundantMacroPoles(entities);
+    const powerTargets = prunedEntities
       .filter(
         (e) =>
           e.role === 'machine' ||
@@ -297,7 +299,7 @@ function createBuilder(spec: RecipeMacroSpec, pdk: PdkConfig) {
       width,
       height,
       rotation: 0,
-      entities,
+      entities: prunedEntities,
       pins,
       powerTargets,
     };

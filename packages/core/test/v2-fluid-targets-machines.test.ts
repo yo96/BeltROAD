@@ -3,6 +3,7 @@ import {
   BUILTIN_PRESETS,
   Dir,
   PIPE_SPEC,
+  compileRecipeMacroVariants,
   computeRecipeThroughputPerMachine,
   decodeBlueprintWrapper,
   defaultOptimizationConfig,
@@ -92,7 +93,8 @@ describe('Liquid Targets, Non-Adjacent Liquid Pipes & Machine-Count Targets', ()
       { item: 'sulfuric-acid', ratePerMin: 12000, expectedMachine: 'cryogenic-plant', spaceAge: true },
       { item: 'lubricant', ratePerMin: 2400, expectedMachine: 'chemical-plant' },
       { item: 'light-oil', ratePerMin: 3600, expectedMachine: 'chemical-plant' },
-      { item: 'petroleum-gas', ratePerMin: 2400, expectedMachine: 'chemical-plant' },
+      { item: 'heavy-oil', ratePerMin: 1800, expectedMachine: 'oil-refinery' },
+      { item: 'petroleum-gas', ratePerMin: 2400, expectedMachine: 'oil-refinery' },
       { item: 'water', ratePerMin: 4800, expectedMachine: 'chemical-plant' },
       { item: 'molten-iron', ratePerMin: 15000, expectedMachine: 'foundry', spaceAge: true },
       { item: 'molten-copper', ratePerMin: 15000, expectedMachine: 'foundry', spaceAge: true },
@@ -275,5 +277,99 @@ describe('Liquid Targets, Non-Adjacent Liquid Pipes & Machine-Count Targets', ()
     const yamlText = serializeSpecYaml(normalizeSpec(specAc));
     const parsed = parseSpecYaml(yamlText);
     expect(parsed.targets[0].machines).toBe(6);
+  });
+
+  it('refines crude oil via oil-refinery and prunes redundant macro power poles on cracking cryogenic plants', () => {
+    // 1. Crude oil -> petroleum-gas (oil-refinery)
+    const petroRawSpec = {
+      ...baseSpec('Petroleum Gas from Crude Oil', [{ item: 'petroleum-gas', ratePerMin: 1800 }]),
+      inputPreset: 'raw' as const,
+    };
+    const petroRawOut = runFullPipeline(petroRawSpec);
+    expect(petroRawOut.drc.errorCount, JSON.stringify(petroRawOut.drc.violations)).toBe(0);
+    expect(petroRawOut.sta.passed, petroRawOut.sta.bottlenecks.join('; ')).toBe(true);
+    const refineryNodes = petroRawOut.synthesis.nodes.filter(
+      (n): n is RecipeMacroSpec => n.kind === 'recipe-macro' && n.machineName === 'oil-refinery',
+    );
+    expect(refineryNodes.length).toBeGreaterThanOrEqual(1);
+    const rawInPins = new Set(
+      petroRawOut.floorplan.pins.filter((p) => p.kind === 'input').map((p) => p.item),
+    );
+    expect(rawInPins.has('crude-oil')).toBe(true);
+    assertStrictPipeSeparation(petroRawOut.allEntities, 'petro-crude-raw');
+
+    // 2. User screenshot repro: heavy-oil-cracking + light-oil-cracking in 2x cryogenic-plant
+    // Previously placed 4 poles per cryogenic plant (8 poles total); should prune to 1 per plant (2 total).
+    const saPdk = { ...defaultPdkConfig(), spaceAgeBuildings: true, defaultBeltTier: 'turbo' as const };
+    const heavyCrack = compileRecipeMacroVariants(
+      {
+        id: 'm:heavy-crack',
+        kind: 'recipe-macro',
+        recipeId: 'heavy-oil-cracking',
+        outputItem: 'light-oil',
+        outputRatePerSec: 30,
+        machineCount: 1,
+        exactMachines: 1,
+        machineName: 'cryogenic-plant',
+        modules: [],
+        beltTier: 'turbo',
+        ingredientRates: [],
+        fluidInputs: [
+          { item: 'water', ratePerSec: 30 },
+          { item: 'heavy-oil', ratePerSec: 40 },
+        ],
+        outputIsFluid: true,
+      },
+      saPdk,
+    )[0];
+    const lightCrack = compileRecipeMacroVariants(
+      {
+        id: 'm:light-crack',
+        kind: 'recipe-macro',
+        recipeId: 'light-oil-cracking',
+        outputItem: 'petroleum-gas',
+        outputRatePerSec: 20,
+        machineCount: 1,
+        exactMachines: 1,
+        machineName: 'cryogenic-plant',
+        modules: [],
+        beltTier: 'turbo',
+        ingredientRates: [],
+        fluidInputs: [
+          { item: 'water', ratePerSec: 30 },
+          { item: 'light-oil', ratePerSec: 30 },
+        ],
+        outputIsFluid: true,
+      },
+      saPdk,
+    )[0];
+    const heavyPoles = heavyCrack.entities.filter((e) => e.role === 'pole-macro');
+    const lightPoles = lightCrack.entities.filter((e) => e.role === 'pole-macro');
+    expect(heavyPoles.length).toBe(1);
+    expect(lightPoles.length).toBe(1);
+    expect(runDrc(heavyCrack.entities, heavyCrack.width, heavyCrack.height).errorCount).toBe(0);
+    expect(runDrc(lightCrack.entities, lightCrack.width, lightCrack.height).errorCount).toBe(0);
+
+    // 3. Full-pipeline multi-cryo plant DRC + STA + minimal poles
+    const cryoPipelineOut = runFullPipeline({
+      ...baseSpec(
+        'Two Cryo Cracking',
+        [
+          { item: 'light-oil', ratePerMin: 900 },
+          { item: 'sulfuric-acid', ratePerMin: 1500 },
+        ],
+        { spaceAgeBuildings: true, defaultBeltTier: 'turbo' },
+      ),
+    });
+    expect(cryoPipelineOut.drc.errorCount, JSON.stringify(cryoPipelineOut.drc.violations)).toBe(0);
+    expect(cryoPipelineOut.sta.passed, cryoPipelineOut.sta.bottlenecks.join('; ')).toBe(true);
+    const cryoMacroNodes = cryoPipelineOut.synthesis.nodes.filter(
+      (n): n is RecipeMacroSpec => n.kind === 'recipe-macro',
+    );
+    const cryoMacroPoles = cryoPipelineOut.allEntities.filter((e) => e.role === 'pole-macro');
+    // 3 fluid/chemical macros (light-oil, sulfur, sulfuric-acid): 1 minimal pole per macro instead of 12
+    expect(cryoMacroPoles.length).toBe(cryoMacroNodes.length);
+    expect(cryoMacroPoles.length).toBeLessThanOrEqual(3);
+    assertStrictPipeSeparation(cryoPipelineOut.allEntities, 'cryo-pruned-poles');
   });
 });
